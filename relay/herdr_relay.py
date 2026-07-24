@@ -4,7 +4,7 @@
 # dependencies = ["websockets>=14.0", "zeroconf>=0.80.0", "pywebpush>=2.0.0", "py-vapid>=1.9.0"]
 # ///
 """herdr-remote relay — polls herdr, accepts push events (HTTP POST + WebSocket + UDP), broadcasts to clients."""
-import asyncio, glob, json, logging, os, re, shlex, signal, socket, sqlite3, subprocess, time, uuid
+import asyncio, glob, json, logging, os, re, shlex, shutil, signal, socket, sqlite3, subprocess, time, uuid
 
 try:
     from websockets.asyncio.server import serve
@@ -39,7 +39,7 @@ log.addHandler(_file_handler)
 log.addHandler(_console_handler)
 logging.getLogger("websockets").setLevel(logging.WARNING)
 
-HERDR = os.environ.get("HERDR_BIN", "/opt/homebrew/bin/herdr")
+HERDR = os.environ.get("HERDR_BIN") or shutil.which("herdr") or "/opt/homebrew/bin/herdr"
 WS_PORT = int(os.environ.get("HERDR_RELAY_PORT", "8375"))
 POLL_INTERVAL = 2
 AUTH_TOKEN = os.environ.get("HERDR_RELAY_TOKEN", "")  # Optional: shared secret for relay auth
@@ -733,90 +733,97 @@ def fail_on_background_exit(task, stop):
 
 async def poll_loop():
     while True:
-        agents, hosts = await get_all_agents()
-        current_pane_ids = {a["pane_id"] for a in agents}
-        pane_remote_map.clear()
-        session_target_map.clear()
-        pane_cwd_map.clear()
-        known_panes.clear()
-        known_panes.update(current_pane_ids)
-        agent_cwd_counts = {}
-        for a in agents:
-            if a.get("agent") in ("claude", "opencode") and a.get("cwd"):
-                cwd_key = (a.get("remote"), a["cwd"], a["agent"])
-                agent_cwd_counts[cwd_key] = agent_cwd_counts.get(cwd_key, 0) + 1
-        for a in agents:
-            pane_remote_map[a["pane_id"]] = a.get("remote")
-            session_target_map[session_id(a["host"], a["pane_id"])] = (a["pane_id"], a.get("remote"))
-            cwd_key = (a.get("remote"), a.get("cwd", ""), a.get("agent", ""))
-            pane_cwd_map[a["pane_id"]] = (
-                a.get("cwd", ""), a.get("agent", ""), a.get("remote"),
-                agent_cwd_counts.get(cwd_key, 0) > 1,
-            )
-
-        # Always send a complete snapshot. In particular, an empty snapshot
-        # removes stale agents after every remote host goes offline.
-        await broadcast({
-            "type": "agents", "agents": agents,
-            "presets": public_presets(),
-            "hosts": hosts,
-        })
-        for a in agents:
-            pid, status = a["pane_id"], a["status"]
-            if status == "blocked" and last_statuses.get(pid) != "blocked":
-                content = read_pane(pid, remote=a.get("remote"))
-                options = detect_options(content)
-                pane_response_options[pid] = {
-                    option.lower() for option in (options or TOOL_OPTIONS)
-                }
-                await broadcast({
-                    "type": "blocked", "pane_id": pid,
-                    "agent": a["agent"], "project": a["project"],
-                    "host": a.get("host", "local"),
-                    "prompt": content[:500],
-                    "options": options or TOOL_OPTIONS
-                })
-                await send_web_push(
-                    title=f"🐑 {a['project']} blocked",
-                    body=content[:120],
-                    url=f"/?pane={pid}",
-                )
-            if status != "blocked" and last_statuses.get(pid) == "blocked":
-                pane_response_options.pop(pid, None)
-                await send_web_push("", "", clear=True)
-            last_statuses[pid] = status
-        for pid in set(last_statuses) - current_pane_ids:
-            del last_statuses[pid]
-            pane_response_options.pop(pid, None)
-
-        # Live-stream structured transcript blocks to subscribed clients. Only
-        # watched Claude panes are read; a changed signature (path or content)
-        # triggers a push. Failures are swallowed so one bad host can't stall.
-        watchers = {
-            pid: [ws for ws, subscribed_pid in list(subscriptions.items()) if subscribed_pid == pid]
-            for pid in set(subscriptions.values()) if pid in current_pane_ids
-        }
-        pane_results = await asyncio.gather(
-            *(asyncio.to_thread(pane_blocks, pid) for pid in watchers),
-            return_exceptions=True,
-        )
-        for pid, result in zip(watchers, pane_results):
-            if isinstance(result, Exception):
-                continue
-            blocks, sig = result
-            if blocks is None:
-                continue
-            payload = json.dumps({"type": "pane_content", "pane_id": pid, "output_blocks": blocks})
-            for ws in watchers[pid]:
-                key = (id(ws), pid)
-                if stream_sigs.get(key) == sig:
-                    continue
-                stream_sigs[key] = sig
-                try:
-                    await ws.send(payload)
-                except Exception:
-                    pass
+        try:
+            await _poll_once()
+        except Exception:
+            log.exception("poll cycle failed; retrying")
         await asyncio.sleep(POLL_INTERVAL)
+
+
+async def _poll_once():
+    agents, hosts = await get_all_agents()
+    current_pane_ids = {a["pane_id"] for a in agents}
+    pane_remote_map.clear()
+    session_target_map.clear()
+    pane_cwd_map.clear()
+    known_panes.clear()
+    known_panes.update(current_pane_ids)
+    agent_cwd_counts = {}
+    for a in agents:
+        if a.get("agent") in ("claude", "opencode") and a.get("cwd"):
+            cwd_key = (a.get("remote"), a["cwd"], a["agent"])
+            agent_cwd_counts[cwd_key] = agent_cwd_counts.get(cwd_key, 0) + 1
+    for a in agents:
+        pane_remote_map[a["pane_id"]] = a.get("remote")
+        session_target_map[session_id(a["host"], a["pane_id"])] = (a["pane_id"], a.get("remote"))
+        cwd_key = (a.get("remote"), a.get("cwd", ""), a.get("agent", ""))
+        pane_cwd_map[a["pane_id"]] = (
+            a.get("cwd", ""), a.get("agent", ""), a.get("remote"),
+            agent_cwd_counts.get(cwd_key, 0) > 1,
+        )
+
+    # Always send a complete snapshot. In particular, an empty snapshot
+    # removes stale agents after every remote host goes offline.
+    await broadcast({
+        "type": "agents", "agents": agents,
+        "presets": public_presets(),
+        "hosts": hosts,
+    })
+    for a in agents:
+        pid, status = a["pane_id"], a["status"]
+        if status == "blocked" and last_statuses.get(pid) != "blocked":
+            content = read_pane(pid, remote=a.get("remote"))
+            options = detect_options(content)
+            pane_response_options[pid] = {
+                option.lower() for option in (options or TOOL_OPTIONS)
+            }
+            await broadcast({
+                "type": "blocked", "pane_id": pid,
+                "agent": a["agent"], "project": a["project"],
+                "host": a.get("host", "local"),
+                "prompt": content[:500],
+                "options": options or TOOL_OPTIONS
+            })
+            await send_web_push(
+                title=f"🐑 {a['project']} blocked",
+                body=content[:120],
+                url=f"/?pane={pid}",
+            )
+        if status != "blocked" and last_statuses.get(pid) == "blocked":
+            pane_response_options.pop(pid, None)
+            await send_web_push("", "", clear=True)
+        last_statuses[pid] = status
+    for pid in set(last_statuses) - current_pane_ids:
+        del last_statuses[pid]
+        pane_response_options.pop(pid, None)
+
+    # Live-stream structured transcript blocks to subscribed clients. Only
+    # watched Claude panes are read; a changed signature (path or content)
+    # triggers a push. Failures are swallowed so one bad host can't stall.
+    watchers = {
+        pid: [ws for ws, subscribed_pid in list(subscriptions.items()) if subscribed_pid == pid]
+        for pid in set(subscriptions.values()) if pid in current_pane_ids
+    }
+    pane_results = await asyncio.gather(
+        *(asyncio.to_thread(pane_blocks, pid) for pid in watchers),
+        return_exceptions=True,
+    )
+    for pid, result in zip(watchers, pane_results):
+        if isinstance(result, Exception):
+            continue
+        blocks, sig = result
+        if blocks is None:
+            continue
+        payload = json.dumps({"type": "pane_content", "pane_id": pid, "output_blocks": blocks})
+        for ws in watchers[pid]:
+            key = (id(ws), pid)
+            if stream_sigs.get(key) == sig:
+                continue
+            stream_sigs[key] = sig
+            try:
+                await ws.send(payload)
+            except Exception:
+                pass
 
 
 async def event_push():
