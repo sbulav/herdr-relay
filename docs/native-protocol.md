@@ -81,12 +81,15 @@ contains `pane_id`, `agent`, `status`, `cwd`, `project`, and `host` only.
 | `cwd` | string | Required | Pane working directory; defaults to an empty string. |
 | `project` | string | Required | Basename of `cwd` in a poll, or the event's `project`; may be empty. |
 | `host` | string | Required | Configured host ID, remote SSH target, or `"local"`; event updates default to `"local"`. |
-| `remote` | string or null | Poll agents only | SSH target used by the relay, or `null` for a local pane. |
 | `workspace_id` | string | Poll agents only | Workspace identifier reported by `herdr`; defaults to an empty string. |
 | `tab_id` | string | Poll agents only | Tab identifier reported by `herdr`; defaults to an empty string. |
 | `attention_state` | string | Optional | Additive explicit attention state: `"working"`, `"waiting"`, `"done"`, or `"idle"`. `"waiting"` means the agent is waiting on the user. Unknown statuses are omitted rather than guessed. |
 | `updated_at` | integer | Optional | Additive epoch milliseconds when this pane's status or output revision last changed. |
 | `output_revision` | integer | Optional | Additive monotonic per-pane output revision reported by `herdr`; omitted when unavailable or invalid. |
+
+The relay's own SSH routing never appears here. A pane is addressed by `host` and
+`pane_id`; the SSH target behind a host is server-side state, like the preset
+`target` that `public_presets()` withholds.
 
 Each public preset has this shape:
 
