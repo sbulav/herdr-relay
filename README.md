@@ -1,37 +1,15 @@
 # herdr-remote
 
-Agent dashboard for [herdr](https://herdr.dev) -- menu bar, phone, Telegram. Zero config locally, free tunnel for remote.
-
-**[Try the live demo](https://herdr-demo.pages.dev)**
-
-## Install (10 seconds)
-
-Download [Herdi.app](https://github.com/dcolinmorgan/herdr-remote/releases/latest) and drag to Applications.
-
-Monitors all your local herdr agents automatically -- no relay, no config, no account.
-
-```bash
-curl -sL https://github.com/dcolinmorgan/herdr-remote/releases/latest/download/Herdi-0.6.3.dmg -o /tmp/Herdi.dmg && open /tmp/Herdi.dmg
-```
+Agent dashboard for [herdr](https://herdr.dev) -- Android, phone web, and Telegram. Free tunnel for remote.
 
 ## What you get
 
 - **Live agent timeline** -- who worked when, who blocked, who finished
-- **One-tap approvals** from phone, menu bar, or Telegram
+- **One-tap approvals** from phone or Telegram
 - **Daily activity digest** -- `/digest` in Telegram shows working time + block count
 - **Terminal interaction** -- read output, send commands, interrupt agents remotely
 - **Notifications** -- know instantly when agents need you or finish
 - **11 themes** -- dark, herdr, light, sand, clay, dune, nord, rose, dracula, kanagawa, midnight
-
-## Screenshots
-
-| Menu Bar App | Settings |
-|:--:|:--:|
-| ![Menu bar](public/mac_main.png) | ![Settings](public/mac_settings.png) |
-
-| Agent List | Terminal View |
-|:--:|:--:|
-| ![Agent list](public/herdr-remote-menu.png) | ![Terminal](public/herdr-remote-quick-menu.png) |
 
 ## Remote monitoring (phone/Telegram)
 
@@ -42,7 +20,7 @@ herdr plugin install dcolinmorgan/herdr-push
 cd herdr-remote/relay && ./start.sh
 ```
 
-Open [herdr-demo.pages.dev](https://herdr-demo.pages.dev) on your phone, paste the tunnel URL.
+Open [herdr-remote.pages.dev](https://herdr-remote.pages.dev) on your phone, paste the tunnel URL -- or point [herdr-mobile](https://github.com/sbulav/herdr-mobile) at the same URL.
 
 ## Telegram Bot
 
@@ -67,13 +45,10 @@ uv run relay/herdr_telegram.py
 ## Architecture
 
 ```
-                    ┌──────────────────────────────┐
-                    │  macOS Menu Bar (Herdi.app)   │ <- zero config
-                    └──────────────────────────────┘
-
 ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
-│  Web App     │  │  Telegram    │  │  TUI         │
-│  (phone)     │  │  Bot         │  │  (terminal)  │
+│  Android     │  │  Web App     │  │  Telegram    │
+│  (herdr-     │  │  (phone)     │  │  Bot         │
+│   mobile)    │  │              │  │              │
 └──────┬───────┘  └──────┬───────┘  └──────┬───────┘
        │                  │                  │
        └───── WebSocket ──┴──────────────────┘
@@ -92,12 +67,6 @@ uv run relay/herdr_telegram.py
          └─────┘     └─────────┘
 ```
 
-## Terminal TUI
-
-```bash
-uv run relay/herdr_tui.py
-```
-
 ## Token Auth
 
 ```bash
@@ -111,8 +80,7 @@ The native relay accepts typed `wake_host` and `shutdown_host` operations when `
 
 ## Requirements
 
-- macOS 14+ (menu bar app)
-- Python 3.10+ with [uv](https://docs.astral.sh/uv/) (relay/TUI/bot)
+- Python 3.10+ with [uv](https://docs.astral.sh/uv/) (relay/bot)
 - `cloudflared` (for remote access)
 - herdr 0.7+
 - Zero-dep plugin: [`herdr-push`](https://github.com/dcolinmorgan/herdr-push)

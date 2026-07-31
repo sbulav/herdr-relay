@@ -4,12 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-herdr-remote is a multi-client system for monitoring and approving [herdr](https://herdr.dev) AI agents remotely. It provides a WebSocket relay that bridges the herdr CLI with phone, desktop, Telegram, and terminal clients.
+herdr-remote is a WebSocket relay for monitoring and approving [herdr](https://herdr.dev) AI agents remotely. It bridges the herdr CLI with the [herdr-mobile](https://github.com/sbulav/herdr-mobile) Android app, the web app, and Telegram.
 
 ## Architecture
 
 ```
-Clients (web/mac/ios/telegram/tui)
+Clients (android/web/telegram)
         │ WebSocket
         ▼
    relay (:8375)  ←── Cloudflare tunnel (public wss://)
@@ -26,11 +26,7 @@ The relay (`relay/herdr_relay.py`) is the central hub: it polls herdr for agent 
 |------|------|----------|
 | `relay/herdr_relay.py` | WebSocket+HTTP relay server | Python (websockets, zeroconf) |
 | `relay/herdr_telegram.py` | Telegram bot client | Python (python-telegram-bot) |
-| `relay/herdr_tui.py` | Terminal TUI client | Python (textual) |
 | `web/index.html` | Mobile/desktop web app (single file) | HTML/CSS/JS |
-| `demo-worker/` | Cloudflare Worker mock relay for demos | JS |
-| `herdi-mac/` | macOS menu bar app | Swift (SPM) |
-| `herdi-ios/` | iOS app with widgets + Live Activities | Swift (XcodeGen) |
 
 ## Running Components
 
@@ -45,18 +41,6 @@ relay/start.sh
 
 # Telegram bot
 HERDI_TG_TOKEN="..." HERDI_TG_CHAT_ID="..." uv run relay/herdr_telegram.py
-
-# Terminal TUI
-uv run relay/herdr_tui.py
-
-# Demo worker (Cloudflare)
-cd demo-worker && npx wrangler dev
-
-# macOS app
-cd herdi-mac && ./build.sh
-
-# iOS app (generate Xcode project)
-cd herdi-ios && xcodegen generate
 ```
 
 ## Key Environment Variables
@@ -64,7 +48,7 @@ cd herdi-ios && xcodegen generate
 | Variable | Purpose |
 |----------|---------|
 | `HERDR_RELAY_PORT` | Relay WebSocket port (default: 8375) |
-| `HERDR_RELAY_TOKEN` | Optional shared secret for auth |
+| `HERDR_RELAY_TOKEN` | Shared secret for auth — **required**, the relay refuses to start without it |
 | `HERDR_REMOTES` | Comma-separated SSH targets to poll |
 | `HERDR_BIN` | Path to herdr binary (default: `/opt/homebrew/bin/herdr`) |
 | `HERDR_RELAY` | Relay URL used by clients (default: `ws://127.0.0.1:8375`) |
@@ -81,8 +65,8 @@ Messages are JSON with a `type` field:
 
 **Client → Server:** `respond` (send text to agent), `read_pane` (request terminal content), `send_keys` (send key sequences), `send_text` (raw text without newline)
 
+Every frame is specified in [`docs/native-protocol.md`](docs/native-protocol.md) — that document is the contract clients are written against.
+
 ## Deployment
 
 - Web app: Cloudflare Pages (push to main deploys `web/`)
-- Demo worker: `npx wrangler deploy` from `demo-worker/`
-- macOS app: `herdi-mac/build.sh` produces `dist/Herdi.app`
