@@ -1195,12 +1195,21 @@ async def handle_client(ws):
         device = "script"
 
     log.info("Client connected: ip=%s device=%s origin=%s", ip, device, origin or "-")
-    clients.add(ws)
     connected_at = time.monotonic()
     try:
-        # Inside the try: a client that disappears during the handshake is a closed
-        # connection like any other, and the finally below still unregisters it.
+        # Handshake before registering, so the ordering this frame exists to
+        # guarantee is a property of this function rather than of the library.
+        # `broadcast` fans out to everything in `clients`; a socket in that set
+        # before its `server_info` is written is one an `agents` frame could
+        # reach first. Today it cannot — websockets writes a str frame to the
+        # transport before its first await, so there is no suspension point
+        # between the two lines below — but that is an internal detail.
+        #
+        # Still inside the try: a client that dies during the handshake is a
+        # closed connection like any other, and the finally below discards, so
+        # cleaning up a socket that was never registered is a no-op.
         await ws.send(json.dumps(server_info()))
+        clients.add(ws)
         async for raw in ws:
             try:
                 msg = json.loads(raw)

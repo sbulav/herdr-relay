@@ -1079,8 +1079,40 @@ class HandshakeTests(unittest.TestCase):
         self.assertEqual(herdr_relay.MIN_CLIENT, sent[0]["min_client"])
         self.assertEqual(herdr_relay.RELAY_VERSION, sent[0]["relay_version"])
 
+    def test_a_socket_is_not_broadcast_to_until_its_handshake_is_written(self):
+        """`broadcast` fans out over `clients`, so membership means reachable.
+
+        A socket registered before its `server_info` is written is one an
+        `agents` frame could reach first — the single thing this frame exists to
+        prevent. Checked from inside `send`, because the moment the frame is
+        going out is the only point at which the window is observable.
+        """
+        registered_during_handshake = []
+
+        class FakeWS:
+            remote_address = ("203.0.113.9", 54323)
+            request = type("Request", (), {"headers": {}})()
+
+            async def send(inner, raw):
+                # `inner`, not `self`: the enclosing test's `self` stays reachable.
+                if json.loads(raw)["type"] == "server_info":
+                    registered_during_handshake.append(inner in herdr_relay.clients)
+
+            def __aiter__(inner):
+                return inner
+
+            async def __anext__(inner):
+                raise StopAsyncIteration
+
+        asyncio.run(herdr_relay.handle_client(FakeWS()))
+        self.assertEqual([False], registered_during_handshake)
+
     def test_a_client_that_vanishes_mid_handshake_is_unregistered(self):
-        """The send is inside the try, so its failure still runs the cleanup."""
+        """The handshake send is inside the try, and the cleanup discards.
+
+        So a socket that dies before it was ever registered cleans up without a
+        KeyError, and one registered after the handshake is still removed.
+        """
 
         class DeadWS:
             remote_address = ("203.0.113.8", 54322)
