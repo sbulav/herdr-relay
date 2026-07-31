@@ -130,6 +130,9 @@ def audit(action: str, ip: str, device: str, pane_id: str, detail: str = ""):
 
 
 # --- Web Push helpers ---
+# LEGACY (#14): browser-PWA only. herdr-mobile monitors the WebSocket in a
+# foreground service and never subscribes. This stack, the four HERDR_VAPID_*
+# vars, and the push_subscribe/push_unsubscribe handlers go once web/ does.
 def _load_push_subs():
     global push_subscriptions
     if os.path.isfile(PUSH_SUBS_FILE):
@@ -873,6 +876,9 @@ async def process_request(connection, request):
         if key.lower() == "authorization":
             token = value.removeprefix("Bearer ").strip()
             break
+    # LEGACY (#14): query-param auth exists because a browser cannot set headers
+    # on a WebSocket handshake. It leaks the token into every proxy access log,
+    # so it is retired with web/. Native clients send Authorization.
     # Also check query param ?token=
     if not token and "token=" in (request.path or ""):
         import urllib.parse
@@ -901,6 +907,10 @@ async def process_request(connection, request):
         ])
         return Response(204, "No Content", headers, b"")
 
+    # LEGACY (#14): the four static routes below (/, /index.html, /sw.js,
+    # /logo.svg) and /api/vapid-public-key serve the browser PWA out of web/.
+    # They are deleted together with web/ once a herdr-mobile build without the
+    # WebView fallback is actually installed on the phone.
     # Serve web app for GET / or GET /index.html
     path = (request.path or "/").split("?")[0]
     if path in ("/", "/index.html"):
@@ -1133,6 +1143,7 @@ async def handle_client(ws):
                     await ws.send(json.dumps({"type": "tab_created", "ok": True}))
                 else:
                     await ws.send(json.dumps({"type": "error", "message": "workspace_id required"}))
+            # LEGACY (#14): browser-PWA only, retired with web/.
             elif msg_type == "push_subscribe":
                 sub = msg.get("subscription")
                 if sub and sub not in push_subscriptions:
