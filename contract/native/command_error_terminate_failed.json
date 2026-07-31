@@ -1,0 +1,6 @@
+{
+  "code": "TERMINATE_FAILED",
+  "message": "Herdr did not terminate the client",
+  "request_id": "req-terminate",
+  "type": "command_error"
+}

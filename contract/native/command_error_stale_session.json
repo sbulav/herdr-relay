@@ -1,0 +1,6 @@
+{
+  "code": "STALE_SESSION",
+  "message": "Session is no longer active",
+  "request_id": "req-stale",
+  "type": "command_error"
+}

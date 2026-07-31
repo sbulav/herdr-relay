@@ -1,0 +1,6 @@
+{
+  "code": "HOST_NOT_ALLOWED",
+  "message": "Preset is not allowed on this host",
+  "request_id": "req-host",
+  "type": "command_error"
+}

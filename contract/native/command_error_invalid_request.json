@@ -1,0 +1,6 @@
+{
+  "code": "INVALID_REQUEST",
+  "message": "request_id is required",
+  "request_id": null,
+  "type": "command_error"
+}

@@ -1,0 +1,12 @@
+{
+  "agent": "claude",
+  "host": "buildbox",
+  "options": [
+    "1. Yes",
+    "2. No"
+  ],
+  "pane_id": "pane-7",
+  "project": "herdr-remote",
+  "prompt": "Do you want to proceed?\n1. Yes\n2. No",
+  "type": "blocked"
+}

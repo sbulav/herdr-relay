@@ -1,0 +1,6 @@
+{
+  "code": "UNKNOWN_PRESET",
+  "message": "Unknown preset",
+  "request_id": "req-unknown",
+  "type": "command_error"
+}
