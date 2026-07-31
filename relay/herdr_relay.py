@@ -843,10 +843,25 @@ async def _poll_once():
         "presets": public_presets(),
         "hosts": hosts,
     })
+    # Read every newly blocked pane off the event loop, and all of them at once:
+    # `herdr pane read` shells out (over ssh for remote hosts) with a 15s timeout,
+    # and a herd of agents tends to block together. Done inline, one slow host
+    # freezes every client on exactly the event they care about most.
+    newly_blocked = [
+        a for a in agents
+        if a["status"] == "blocked" and last_statuses.get(a["pane_id"]) != "blocked"
+    ]
+    blocked_content = dict(zip(
+        (a["pane_id"] for a in newly_blocked),
+        await asyncio.gather(*(
+            asyncio.to_thread(read_pane, a["pane_id"], remote=a.get("remote"))
+            for a in newly_blocked
+        )),
+    ))
     for a in agents:
         pid, status = a["pane_id"], a["status"]
         if status == "blocked" and last_statuses.get(pid) != "blocked":
-            content = read_pane(pid, remote=a.get("remote"))
+            content = blocked_content.get(pid, "")
             options = detect_options(content)
             pane_response_options[pid] = {
                 option.lower() for option in (options or TOOL_OPTIONS)

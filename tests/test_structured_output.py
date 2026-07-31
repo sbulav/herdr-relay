@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 import threading
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from relay import herdr_relay
 
@@ -179,6 +179,54 @@ class EventLoopBlockingTests(unittest.TestCase):
             patch.object(herdr_relay, "known_panes", {"pane-1"}),
             patch.object(herdr_relay, "pane_remote_map", {}),
             patch.object(herdr_relay, "run_herdr", side_effect=blocking_command),
+        ):
+            asyncio.run(run())
+
+
+class PollLoopBlockingTests(unittest.TestCase):
+    def test_blocked_pane_read_keeps_event_loop_running(self):
+        started = threading.Event()
+        release = threading.Event()
+        finished = threading.Event()
+
+        def blocking_read(pane_id, remote=None):
+            started.set()
+            release.wait(timeout=1)
+            finished.set()
+            return "Do you want to proceed?"
+
+        async def run():
+            made_progress = asyncio.Event()
+            poll = asyncio.create_task(herdr_relay._poll_once())
+
+            async def observe_event_loop():
+                await asyncio.to_thread(started.wait, 1)
+                if not finished.is_set():
+                    made_progress.set()
+                release.set()
+
+            observer = asyncio.create_task(observe_event_loop())
+            try:
+                await asyncio.wait_for(asyncio.gather(poll, observer), timeout=3)
+            finally:
+                release.set()
+            self.assertTrue(made_progress.is_set())
+
+        agents = [{
+            "pane_id": "pane-1", "agent": "claude", "label": "", "project": "repo",
+            "status": "blocked", "cwd": "/work/repo", "host": "local", "remote": None,
+        }]
+
+        async def fake_get_all_agents():
+            return agents, []
+
+        with (
+            patch.object(herdr_relay, "get_all_agents", fake_get_all_agents),
+            patch.object(herdr_relay, "read_pane", blocking_read),
+            patch.object(herdr_relay, "broadcast", AsyncMock()),
+            patch.object(herdr_relay, "send_web_push", AsyncMock()),
+            patch.dict(herdr_relay.last_statuses, {}, clear=True),
+            patch.dict(herdr_relay.subscriptions, {}, clear=True),
         ):
             asyncio.run(run())
 
