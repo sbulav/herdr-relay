@@ -329,6 +329,22 @@ async def get_all_agents():
     return agents, hosts
 
 
+def _read_pane_lines(value, default=30, maximum=2000):
+    """Coerce a client-supplied line count into a sane positive int.
+
+    Anything unparseable falls back to the default rather than reaching herdr,
+    which reports a bad --lines as an error string on stdout with exit code 0 —
+    indistinguishable, downstream, from real terminal output.
+    """
+    try:
+        count = int(str(value).strip())
+    except (TypeError, ValueError):
+        return default
+    if count < 1:
+        return default
+    return min(count, maximum)
+
+
 def read_pane(pane_id, remote=None):
     raw = run_herdr("pane", "read", pane_id, "--lines", "50", "--source", "recent", remote=remote)
     lines = [l for l in raw.splitlines() if l.strip() and not CHROME_RE.search(l)]
@@ -1066,7 +1082,9 @@ async def handle_client(ws):
                 if pane_id not in known_panes:
                     await ws.send(json.dumps({"type": "error", "message": "unknown pane_id"}))
                     continue
-                lines = msg.get("lines", "30")
+                # herdr rejects a non-numeric --lines by printing an error and
+                # exiting 0, which would reach the client as pane content.
+                lines = _read_pane_lines(msg.get("lines"))
                 remote = pane_remote_map.get(pane_id)
                 content = await asyncio.to_thread(run_herdr, "pane", "read", pane_id, "--lines", str(lines), "--source", "recent", remote=remote)
                 payload = {"type": "pane_content", "pane_id": pane_id, "content": content}

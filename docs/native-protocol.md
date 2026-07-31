@@ -515,9 +515,13 @@ Requests recent terminal output and, when available, structured blocks.
 | --- | --- | --- | --- |
 | `type` | string | Required | Always `"read_pane"`. |
 | `pane_id` | string | Required | Must identify a pane from the latest poll. |
-| `lines` | any JSON value | Optional | Passed as a string to `herdr pane read --lines`; defaults to the string `"30"`. <!-- TODO: semantics unverified beyond pass-through to herdr --> |
+| `lines` | integer, or a string parseable as one | Optional | Line count for `herdr pane read --lines`. Defaults to `30`, floors at `1`, caps at `2000`. |
 
-The relay does not validate or cap `lines`. It requests `--source recent`.
+Anything unparseable, zero, or negative falls back to the default instead of
+reaching herdr, which reports a bad `--lines` as an error string on stdout with
+exit code 0 — a client that sent `"lines": "abc"` used to get
+`Error: Custom { kind: Other, error: "invalid value for --lines: abc" }`
+delivered as `pane_content.content`. The relay requests `--source recent`.
 
 ```json
 {
@@ -616,13 +620,17 @@ Creates and focuses a tab in a workspace on the relay's local herdr instance.
 
 ### `push_subscribe`
 
+> **LEGACY (#14).** Web Push exists for the browser PWA only. herdr-mobile
+> monitors the WebSocket in a foreground service and never subscribes; these two
+> frames are retired together with `web/`.
+
 Stores a Web Push subscription if it is truthy and not already present. The
 relay performs no schema validation and always acknowledges the frame.
 
 | Name | Type | Presence | Meaning |
 | --- | --- | --- | --- |
 | `type` | string | Required | Always `"push_subscribe"`. |
-| `subscription` | any JSON value | Optional | Usually a Push API subscription object; stored as supplied when truthy. <!-- TODO: subscription schema unverified --> |
+| `subscription` | any JSON value | Optional | Usually a Push API subscription object; stored as supplied when truthy. The relay imposes no schema on it — it is handed to `pywebpush` as `subscription_info`. |
 
 ```json
 {
@@ -643,7 +651,7 @@ no schema validation and always acknowledges the frame.
 | Name | Type | Presence | Meaning |
 | --- | --- | --- | --- |
 | `type` | string | Required | Always `"push_unsubscribe"`. |
-| `subscription` | any JSON value | Optional | Value compared for equality with stored subscriptions. <!-- TODO: subscription schema unverified --> |
+| `subscription` | any JSON value | Optional | Compared for equality against stored subscriptions, so it must be byte-identical to what was subscribed. |
 
 ```json
 {
