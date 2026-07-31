@@ -73,6 +73,8 @@ class NativeContractTests(unittest.TestCase):
             patch.dict(herdr_relay.known_panes, set(), clear=True),
         ):
             asyncio.run(herdr_relay._poll_once())
+            # Read inside the patch: patch.dict restores the map on exit.
+            routed_target = herdr_relay.pane_remote_map.get("pane-7")
 
         self.assert_contract("agents", sent[0])
         # The app's whole launch UI is driven by these two keys; a snapshot
@@ -82,6 +84,12 @@ class NativeContractTests(unittest.TestCase):
         # public_presets() must strip the SSH target. Broadcasting it would hand
         # every connected phone a login string for the build host.
         self.assertNotIn("target", json.dumps(sent[0]["presets"]))
+        # The same value must not escape one key over, on the agent entries.
+        # It did, as "remote", while this test guarded only the presets.
+        self.assertNotIn("deploy@buildbox", json.dumps(sent[0]))
+        self.assertNotIn("remote", sent[0]["agents"][0])
+        # Routing still works internally; only the wire is cleaned.
+        self.assertEqual(routed_target, "deploy@buildbox")
 
     def test_blocked_transition(self):
         agents = [{

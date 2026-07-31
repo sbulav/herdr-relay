@@ -248,6 +248,20 @@ def public_presets():
     ]
 
 
+def public_agents(agents):
+    """Strip server-side routing state from agent entries before broadcasting.
+
+    `remote` is the preset's SSH `target` — the same value public_presets()
+    deliberately withholds. No client addresses a pane by it (they use `host` and
+    `pane_id`); the relay does, through pane_remote_map. Sending it would hand
+    every connected phone, and every proxy log, a login string for the host.
+    """
+    return [
+        {key: value for key, value in agent.items() if key != "remote"}
+        for agent in agents
+    ]
+
+
 def session_id(host_id, pane_id):
     return f"legacy:{host_id}:{pane_id}"
 
@@ -904,7 +918,7 @@ async def _poll_once():
     # Always send a complete snapshot. In particular, an empty snapshot
     # removes stale agents after every remote host goes offline.
     await broadcast({
-        "type": "agents", "agents": agents,
+        "type": "agents", "agents": public_agents(agents),
         "presets": public_presets(),
         "hosts": hosts,
     })
