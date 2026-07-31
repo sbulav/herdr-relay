@@ -1,0 +1,37 @@
+{
+  "agents": [
+    {
+      "agent": "claude",
+      "cwd": "/srv/herdr-remote",
+      "host": "buildbox",
+      "label": "api tests",
+      "pane_id": "pane-7",
+      "project": "herdr-remote",
+      "remote": "deploy@buildbox",
+      "status": "working",
+      "tab_id": "tab-4",
+      "workspace_id": "workspace-2"
+    }
+  ],
+  "hosts": [
+    {
+      "host_id": "buildbox",
+      "online": true
+    }
+  ],
+  "presets": [
+    {
+      "agent": "claude",
+      "hosts": {
+        "buildbox": {
+          "cwd": "/srv/herdr-remote"
+        }
+      },
+      "id": "review",
+      "label": "Review",
+      "model": "sonnet",
+      "repository": "dcolinmorgan/herdr-remote"
+    }
+  ],
+  "type": "agents"
+}

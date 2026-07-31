@@ -1,0 +1,6 @@
+{
+  "code": "SHUTDOWN_FAILED",
+  "message": "Host shutdown command failed",
+  "request_id": "req-shutdown",
+  "type": "command_error"
+}

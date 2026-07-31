@@ -1,0 +1,6 @@
+{
+  "code": "HOST_NOT_ALLOWED",
+  "message": "Power control is not allowed for this host",
+  "request_id": "req-wake",
+  "type": "command_error"
+}

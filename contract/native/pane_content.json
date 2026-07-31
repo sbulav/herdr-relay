@@ -1,0 +1,23 @@
+{
+  "output_blocks": [
+    {
+      "id": "b0",
+      "kind": "status",
+      "label": "You",
+      "text": "Run tests"
+    },
+    {
+      "id": "b1",
+      "kind": "tool",
+      "label": "Bash",
+      "text": "pytest"
+    },
+    {
+      "id": "b2",
+      "kind": "assistant_text",
+      "markdown": "All tests pass."
+    }
+  ],
+  "pane_id": "pane-7",
+  "type": "pane_content"
+}

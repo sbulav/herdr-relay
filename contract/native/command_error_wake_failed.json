@@ -1,0 +1,6 @@
+{
+  "code": "WAKE_FAILED",
+  "message": "Wake-on-LAN command failed",
+  "request_id": "req-wake",
+  "type": "command_error"
+}

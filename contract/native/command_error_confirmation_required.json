@@ -1,0 +1,6 @@
+{
+  "code": "CONFIRMATION_REQUIRED",
+  "message": "confirmation_nonce is required",
+  "request_id": "req-confirm",
+  "type": "command_error"
+}

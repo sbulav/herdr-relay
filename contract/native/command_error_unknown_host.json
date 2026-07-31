@@ -1,0 +1,6 @@
+{
+  "code": "UNKNOWN_HOST",
+  "message": "Power host has no SSH target",
+  "request_id": "req-host",
+  "type": "command_error"
+}
