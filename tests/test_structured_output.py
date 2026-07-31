@@ -562,6 +562,53 @@ class RelayInputValidationTests(unittest.TestCase):
             with self.subTest(key=key):
                 self.assertFalse(herdr_relay.is_safe_key(key))
 
+    def test_read_pane_line_count_is_coerced_to_a_sane_int(self):
+        coerce = herdr_relay._read_pane_lines
+        self.assertEqual(30, coerce(None))
+        self.assertEqual(30, coerce("abc"))
+        self.assertEqual(30, coerce(""))
+        self.assertEqual(30, coerce({"lines": 5}))
+        self.assertEqual(30, coerce(0))
+        self.assertEqual(30, coerce(-5))
+        self.assertEqual(50, coerce(50))
+        self.assertEqual(50, coerce(" 50 "))
+        self.assertEqual(2000, coerce(10 ** 9))
+
+    @patch.object(herdr_relay, "run_herdr", return_value="")
+    def test_read_pane_never_forwards_a_bad_line_count_to_herdr(self, run_herdr):
+        class Socket:
+            def __init__(self):
+                self.requests = iter([
+                    json.dumps({"type": "read_pane", "pane_id": "pane-1", "lines": "abc"})
+                ])
+                self.sent = []
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                try:
+                    return next(self.requests)
+                except StopIteration:
+                    raise StopAsyncIteration
+
+            async def send(self, message):
+                self.sent.append(json.loads(message))
+
+        socket = Socket()
+        with (
+            patch.object(herdr_relay, "known_panes", {"pane-1"}),
+            patch.object(herdr_relay, "pane_blocks", return_value=(None, None)),
+        ):
+            asyncio.run(herdr_relay.handle_client(socket))
+
+        # "abc" would make herdr print an error on stdout and exit 0, which the
+        # relay would then serve to the client as terminal content.
+        run_herdr.assert_called_once_with(
+            "pane", "read", "pane-1", "--lines", "30", "--source", "recent", remote=None
+        )
+        self.assertEqual(["pane_content"], [frame["type"] for frame in socket.sent])
+
     @patch.object(herdr_relay, "run_herdr")
     def test_detected_dynamic_response_uses_its_safe_key_mapping(self, run_herdr):
         class Socket:
