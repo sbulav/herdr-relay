@@ -1,0 +1,81 @@
+client:
+  name: basic
+  file-system: device-agnostic
+tools: {}
+targets:
+  "Herdi-arm64-apple-macosx-debug.exe": ["<Herdi-arm64-apple-macosx-debug.exe>"]
+  "Herdi-arm64-apple-macosx-debug.module": ["<Herdi-arm64-apple-macosx-debug.module>"]
+  "PackageStructure": ["<PackageStructure>"]
+  "main": ["<Herdi-arm64-apple-macosx-debug.exe>","<Herdi-arm64-apple-macosx-debug.module>"]
+  "test": ["<Herdi-arm64-apple-macosx-debug.exe>","<Herdi-arm64-apple-macosx-debug.module>"]
+default: "main"
+nodes:
+  "/Users/sab/git_priv/herdr-remote/herdi-mac/Sources/":
+    is-directory-structure: true
+    content-exclusion-patterns: [".git",".build"]
+  "/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi":
+    is-mutated: true
+commands:
+  "/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi-entitlement.plist":
+    tool: write-auxiliary-file
+    inputs: ["<entitlement-plist>","<com.apple.security.get-task-allow>"]
+    outputs: ["/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi-entitlement.plist"]
+    description: "Write auxiliary file /Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi-entitlement.plist"
+
+  "/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/sources":
+    tool: write-auxiliary-file
+    inputs: ["<sources-file-list>","/Users/sab/git_priv/herdr-remote/herdi-mac/Sources/Agent.swift","/Users/sab/git_priv/herdr-remote/herdi-mac/Sources/HerdiMacApp.swift","/Users/sab/git_priv/herdr-remote/herdi-mac/Sources/KeychainHelper.swift","/Users/sab/git_priv/herdr-remote/herdi-mac/Sources/NotchContentView.swift","/Users/sab/git_priv/herdr-remote/herdi-mac/Sources/NotchPanel.swift","/Users/sab/git_priv/herdr-remote/herdi-mac/Sources/RelayConnection.swift","/Users/sab/git_priv/herdr-remote/herdi-mac/Sources/Updater.swift"]
+    outputs: ["/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/sources"]
+    description: "Write auxiliary file /Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/sources"
+
+  "/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.product/Objects.LinkFileList":
+    tool: write-auxiliary-file
+    inputs: ["<link-file-list>","/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/Agent.swift.o","/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/HerdiMacApp.swift.o","/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/KeychainHelper.swift.o","/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/NotchContentView.swift.o","/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/NotchPanel.swift.o","/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/RelayConnection.swift.o","/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/Updater.swift.o"]
+    outputs: ["/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.product/Objects.LinkFileList"]
+    description: "Write auxiliary file /Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.product/Objects.LinkFileList"
+
+  "/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/swift-version--1AB21518FC5DEDBE.txt":
+    tool: write-auxiliary-file
+    inputs: ["<swift-get-version>","/Library/Developer/CommandLineTools/usr/bin/swiftc"]
+    outputs: ["/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/swift-version--1AB21518FC5DEDBE.txt"]
+    always-out-of-date: "true"
+    description: "Write auxiliary file /Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/swift-version--1AB21518FC5DEDBE.txt"
+
+  "<Herdi-arm64-apple-macosx-debug.exe>":
+    tool: phony
+    inputs: ["<Herdi-arm64-apple-macosx-debug.exe-CodeSigning>"]
+    outputs: ["<Herdi-arm64-apple-macosx-debug.exe>"]
+
+  "<Herdi-arm64-apple-macosx-debug.module>":
+    tool: phony
+    inputs: ["/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/Agent.swift.o","/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/HerdiMacApp.swift.o","/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/KeychainHelper.swift.o","/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/NotchContentView.swift.o","/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/NotchPanel.swift.o","/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/RelayConnection.swift.o","/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/Updater.swift.o","/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Modules/Herdi.swiftmodule"]
+    outputs: ["<Herdi-arm64-apple-macosx-debug.module>"]
+
+  "C.Herdi-arm64-apple-macosx-debug.exe":
+    tool: shell
+    inputs: ["/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/Agent.swift.o","/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/HerdiMacApp.swift.o","/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/KeychainHelper.swift.o","/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/NotchContentView.swift.o","/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/NotchPanel.swift.o","/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/RelayConnection.swift.o","/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/Updater.swift.o","/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.product/Objects.LinkFileList"]
+    outputs: ["/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi"]
+    description: "Linking ./.build/arm64-apple-macosx/debug/Herdi"
+    args: ["/Library/Developer/CommandLineTools/usr/bin/swiftc","-L","/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug","-o","/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi","-module-name","Herdi","-Xlinker","-no_warn_duplicate_libraries","-emit-executable","-Xlinker","-alias","-Xlinker","_Herdi_main","-Xlinker","_main","-Xlinker","-rpath","-Xlinker","@loader_path","@/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.product/Objects.LinkFileList","-Xlinker","-rpath","-Xlinker","/Library/Developer/CommandLineTools/usr/lib/swift-6.2/macosx","-target","arm64-apple-macosx14.0","-Xlinker","-add_ast_path","-Xlinker","/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Modules/Herdi.swiftmodule","-I","/Library/Developer/CommandLineTools/Library/Developer/Frameworks","-L","/Library/Developer/CommandLineTools/Library/Developer/Frameworks","-plugin-path","/Library/Developer/CommandLineTools/usr/lib/swift/host/plugins/testing","-sdk","/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk","-g"]
+
+  "C.Herdi-arm64-apple-macosx-debug.exe-entitlements":
+    tool: shell
+    inputs: ["/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi","/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi-entitlement.plist"]
+    outputs: ["<Herdi-arm64-apple-macosx-debug.exe-CodeSigning>"]
+    description: "Applying debug entitlements to ./.build/arm64-apple-macosx/debug/Herdi"
+    args: ["codesign","--force","--sign","-","--entitlements","/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi-entitlement.plist","/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi"]
+
+  "C.Herdi-arm64-apple-macosx-debug.module":
+    tool: shell
+    inputs: ["/Users/sab/git_priv/herdr-remote/herdi-mac/Sources/Agent.swift","/Users/sab/git_priv/herdr-remote/herdi-mac/Sources/HerdiMacApp.swift","/Users/sab/git_priv/herdr-remote/herdi-mac/Sources/KeychainHelper.swift","/Users/sab/git_priv/herdr-remote/herdi-mac/Sources/NotchContentView.swift","/Users/sab/git_priv/herdr-remote/herdi-mac/Sources/NotchPanel.swift","/Users/sab/git_priv/herdr-remote/herdi-mac/Sources/RelayConnection.swift","/Users/sab/git_priv/herdr-remote/herdi-mac/Sources/Updater.swift","/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/swift-version--1AB21518FC5DEDBE.txt","/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/sources"]
+    outputs: ["/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/Agent.swift.o","/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/HerdiMacApp.swift.o","/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/KeychainHelper.swift.o","/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/NotchContentView.swift.o","/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/NotchPanel.swift.o","/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/RelayConnection.swift.o","/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/Updater.swift.o","/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Modules/Herdi.swiftmodule"]
+    description: "Compiling Swift Module 'Herdi' (7 sources)"
+    args: ["/Library/Developer/CommandLineTools/usr/bin/swiftc","-module-name","Herdi","-emit-dependencies","-emit-module","-emit-module-path","/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Modules/Herdi.swiftmodule","-output-file-map","/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/output-file-map.json","-incremental","-c","@/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/sources","-I","/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Modules","-target","arm64-apple-macosx14.0","-incremental","-enable-batch-mode","-serialize-diagnostics","-index-store-path","/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/index/store","-Onone","-enable-testing","-j10","-DSWIFT_PACKAGE","-DDEBUG","-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE","-module-cache-path","/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/ModuleCache","-parseable-output","-Xfrontend","-entry-point-function-name","-Xfrontend","Herdi_main","-swift-version","5","-I","/Library/Developer/CommandLineTools/Library/Developer/Frameworks","-L","/Library/Developer/CommandLineTools/Library/Developer/Frameworks","-plugin-path","/Library/Developer/CommandLineTools/usr/lib/swift/host/plugins/testing","-sdk","/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk","-g","-Xcc","-isysroot","-Xcc","/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk","-Xcc","-fPIC","-Xcc","-g","-package-name","herdi_mac"]
+
+  "PackageStructure":
+    tool: package-structure-tool
+    inputs: ["/Users/sab/git_priv/herdr-remote/herdi-mac/Sources/","/Users/sab/git_priv/herdr-remote/herdi-mac/Package.swift","/Users/sab/git_priv/herdr-remote/herdi-mac/Package.resolved"]
+    outputs: ["<PackageStructure>"]
+    description: "Planning build"
+    allow-missing-inputs: true
+

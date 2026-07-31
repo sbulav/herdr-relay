@@ -1,0 +1,54 @@
+{
+  "": {
+    "swift-dependencies": "/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/primary.swiftdeps"
+  },
+  "/Users/sab/git_priv/herdr-remote/herdi-mac/Sources/Agent.swift": {
+    "dependencies": "/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/Agent.d",
+    "object": "/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/Agent.swift.o",
+    "swiftmodule": "/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/Agent~partial.swiftmodule",
+    "swift-dependencies": "/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/Agent.swiftdeps",
+    "diagnostics": "/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/Agent.dia"
+  },
+  "/Users/sab/git_priv/herdr-remote/herdi-mac/Sources/HerdiMacApp.swift": {
+    "dependencies": "/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/HerdiMacApp.d",
+    "object": "/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/HerdiMacApp.swift.o",
+    "swiftmodule": "/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/HerdiMacApp~partial.swiftmodule",
+    "swift-dependencies": "/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/HerdiMacApp.swiftdeps",
+    "diagnostics": "/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/HerdiMacApp.dia"
+  },
+  "/Users/sab/git_priv/herdr-remote/herdi-mac/Sources/KeychainHelper.swift": {
+    "dependencies": "/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/KeychainHelper.d",
+    "object": "/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/KeychainHelper.swift.o",
+    "swiftmodule": "/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/KeychainHelper~partial.swiftmodule",
+    "swift-dependencies": "/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/KeychainHelper.swiftdeps",
+    "diagnostics": "/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/KeychainHelper.dia"
+  },
+  "/Users/sab/git_priv/herdr-remote/herdi-mac/Sources/NotchContentView.swift": {
+    "dependencies": "/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/NotchContentView.d",
+    "object": "/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/NotchContentView.swift.o",
+    "swiftmodule": "/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/NotchContentView~partial.swiftmodule",
+    "swift-dependencies": "/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/NotchContentView.swiftdeps",
+    "diagnostics": "/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/NotchContentView.dia"
+  },
+  "/Users/sab/git_priv/herdr-remote/herdi-mac/Sources/NotchPanel.swift": {
+    "dependencies": "/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/NotchPanel.d",
+    "object": "/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/NotchPanel.swift.o",
+    "swiftmodule": "/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/NotchPanel~partial.swiftmodule",
+    "swift-dependencies": "/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/NotchPanel.swiftdeps",
+    "diagnostics": "/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/NotchPanel.dia"
+  },
+  "/Users/sab/git_priv/herdr-remote/herdi-mac/Sources/RelayConnection.swift": {
+    "dependencies": "/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/RelayConnection.d",
+    "object": "/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/RelayConnection.swift.o",
+    "swiftmodule": "/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/RelayConnection~partial.swiftmodule",
+    "swift-dependencies": "/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/RelayConnection.swiftdeps",
+    "diagnostics": "/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/RelayConnection.dia"
+  },
+  "/Users/sab/git_priv/herdr-remote/herdi-mac/Sources/Updater.swift": {
+    "dependencies": "/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/Updater.d",
+    "object": "/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/Updater.swift.o",
+    "swiftmodule": "/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/Updater~partial.swiftmodule",
+    "swift-dependencies": "/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/Updater.swiftdeps",
+    "diagnostics": "/Users/sab/git_priv/herdr-remote/herdi-mac/.build/arm64-apple-macosx/debug/Herdi.build/Updater.dia"
+  }
+}
