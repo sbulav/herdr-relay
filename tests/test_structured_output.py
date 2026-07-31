@@ -121,6 +121,65 @@ class HostStatusTests(unittest.TestCase):
         self.assertIn("workstation", print_message.call_args.args[0])
 
 
+class EventLoopBlockingTests(unittest.TestCase):
+    def test_command_handler_keeps_event_loop_running(self):
+        class Socket:
+            def __init__(self):
+                self.requests = iter([
+                    json.dumps({
+                        "type": "send_text",
+                        "pane_id": "pane-1",
+                        "text": "hello",
+                    })
+                ])
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                try:
+                    return next(self.requests)
+                except StopIteration:
+                    raise StopAsyncIteration
+
+            async def send(self, _message):
+                pass
+
+        started = threading.Event()
+        release = threading.Event()
+        finished = threading.Event()
+
+        def blocking_command(*_args, **_kwargs):
+            started.set()
+            release.wait(timeout=1)
+            finished.set()
+            return ""
+
+        async def run():
+            made_progress = asyncio.Event()
+            handler = asyncio.create_task(herdr_relay.handle_client(Socket()))
+
+            async def observe_event_loop():
+                await asyncio.to_thread(started.wait, 1)
+                if not finished.is_set():
+                    made_progress.set()
+                release.set()
+
+            observer = asyncio.create_task(observe_event_loop())
+            try:
+                await asyncio.wait_for(asyncio.gather(handler, observer), timeout=2)
+            finally:
+                release.set()
+            self.assertTrue(made_progress.is_set())
+
+        with (
+            patch.object(herdr_relay, "known_panes", {"pane-1"}),
+            patch.object(herdr_relay, "pane_remote_map", {}),
+            patch.object(herdr_relay, "run_herdr", side_effect=blocking_command),
+        ):
+            asyncio.run(run())
+
+
 class HostPowerTests(unittest.TestCase):
     @patch.object(herdr_relay, "POWER_HOST_ID", "mz")
     @patch.object(herdr_relay, "POWER_HOST_MAC", "34:5a:60:ba:8e:20")

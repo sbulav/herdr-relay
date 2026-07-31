@@ -1003,28 +1003,28 @@ async def handle_client(ws):
             if request_id and request_id in request_results:
                 await ws.send(json.dumps(request_results[request_id]))
             elif msg_type == "launch_session":
-                response = launch_session(msg)
+                response = await asyncio.to_thread(launch_session, msg)
                 if request_id:
                     request_results[request_id] = response
                     if len(request_results) > 512:
                         request_results.pop(next(iter(request_results)))
                 await ws.send(json.dumps(response))
             elif msg_type == "terminate_session":
-                response = terminate_session(msg)
+                response = await asyncio.to_thread(terminate_session, msg)
                 if request_id:
                     request_results[request_id] = response
                     if len(request_results) > 512:
                         request_results.pop(next(iter(request_results)))
                 await ws.send(json.dumps(response))
             elif msg_type == "wake_host":
-                response = wake_host(msg)
+                response = await asyncio.to_thread(wake_host, msg)
                 if request_id:
                     request_results[request_id] = response
                     if len(request_results) > 512:
                         request_results.pop(next(iter(request_results)))
                 await ws.send(json.dumps(response))
             elif msg_type == "shutdown_host":
-                response = shutdown_host(msg)
+                response = await asyncio.to_thread(shutdown_host, msg)
                 if request_id:
                     request_results[request_id] = response
                     if len(request_results) > 512:
@@ -1046,9 +1046,9 @@ async def handle_client(ws):
                 audit("respond", ip, device, pane_id, f"text={text!r}")
                 kind, payload = respond_action(text)
                 if kind == "keys":
-                    run_herdr("pane", "send-keys", pane_id, *payload, remote=remote)
+                    await asyncio.to_thread(run_herdr, "pane", "send-keys", pane_id, *payload, remote=remote)
                 else:
-                    run_herdr("pane", "send-text", pane_id, payload + "\n", remote=remote)
+                    await asyncio.to_thread(run_herdr, "pane", "send-text", pane_id, payload + "\n", remote=remote)
             elif msg_type == "agent_event":
                 event_queue.put_nowait(msg)
             elif msg_type == "read_pane":
@@ -1058,7 +1058,7 @@ async def handle_client(ws):
                     continue
                 lines = msg.get("lines", "30")
                 remote = pane_remote_map.get(pane_id)
-                content = run_herdr("pane", "read", pane_id, "--lines", str(lines), "--source", "recent", remote=remote)
+                content = await asyncio.to_thread(run_herdr, "pane", "read", pane_id, "--lines", str(lines), "--source", "recent", remote=remote)
                 payload = {"type": "pane_content", "pane_id": pane_id, "content": content}
                 # Include structured blocks on demand without changing which pane
                 # this client explicitly subscribed to for live updates.
@@ -1110,7 +1110,7 @@ async def handle_client(ws):
                 remote = pane_remote_map.get(pane_id)
                 log.info("Keys from %s (%s): pane=%s keys=%s", ip, device, pane_id, keys)
                 audit("send_keys", ip, device, pane_id, f"keys={keys}")
-                run_herdr("pane", "send-keys", pane_id, *keys, remote=remote)
+                await asyncio.to_thread(run_herdr, "pane", "send-keys", pane_id, *keys, remote=remote)
             elif msg_type == "send_text":
                 pane_id = msg["pane_id"]
                 if pane_id not in known_panes:
@@ -1123,13 +1123,13 @@ async def handle_client(ws):
                 remote = pane_remote_map.get(pane_id)
                 log.info("Text from %s (%s): pane=%s text=%r", ip, device, pane_id, text)
                 audit("send_text", ip, device, pane_id, f"text={text!r}")
-                run_herdr("pane", "send-text", pane_id, text, remote=remote)
+                await asyncio.to_thread(run_herdr, "pane", "send-text", pane_id, text, remote=remote)
             elif msg_type == "create_tab":
                 workspace_id = msg.get("workspace_id", "")
                 if workspace_id:
                     log.info("Create tab from %s (%s): workspace=%s", ip, device, workspace_id)
                     audit("create_tab", ip, device, "", f"workspace={workspace_id}")
-                    run_herdr("tab", "create", "--workspace", workspace_id, "--focus")
+                    await asyncio.to_thread(run_herdr, "tab", "create", "--workspace", workspace_id, "--focus")
                     await ws.send(json.dumps({"type": "tab_created", "ok": True}))
                 else:
                     await ws.send(json.dumps({"type": "error", "message": "workspace_id required"}))
