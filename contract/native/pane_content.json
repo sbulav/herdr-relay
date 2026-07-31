@@ -1,4 +1,5 @@
 {
+  "attention_state": "working",
   "output_blocks": [
     {
       "id": "b0",
@@ -18,6 +19,8 @@
       "markdown": "All tests pass."
     }
   ],
+  "output_revision": 7,
   "pane_id": "pane-7",
-  "type": "pane_content"
+  "type": "pane_content",
+  "updated_at": 1700000000000
 }

@@ -86,6 +86,9 @@ CHROME_RE = re.compile(
 
 clients = set()
 last_statuses = {}
+pane_activity = {}      # pane_id -> epoch milliseconds of the last status/output change
+pane_revisions = {}     # pane_id -> output revision, or None when unavailable
+pane_attention_states = {}  # pane_id -> last emitted attention state
 event_queue = asyncio.Queue()
 pane_remote_map = {}
 session_target_map = {}
@@ -249,6 +252,45 @@ def session_id(host_id, pane_id):
     return f"legacy:{host_id}:{pane_id}"
 
 
+def now_ms():
+    return int(time.time() * 1000)
+
+
+def attention_state(status, previous_status, previous_state=None):
+    """Map herdr's agent_status to the client's attention vocabulary.
+
+    Returns None for anything outside that vocabulary, including "unknown": the
+    client treats an unrecognised value as no value and reads `status`
+    conservatively, so omitting the key is better than guessing.
+    """
+    if status == "blocked":
+        return "waiting"
+    if status == "working":
+        return "working"
+    if status == "done":
+        return "done"
+    if status == "idle":
+        # An agent that just stopped working finished a turn nobody has looked
+        # at yet. The state stays "done" for as long as the pane stays idle,
+        # rather than lasting a single poll: a client that connects a cycle
+        # later must see the same thing as one that was already listening.
+        if previous_status in ("working", "blocked") or previous_state == "done":
+            return "done"
+        return "idle"
+    return None
+
+
+def add_pane_metadata(entry, pane_id):
+    state = pane_attention_states.get(pane_id)
+    if state is not None:
+        entry["attention_state"] = state
+    if pane_id in pane_activity:
+        entry["updated_at"] = pane_activity[pane_id]
+    revision = pane_revisions.get(pane_id)
+    if isinstance(revision, int) and not isinstance(revision, bool):
+        entry["output_revision"] = revision
+
+
 def run_herdr_checked(*args, remote=None):
     try:
         if remote:
@@ -294,7 +336,7 @@ def get_agents_from_host(remote=None, host_id=None):
                 pane_session_refs[(remote, p["pane_id"])] = {
                     "kind": ref["kind"], "value": ref["value"]
                 }
-            agents.append({
+            agent = {
                 "pane_id": p["pane_id"],
                 "agent": p.get("agent", ""),
                 "label": p.get("label", ""),
@@ -305,7 +347,11 @@ def get_agents_from_host(remote=None, host_id=None):
                 "remote": remote,
                 "workspace_id": p.get("workspace_id", ""),
                 "tab_id": p.get("tab_id", ""),
-            })
+            }
+            revision = p.get("revision")
+            if isinstance(revision, int) and not isinstance(revision, bool):
+                agent["output_revision"] = revision
+            agents.append(agent)
     except (json.JSONDecodeError, KeyError):
         agents = []
     return agents, online
@@ -835,6 +881,25 @@ async def _poll_once():
             a.get("cwd", ""), a.get("agent", ""), a.get("remote"),
             agent_cwd_counts.get(cwd_key, 0) > 1,
         )
+        pid, status = a["pane_id"], a["status"]
+        # Snapshot broadcast precedes the last_statuses update below, so this
+        # still reads the prior poll's status for idle-after-work detection.
+        previous_status = last_statuses.get(pid)
+        state = attention_state(status, previous_status, pane_attention_states.get(pid))
+        if state is None:
+            pane_attention_states.pop(pid, None)
+        else:
+            pane_attention_states[pid] = state
+        revision = a.get("output_revision")
+        previous_revision = pane_revisions.get(pid)
+        if (
+            pid not in pane_activity
+            or status != previous_status
+            or revision != previous_revision
+        ):
+            pane_activity[pid] = now_ms()
+        pane_revisions[pid] = revision
+        add_pane_metadata(a, pid)
 
     # Always send a complete snapshot. In particular, an empty snapshot
     # removes stale agents after every remote host goes offline.
@@ -885,6 +950,9 @@ async def _poll_once():
     for pid in set(last_statuses) - current_pane_ids:
         del last_statuses[pid]
         pane_response_options.pop(pid, None)
+        pane_activity.pop(pid, None)
+        pane_revisions.pop(pid, None)
+        pane_attention_states.pop(pid, None)
 
     # Live-stream structured transcript blocks to subscribed clients. Only
     # watched Claude panes are read; a changed signature (path or content)
@@ -903,7 +971,9 @@ async def _poll_once():
         blocks, sig = result
         if blocks is None:
             continue
-        payload = json.dumps({"type": "pane_content", "pane_id": pid, "output_blocks": blocks})
+        frame = {"type": "pane_content", "pane_id": pid, "output_blocks": blocks}
+        add_pane_metadata(frame, pid)
+        payload = json.dumps(frame)
         for ws in watchers[pid]:
             key = (id(ws), pid)
             if stream_sigs.get(key) == sig:
@@ -1158,6 +1228,7 @@ async def handle_client(ws):
                 remote = pane_remote_map.get(pane_id)
                 content = await asyncio.to_thread(run_herdr, "pane", "read", pane_id, "--lines", str(lines), "--source", "recent", remote=remote)
                 payload = {"type": "pane_content", "pane_id": pane_id, "content": content}
+                add_pane_metadata(payload, pane_id)
                 # Include structured blocks on demand without changing which pane
                 # this client explicitly subscribed to for live updates.
                 try:
@@ -1191,7 +1262,9 @@ async def handle_client(ws):
                         blocks, sig = None, None
                     if blocks is not None:
                         stream_sigs[(id(ws), pane_id)] = sig
-                        await ws.send(json.dumps({"type": "pane_content", "pane_id": pane_id, "output_blocks": blocks}))
+                        payload = {"type": "pane_content", "pane_id": pane_id, "output_blocks": blocks}
+                        add_pane_metadata(payload, pane_id)
+                        await ws.send(json.dumps(payload))
             elif msg_type == "unsubscribe_pane":
                 previous = subscriptions.pop(ws, None)
                 if previous is not None:

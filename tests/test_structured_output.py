@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import json
 import os
 import sqlite3
@@ -229,6 +230,149 @@ class PollLoopBlockingTests(unittest.TestCase):
             patch.dict(herdr_relay.subscriptions, {}, clear=True),
         ):
             asyncio.run(run())
+
+
+class PaneMetadataTests(unittest.TestCase):
+    def test_attention_state_mapping(self):
+        cases = (
+            ("idle", None, "idle"),
+            ("working", None, "working"),
+            ("blocked", None, "waiting"),
+            ("done", None, "done"),
+            ("unknown", None, None),
+        )
+
+        for status, previous_status, expected in cases:
+            with self.subTest(status=status):
+                self.assertEqual(
+                    herdr_relay.attention_state(status, previous_status), expected
+                )
+
+        self.assertEqual(herdr_relay.attention_state("idle", "working"), "done")
+        self.assertEqual(herdr_relay.attention_state("idle", "idle"), "idle")
+        self.assertEqual(herdr_relay.attention_state("idle", "idle", "done"), "done")
+
+    def test_done_survives_while_the_pane_stays_idle(self):
+        snapshots = [
+            [self.agent(status="working")],
+            [self.agent(status="idle")],
+            [self.agent(status="idle")],
+            [self.agent(status="working")],
+        ]
+        sent = []
+
+        async def get_all_agents():
+            return snapshots.pop(0), []
+
+        async def broadcast(frame):
+            sent.append(frame)
+
+        with self.poll_state(), patch.object(
+            herdr_relay, "get_all_agents", side_effect=get_all_agents
+        ), patch.object(herdr_relay, "broadcast", side_effect=broadcast), patch.object(
+            herdr_relay, "now_ms", return_value=1000
+        ):
+            for _ in range(4):
+                asyncio.run(herdr_relay._poll_once())
+
+        # The second idle poll must not fall back to "idle": a client that
+        # connects then would be told the finished turn never happened.
+        self.assertEqual(
+            [frame["agents"][0]["attention_state"] for frame in sent],
+            ["working", "done", "done", "working"],
+        )
+
+    def test_unknown_status_omits_attention_state(self):
+        for status in ("unknown", "unexpected"):
+            with self.subTest(status=status):
+                agents = [self.agent(status=status)]
+                sent = []
+
+                async def broadcast(frame):
+                    sent.append(frame)
+
+                with self.poll_state(), patch.object(
+                    herdr_relay, "get_all_agents", return_value=(agents, [])
+                ), patch.object(herdr_relay, "broadcast", side_effect=broadcast):
+                    asyncio.run(herdr_relay._poll_once())
+
+                self.assertNotIn("attention_state", sent[0]["agents"][0])
+
+    def test_updated_at_changes_only_with_status_or_revision(self):
+        snapshots = [
+            [self.agent(status="working", revision=1)],
+            [self.agent(status="working", revision=1)],
+            [self.agent(status="blocked", revision=1)],
+            [self.agent(status="blocked", revision=2)],
+        ]
+        sent = []
+
+        async def get_all_agents():
+            return snapshots.pop(0), []
+
+        async def broadcast(frame):
+            sent.append(frame)
+
+        with self.poll_state(), patch.object(
+            herdr_relay, "get_all_agents", side_effect=get_all_agents
+        ), patch.object(herdr_relay, "broadcast", side_effect=broadcast), patch.object(
+            herdr_relay, "now_ms", side_effect=[1000, 2000, 3000]
+        ):
+            for _ in range(4):
+                asyncio.run(herdr_relay._poll_once())
+
+        entries = [frame["agents"][0] for frame in sent if frame["type"] == "agents"]
+        self.assertEqual([entry["updated_at"] for entry in entries], [1000, 1000, 2000, 3000])
+
+    def test_missing_or_bool_revision_is_omitted(self):
+        pane_list = json.dumps({"result": {"panes": [
+            {"pane_id": "missing", "agent": "claude"},
+            {"pane_id": "boolean", "agent": "claude", "revision": True},
+        ]}})
+        with patch.object(herdr_relay, "run_herdr_checked", return_value=(True, pane_list)):
+            agents, _online = herdr_relay.get_agents_from_host()
+
+        for agent in agents:
+            with self.subTest(pane_id=agent["pane_id"]):
+                self.assertNotIn("output_revision", agent)
+
+    def test_vanished_panes_are_pruned_from_metadata(self):
+        snapshots = [[self.agent()], []]
+
+        async def get_all_agents():
+            return snapshots.pop(0), []
+
+        async def broadcast(_frame):
+            pass
+
+        with self.poll_state(), patch.object(
+            herdr_relay, "get_all_agents", side_effect=get_all_agents
+        ), patch.object(herdr_relay, "broadcast", side_effect=broadcast), patch.object(
+            herdr_relay, "now_ms", return_value=1000
+        ):
+            asyncio.run(herdr_relay._poll_once())
+            asyncio.run(herdr_relay._poll_once())
+            self.assertEqual(herdr_relay.pane_activity, {})
+            self.assertEqual(herdr_relay.pane_revisions, {})
+            self.assertEqual(herdr_relay.pane_attention_states, {})
+
+    @staticmethod
+    def agent(status="working", revision=0):
+        return {
+            "pane_id": "pane-1", "agent": "claude", "label": "", "project": "repo",
+            "status": status, "cwd": "/work/repo", "host": "local", "remote": None,
+            "output_revision": revision,
+        }
+
+    @staticmethod
+    def poll_state():
+        stack = contextlib.ExitStack()
+        stack.enter_context(patch.dict(herdr_relay.last_statuses, {}, clear=True))
+        stack.enter_context(patch.dict(herdr_relay.pane_activity, {}, clear=True))
+        stack.enter_context(patch.dict(herdr_relay.pane_revisions, {}, clear=True))
+        stack.enter_context(patch.dict(herdr_relay.pane_attention_states, {}, clear=True))
+        stack.enter_context(patch.dict(herdr_relay.subscriptions, {}, clear=True))
+        return stack
 
 
 class HostPowerTests(unittest.TestCase):
