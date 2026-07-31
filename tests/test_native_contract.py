@@ -29,6 +29,10 @@ class NativeContractTests(unittest.TestCase):
         expected = path.read_text()
         self.assertEqual(expected, actual)
 
+    def test_server_info(self):
+        # The first frame on every connection, pinned like any other.
+        self.assert_contract("server_info", herdr_relay.server_info())
+
     def test_agents_snapshot(self):
         agents = [{
             "pane_id": "pane-7",

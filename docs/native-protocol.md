@@ -9,6 +9,11 @@ Clients must ignore unknown fields for forward compatibility and drop frames
 whose `type` they do not recognize. The relay likewise drops client frames with
 an unknown `type`. It also silently drops malformed JSON.
 
+Additive changes stay ignorable because it is convenient, not because the
+protocol has to bear unknown clients forever. There is one client and both
+deploys are the same person's; a change that cannot be made additively is
+allowed, and `server_info.min_client` below is how it is announced.
+
 This document describes the **native dialect** spoken by the production relay
 today. It is distinct from the aspirational "protocol v1" design based on
 `snapshot`, `session_id`, and `dialog_id`. The relay does not speak protocol v1;
@@ -53,6 +58,41 @@ Invalid token
 There is no unauthenticated mode.
 
 ## Server To Client
+
+### `server_info`
+
+The first frame on every connection, sent before the relay reads anything from
+the client. Nothing else was sent at connect time previously: a client waited up
+to one poll interval for the first `agents` broadcast.
+
+| Name | Type | Presence | Meaning |
+| --- | --- | --- | --- |
+| `type` | string | Required | Always `"server_info"`. |
+| `relay_version` | string | Required | The relay's own version, for display in a client's update prompt. |
+| `min_client` | integer | Required | Oldest client protocol revision this relay works with. |
+
+```json
+{
+  "type": "server_info",
+  "relay_version": "0.7.0",
+  "min_client": 1
+}
+```
+
+`min_client` is a client **protocol revision**, not an app version. It changes
+only when the wire changes, so a routine client release never touches it, and a
+breaking change bumps it in exactly two places: `MIN_CLIENT` here and the
+client's own declared revision. A client whose revision is below `min_client`
+must tell the user to update and must not attempt to interpret later frames.
+
+The relay advertises and does not enforce. It never learns the client's revision
+and never refuses a connection over one: a rejected socket parks a client's
+reconnect loop, which presents as an outage rather than as an instruction to
+update. Blocking is the client's job.
+
+Raising `min_client` is a release decision, in this order: ship the client that
+declares the new revision, then raise `MIN_CLIENT`. Reversing the order locks out
+every installed build, including the one that would tell the user why.
 
 ### `agents`
 

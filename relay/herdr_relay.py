@@ -42,6 +42,19 @@ logging.getLogger("websockets").setLevel(logging.WARNING)
 HERDR = os.environ.get("HERDR_BIN") or shutil.which("herdr") or "/opt/homebrew/bin/herdr"
 WS_PORT = int(os.environ.get("HERDR_RELAY_PORT", "8375"))
 POLL_INTERVAL = 2
+
+RELAY_VERSION = "0.7.0"  # this relay's own version; shown to a client that must update
+# The oldest client protocol revision this relay will work with. Deliberately not
+# an app version: a client's protocol revision changes only when the wire changes,
+# so a routine release never has to touch it, and a breaking change bumps it in
+# exactly two places (here and the app's CLIENT_PROTOCOL).
+#
+# Raising this locks out every older build, so it is a release decision: land the
+# client that declares the new revision first, then raise this. The relay does not
+# enforce it — it advertises, and the client blocks itself. Rejecting the socket
+# would park the app's reconnect loop, which looks like an outage rather than an
+# instruction to update.
+MIN_CLIENT = 1
 AUTH_TOKEN = os.environ.get("HERDR_RELAY_TOKEN", "")  # Shared secret for relay auth
 PRESETS_FILE = os.environ.get("HERDR_PRESETS_FILE", "")
 POWER_HOST_ID = os.environ.get("HERDR_POWER_HOST_ID", "")
@@ -234,6 +247,16 @@ HOST_TARGETS = {
     for preset in PRESETS
     for host_id, host in preset["hosts"].items()
 }
+
+
+def server_info():
+    """The first frame on every connection: who this relay is and what it requires.
+
+    Per-connection rather than a field on the broadcast `agents` frame, so a client
+    that is too old can block before it renders a single agent, and so these two
+    values do not ride on every fan-out frame for the life of the protocol.
+    """
+    return {"type": "server_info", "relay_version": RELAY_VERSION, "min_client": MIN_CLIENT}
 
 
 def public_presets():
@@ -1175,6 +1198,9 @@ async def handle_client(ws):
     clients.add(ws)
     connected_at = time.monotonic()
     try:
+        # Inside the try: a client that disappears during the handshake is a closed
+        # connection like any other, and the finally below still unregisters it.
+        await ws.send(json.dumps(server_info()))
         async for raw in ws:
             try:
                 msg = json.loads(raw)
