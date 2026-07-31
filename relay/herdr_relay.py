@@ -4,7 +4,7 @@
 # dependencies = ["websockets>=14.0", "zeroconf>=0.80.0", "pywebpush>=2.0.0", "py-vapid>=1.9.0"]
 # ///
 """herdr-remote relay — polls herdr, accepts push events (HTTP POST + WebSocket + UDP), broadcasts to clients."""
-import asyncio, glob, json, logging, os, re, shlex, shutil, signal, socket, sqlite3, subprocess, time, uuid
+import asyncio, glob, hmac, json, logging, os, re, shlex, shutil, signal, socket, sqlite3, subprocess, time, uuid
 
 try:
     from websockets.asyncio.server import serve
@@ -42,7 +42,7 @@ logging.getLogger("websockets").setLevel(logging.WARNING)
 HERDR = os.environ.get("HERDR_BIN") or shutil.which("herdr") or "/opt/homebrew/bin/herdr"
 WS_PORT = int(os.environ.get("HERDR_RELAY_PORT", "8375"))
 POLL_INTERVAL = 2
-AUTH_TOKEN = os.environ.get("HERDR_RELAY_TOKEN", "")  # Optional: shared secret for relay auth
+AUTH_TOKEN = os.environ.get("HERDR_RELAY_TOKEN", "")  # Shared secret for relay auth
 PRESETS_FILE = os.environ.get("HERDR_PRESETS_FILE", "")
 POWER_HOST_ID = os.environ.get("HERDR_POWER_HOST_ID", "")
 POWER_HOST_MAC = os.environ.get("HERDR_POWER_HOST_MAC", "")
@@ -867,21 +867,22 @@ async def process_request(connection, request):
     from websockets.http11 import Response
     from websockets.datastructures import Headers
 
-    # Token auth (if configured)
-    if AUTH_TOKEN:
-        token = None
-        for key, value in request.headers.raw_items():
-            if key.lower() == "authorization":
-                token = value.replace("Bearer ", "")
-        # Also check query param ?token=
-        if not token and "token=" in (request.path or ""):
-            import urllib.parse
-            _, qs = request.path.split("?", 1) if "?" in request.path else (request.path, "")
-            params = urllib.parse.parse_qs(qs)
-            token = params.get("token", [None])[0]
-        if token != AUTH_TOKEN:
-            headers = Headers([("Content-Type", "text/plain")])
-            return Response(401, "Unauthorized", headers, b"Invalid token\n")
+    # Token auth
+    token = None
+    for key, value in request.headers.raw_items():
+        if key.lower() == "authorization":
+            token = value.removeprefix("Bearer ").strip()
+            break
+    # Also check query param ?token=
+    if not token and "token=" in (request.path or ""):
+        import urllib.parse
+        _, qs = request.path.split("?", 1) if "?" in request.path else (request.path, "")
+        params = urllib.parse.parse_qs(qs)
+        token = params.get("token", [None])[0]
+    # compare_digest raises TypeError on non-ASCII str, so compare encoded bytes.
+    if not token or not hmac.compare_digest(token.encode("utf-8", "replace"), AUTH_TOKEN.encode("utf-8", "replace")):
+        headers = Headers([("Content-Type", "text/plain")])
+        return Response(401, "Unauthorized", headers, b"Invalid token\n")
 
     # Check if this is a WebSocket upgrade
     upgrade = None
@@ -1282,7 +1283,13 @@ def start_mdns():
         return None, None
 
 
+def require_auth_token():
+    if not AUTH_TOKEN:
+        raise SystemExit("HERDR_RELAY_TOKEN is required; set it before starting the relay")
+
+
 async def main():
+    require_auth_token()
     zc, info = start_mdns()
     loop = asyncio.get_running_loop()
     try:

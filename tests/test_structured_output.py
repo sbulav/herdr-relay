@@ -545,5 +545,61 @@ class RelayInputValidationTests(unittest.TestCase):
         )
 
 
+class AuthTokenTests(unittest.TestCase):
+    def test_require_auth_token_rejects_empty_token(self):
+        with patch.object(herdr_relay, "AUTH_TOKEN", ""):
+            with self.assertRaises(SystemExit):
+                herdr_relay.require_auth_token()
+
+    def test_require_auth_token_accepts_configured_token(self):
+        with patch.object(herdr_relay, "AUTH_TOKEN", "token"):
+            self.assertIsNone(herdr_relay.require_auth_token())
+
+    def test_process_request_rejects_wrong_token(self):
+        class Headers:
+            def raw_items(self):
+                return [("Authorization", "Bearer wrong")]
+
+        class Request:
+            headers = Headers()
+            path = "/"
+
+        with patch.object(herdr_relay, "AUTH_TOKEN", "token"):
+            response = asyncio.run(herdr_relay.process_request(None, Request()))
+
+        self.assertEqual(response.status_code, 401)
+
+    def test_process_request_rejects_non_ascii_token(self):
+        class Headers:
+            def raw_items(self):
+                return [("Authorization", "Bearer пароль")]
+
+        class Request:
+            headers = Headers()
+            path = "/"
+
+        with patch.object(herdr_relay, "AUTH_TOKEN", "token"):
+            response = asyncio.run(herdr_relay.process_request(None, Request()))
+
+        self.assertEqual(response.status_code, 401)
+
+    def test_process_request_accepts_correct_websocket_token(self):
+        class Headers:
+            def raw_items(self):
+                return [
+                    ("Authorization", "Bearer token"),
+                    ("Upgrade", "websocket"),
+                ]
+
+        class Request:
+            headers = Headers()
+            path = "/"
+
+        with patch.object(herdr_relay, "AUTH_TOKEN", "token"):
+            response = asyncio.run(herdr_relay.process_request(None, Request()))
+
+        self.assertIsNone(response)
+
+
 if __name__ == "__main__":
     unittest.main()
