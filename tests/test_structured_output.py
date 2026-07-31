@@ -231,6 +231,51 @@ class PollLoopBlockingTests(unittest.TestCase):
         ):
             asyncio.run(run())
 
+    def test_pushed_blocked_event_keeps_event_loop_running(self):
+        started = threading.Event()
+        release = threading.Event()
+        finished = threading.Event()
+
+        def blocking_read(pane_id, remote=None):
+            started.set()
+            release.wait(timeout=1)
+            finished.set()
+            return "Do you want to proceed?"
+
+        async def run():
+            made_progress = asyncio.Event()
+            herdr_relay.event_queue = asyncio.Queue()
+            herdr_relay.event_queue.put_nowait({
+                "pane_id": "pane-1", "status": "blocked", "host": "local",
+            })
+            pusher = asyncio.create_task(herdr_relay.event_push())
+
+            async def observe_event_loop():
+                await asyncio.to_thread(started.wait, 1)
+                if not finished.is_set():
+                    made_progress.set()
+                release.set()
+
+            try:
+                await asyncio.wait_for(observe_event_loop(), timeout=3)
+            finally:
+                release.set()
+                pusher.cancel()
+            self.assertTrue(made_progress.is_set())
+
+        original_queue = herdr_relay.event_queue
+        try:
+            with (
+                patch.object(herdr_relay, "read_pane", blocking_read),
+                patch.object(herdr_relay, "broadcast", AsyncMock()),
+                patch.object(herdr_relay, "send_web_push", AsyncMock()),
+                patch.dict(herdr_relay.pane_remote_map, {}, clear=True),
+                patch.dict(herdr_relay.pane_response_options, {}, clear=True),
+            ):
+                asyncio.run(run())
+        finally:
+            herdr_relay.event_queue = original_queue
+
 
 class PaneMetadataTests(unittest.TestCase):
     def test_attention_state_mapping(self):

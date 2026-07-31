@@ -995,7 +995,9 @@ async def event_push():
         if status == "blocked" and pane_id:
             remote = pane_remote_map.get(pane_id)
             if remote or host == "local":
-                content = read_pane(pane_id, remote=remote)
+                # Same 15s ssh-backed call the poll loop offloads (#26); inline
+                # here it would stall every client on a pushed blocked event.
+                content = await asyncio.to_thread(read_pane, pane_id, remote=remote)
             else:
                 content = event.get("prompt", "Agent is blocked")
             options = detect_options(content)
