@@ -1,0 +1,5 @@
+{
+  "min_client": 1,
+  "relay_version": "0.7.0",
+  "type": "server_info"
+}

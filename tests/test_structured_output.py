@@ -12,6 +12,17 @@ from unittest.mock import AsyncMock, patch
 from relay import herdr_relay
 
 
+def after_handshake(frames):
+    """Drop the `server_info` frame that every connection now opens with.
+
+    Explicit rather than shifted indices: these tests are about what a request
+    produces, and the handshake has its own ordering test and its own golden. The
+    assertion means a real frame going missing here still fails loudly.
+    """
+    assert frames and frames[0]["type"] == "server_info", frames
+    return frames[1:]
+
+
 class RelayLifecycleTests(unittest.TestCase):
     def test_broadcast_tolerates_disconnect_during_send(self):
         class Socket:
@@ -534,13 +545,14 @@ class StructuredOutputTests(unittest.TestCase):
             ):
                 asyncio.run(herdr_relay.handle_client(socket))
 
+            frames = after_handshake(socket.sent)
             self.assertEqual(
-                [message["type"] for message in socket.sent],
+                [message["type"] for message in frames],
                 expected_types,
             )
             if status == "blocked":
-                self.assertEqual(socket.sent[1]["prompt"], prompt)
-                self.assertEqual(socket.sent[1]["options"], herdr_relay.OPENCODE_OPTIONS)
+                self.assertEqual(frames[1]["prompt"], prompt)
+                self.assertEqual(frames[1]["options"], herdr_relay.OPENCODE_OPTIONS)
 
     def test_claude_project_dir(self):
         self.assertEqual(
@@ -988,7 +1000,9 @@ class RelayInputValidationTests(unittest.TestCase):
         run_herdr.assert_called_once_with(
             "pane", "read", "pane-1", "--lines", "30", "--source", "recent", remote=None
         )
-        self.assertEqual(["pane_content"], [frame["type"] for frame in socket.sent])
+        self.assertEqual(
+            ["pane_content"], [frame["type"] for frame in after_handshake(socket.sent)]
+        )
 
     @patch.object(herdr_relay, "run_herdr")
     def test_detected_dynamic_response_uses_its_safe_key_mapping(self, run_herdr):
@@ -1026,10 +1040,64 @@ class RelayInputValidationTests(unittest.TestCase):
             socket = Socket()
             asyncio.run(herdr_relay.handle_client(socket))
 
-        self.assertEqual(socket.sent, [])
+        self.assertEqual(after_handshake(socket.sent), [])
         run_herdr.assert_called_once_with(
             "pane", "send-keys", "pane-1", "Enter", remote=None
         )
+
+
+class HandshakeTests(unittest.TestCase):
+    def test_server_info_precedes_anything_the_client_sends(self):
+        """An update-required screen is useless if it arrives after the agent list.
+
+        Ordering is the whole feature, so assert it directly: record how many
+        frames had gone out by the time the relay first tried to read from the
+        socket. Asserting only on sent[0] would still pass if the frame were
+        moved after the read loop.
+        """
+        sent = []
+        frames_before_first_read = []
+
+        class FakeWS:
+            remote_address = ("203.0.113.7", 54321)
+            request = type("Request", (), {"headers": {"User-Agent": "okhttp/4.12 herdr-mobile"}})()
+
+            async def send(self, raw):
+                sent.append(json.loads(raw))
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                frames_before_first_read.append(len(sent))
+                raise StopAsyncIteration
+
+        asyncio.run(herdr_relay.handle_client(FakeWS()))
+
+        self.assertEqual([1], frames_before_first_read)
+        self.assertEqual("server_info", sent[0]["type"])
+        self.assertEqual(herdr_relay.MIN_CLIENT, sent[0]["min_client"])
+        self.assertEqual(herdr_relay.RELAY_VERSION, sent[0]["relay_version"])
+
+    def test_a_client_that_vanishes_mid_handshake_is_unregistered(self):
+        """The send is inside the try, so its failure still runs the cleanup."""
+
+        class DeadWS:
+            remote_address = ("203.0.113.8", 54322)
+            request = type("Request", (), {"headers": {}})()
+
+            async def send(self, raw):
+                raise herdr_relay.ConnectionClosedOK(None, None)
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                raise StopAsyncIteration
+
+        dead = DeadWS()
+        asyncio.run(herdr_relay.handle_client(dead))
+        self.assertNotIn(dead, herdr_relay.clients)
 
 
 class AuthTokenTests(unittest.TestCase):
