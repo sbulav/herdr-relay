@@ -89,6 +89,7 @@ last_statuses = {}
 event_queue = asyncio.Queue()
 pane_remote_map = {}
 session_target_map = {}
+pane_session_refs = {}  # (remote, pane_id) -> {kind, value}; never sent to clients
 request_results = {}
 pane_cwd_map = {}      # pane_id -> (cwd, agent, remote, ambiguous agent/cwd)
 subscriptions = {}     # ws -> pane_id the client is currently viewing
@@ -279,8 +280,21 @@ def get_agents_from_host(remote=None, host_id=None):
     try:
         data = json.loads(raw)
         panes = data.get("result", {}).get("panes", [])
-        agents = [
-            {
+        agents = []
+        for p in panes:
+            if not p.get("agent"):
+                continue
+            ref = p.get("agent_session")
+            if (
+                isinstance(ref, dict)
+                and ref.get("kind") in ("id", "path")
+                and isinstance(ref.get("value"), str)
+                and ref["value"]
+            ):
+                pane_session_refs[(remote, p["pane_id"])] = {
+                    "kind": ref["kind"], "value": ref["value"]
+                }
+            agents.append({
                 "pane_id": p["pane_id"],
                 "agent": p.get("agent", ""),
                 "label": p.get("label", ""),
@@ -291,9 +305,7 @@ def get_agents_from_host(remote=None, host_id=None):
                 "remote": remote,
                 "workspace_id": p.get("workspace_id", ""),
                 "tab_id": p.get("tab_id", ""),
-            }
-            for p in panes if p.get("agent")
-        ]
+            })
     except (json.JSONDecodeError, KeyError):
         agents = []
     return agents, online
@@ -495,25 +507,34 @@ def claude_project_dir(cwd):
     return re.sub(r"[/._]", "-", cwd)
 
 
-def read_transcript(cwd, remote=None):
+def read_transcript(cwd, remote=None, path=None):
     """Return (path, jsonl_text) for the newest transcript in cwd, or (None, None).
 
     Reads only the trailing TRANSCRIPT_MAX_BYTES so a long session stays cheap
     to poll; the (possibly partial) first line is tolerated by the parser.
     """
-    if not cwd:
+    if not path and not cwd:
         return None, None
-    proj = claude_project_dir(cwd)
     if remote:
-        root = CLAUDE_PROJECTS.replace("~", "$HOME")
-        script = (
-            f'd="{root}/$1"; '
-            'f=$(ls -t "$d"/*.jsonl 2>/dev/null | head -1); '
-            '[ -n "$f" ] || exit 0; '
-            'printf "%s\\n" "$f"; '
-            f'tail -c {TRANSCRIPT_MAX_BYTES} "$f"'
-        )
-        remote_cmd = "sh -c " + shlex.quote(script) + " sh " + shlex.quote(proj)
+        if path:
+            script = (
+                'f=$1; case "$f" in "~/"*) f="$HOME/${f#~/}" ;; esac; '
+                '[ -f "$f" ] || exit 0; '
+                'printf "%s\\n" "$f"; '
+                f'tail -c {TRANSCRIPT_MAX_BYTES} "$f"'
+            )
+            remote_cmd = "sh -c " + shlex.quote(script) + " sh " + shlex.quote(path)
+        else:
+            proj = claude_project_dir(cwd)
+            root = CLAUDE_PROJECTS.replace("~", "$HOME")
+            script = (
+                f'd="{root}/$1"; '
+                'f=$(ls -t "$d"/*.jsonl 2>/dev/null | head -1); '
+                '[ -n "$f" ] || exit 0; '
+                'printf "%s\\n" "$f"; '
+                f'tail -c {TRANSCRIPT_MAX_BYTES} "$f"'
+            )
+            remote_cmd = "sh -c " + shlex.quote(script) + " sh " + shlex.quote(proj)
         try:
             r = subprocess.run(
                 ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", remote, remote_cmd],
@@ -526,11 +547,15 @@ def read_transcript(cwd, remote=None):
         return (path.strip() or None), body
     # local
     try:
-        d = os.path.join(os.path.expanduser(CLAUDE_PROJECTS), proj)
-        files = glob.glob(os.path.join(d, "*.jsonl"))
-        if not files:
-            return None, None
-        path = max(files, key=os.path.getmtime)
+        if path:
+            path = os.path.expanduser(path)
+        else:
+            proj = claude_project_dir(cwd)
+            d = os.path.join(os.path.expanduser(CLAUDE_PROJECTS), proj)
+            files = glob.glob(os.path.join(d, "*.jsonl"))
+            if not files:
+                return None, None
+            path = max(files, key=os.path.getmtime)
         with open(path, "rb") as fh:
             fh.seek(0, os.SEEK_END)
             size = fh.tell()
@@ -606,38 +631,49 @@ LIMIT ?
 """
 
 
-def _read_opencode_local(db_path, cwd):
+def _read_opencode_local(db_path, cwd, session_id=None):
     """Return the newest top-level OpenCode session and its recent parts."""
     db_uri = "file:" + os.path.expanduser(db_path) + "?mode=ro"
-    with sqlite3.connect(db_uri, uri=True, timeout=2) as db:
-        session = db.execute(
-            "SELECT id, time_updated FROM session "
-            "WHERE directory = ? AND parent_id IS NULL "
-            "ORDER BY time_updated DESC LIMIT 1", (cwd,)
-        ).fetchone()
+    db = sqlite3.connect(db_uri, uri=True, timeout=2)
+    try:
+        if session_id:
+            session = db.execute(
+                "SELECT id, time_updated FROM session WHERE id = ?", (session_id,)
+            ).fetchone()
+        else:
+            session = db.execute(
+                "SELECT id, time_updated FROM session "
+                "WHERE directory = ? AND parent_id IS NULL "
+                "ORDER BY time_updated DESC LIMIT 1", (cwd,)
+            ).fetchone()
         if not session:
             return None
         session_id, updated = session
         rows = db.execute(
             OPENCODE_PART_QUERY, (session_id, TRANSCRIPT_BLOCK_LIMIT * 4)
         ).fetchall()
+    finally:
+        db.close()
     rows.reverse()
     return {"session_id": session_id, "updated": updated, "rows": rows}
 
 
-def read_opencode(cwd, remote=None):
+def read_opencode(cwd, remote=None, session_id=None):
     """Read bounded structured parts for the newest OpenCode session in cwd."""
-    if not cwd:
+    if not cwd and not session_id:
         return None
     if not remote:
         try:
-            return _read_opencode_local(OPENCODE_DB, cwd)
+            return _read_opencode_local(OPENCODE_DB, cwd, session_id)
         except Exception:
             return None
     script = """
 import json, os, sqlite3, sys
 db = sqlite3.connect("file:" + os.path.expanduser(sys.argv[1]) + "?mode=ro", uri=True, timeout=2)
-session = db.execute("SELECT id, time_updated FROM session WHERE directory = ? AND parent_id IS NULL ORDER BY time_updated DESC LIMIT 1", (sys.argv[2],)).fetchone()
+if sys.argv[5]:
+    session = db.execute("SELECT id, time_updated FROM session WHERE id = ?", (sys.argv[5],)).fetchone()
+else:
+    session = db.execute("SELECT id, time_updated FROM session WHERE directory = ? AND parent_id IS NULL ORDER BY time_updated DESC LIMIT 1", (sys.argv[2],)).fetchone()
 if session:
     rows = db.execute(sys.argv[3], (session[0], int(sys.argv[4]))).fetchall()
     rows.reverse()
@@ -646,7 +682,7 @@ if session:
     remote_cmd = " ".join([
         "python3", "-c", shlex.quote(script), shlex.quote(OPENCODE_DB),
         shlex.quote(cwd), shlex.quote(OPENCODE_PART_QUERY),
-        str(TRANSCRIPT_BLOCK_LIMIT * 4),
+        str(TRANSCRIPT_BLOCK_LIMIT * 4), shlex.quote(session_id or ""),
     ])
     try:
         result = subprocess.run(
@@ -702,20 +738,38 @@ def pane_blocks(pane_id):
     if not info:
         return None, None
     cwd, agent, remote, ambiguous = info
-    # Without an agent session id/path, cwd is the only correlation available.
-    # Refuse structured output when multiple live same-agent panes share it rather
-    # than risk showing one conversation in another pane.
-    if agent not in ("claude", "opencode") or not cwd or ambiguous:
+    ref = pane_session_refs.get((remote, pane_id))
+    if agent == "claude" and ref and ref["kind"] in ("id", "path"):
+        usable_ref = ref
+    elif agent == "opencode" and ref and ref["kind"] == "id":
+        usable_ref = ref
+    else:
+        usable_ref = None
+    # A session ref correlates a pane directly; without one cwd remains the
+    # fallback and ambiguous same-agent panes must not stream each other's output.
+    if agent not in ("claude", "opencode") or (not usable_ref and (not cwd or ambiguous)):
         return None, None
     if agent == "claude":
         try:
-            path, body = read_transcript(cwd, remote)
+            if usable_ref and usable_ref["kind"] == "path":
+                path, body = read_transcript(cwd, remote, path=usable_ref["value"])
+            elif usable_ref:
+                transcript_path = os.path.join(
+                    CLAUDE_PROJECTS, claude_project_dir(cwd), usable_ref["value"] + ".jsonl"
+                ) if cwd else None
+                path, body = read_transcript(cwd, remote, path=transcript_path)
+                if path is None:
+                    path, body = read_transcript(cwd, remote)
+            else:
+                path, body = read_transcript(cwd, remote)
         except Exception:
             return None, None
         if not body:
             return None, None
         return transcript_to_blocks(body), hash((path, body))
-    document = read_opencode(cwd, remote)
+    document = read_opencode(
+        cwd, remote, session_id=usable_ref["value"] if usable_ref else None
+    )
     if not document:
         return None, None
     blocks = opencode_to_blocks(document)
@@ -760,6 +814,7 @@ async def poll_loop():
 
 
 async def _poll_once():
+    pane_session_refs.clear()  # Host threads populate refs while get_all_agents() awaits.
     agents, hosts = await get_all_agents()
     current_pane_ids = {a["pane_id"] for a in agents}
     pane_remote_map.clear()

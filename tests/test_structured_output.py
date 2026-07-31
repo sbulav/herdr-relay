@@ -1,6 +1,9 @@
 import asyncio
 import json
+import os
+import sqlite3
 import subprocess
+import tempfile
 import threading
 import unittest
 from unittest.mock import patch
@@ -399,20 +402,161 @@ class StructuredOutputTests(unittest.TestCase):
             [str(index) for index in range(240, 250)],
         )
 
-    def test_ambiguous_cwd_is_not_streamed(self):
-        herdr_relay.pane_cwd_map["ambiguous"] = (
-            "/work/repo",
-            "claude",
-            None,
-            True,
-        )
-        try:
-            self.assertEqual(
-                herdr_relay.pane_blocks("ambiguous"),
-                (None, None),
-            )
-        finally:
-            herdr_relay.pane_cwd_map.pop("ambiguous")
+    def test_ambiguous_claude_panes_stream_their_own_path_refs(self):
+        def transcript(text):
+            return json.dumps({
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": text}]},
+            })
+
+        with tempfile.TemporaryDirectory() as directory:
+            first_path = os.path.join(directory, "first.jsonl")
+            second_path = os.path.join(directory, "second.jsonl")
+            with open(first_path, "w") as first:
+                first.write(transcript("first conversation"))
+            with open(second_path, "w") as second:
+                second.write(transcript("second conversation"))
+            pane_list = json.dumps({"result": {"panes": [
+                {
+                    "pane_id": "first", "agent": "claude", "cwd": "/work/repo",
+                    "agent_session": {"kind": "path", "value": first_path},
+                },
+                {
+                    "pane_id": "second", "agent": "claude", "cwd": "/work/repo",
+                    "agent_session": {"kind": "path", "value": second_path},
+                },
+            ]}})
+            with (
+                patch.dict(herdr_relay.pane_session_refs, {}, clear=True),
+                patch.dict(
+                    herdr_relay.pane_cwd_map,
+                    {
+                        "first": ("/work/repo", "claude", None, True),
+                        "second": ("/work/repo", "claude", None, True),
+                    },
+                    clear=True,
+                ),
+                patch.object(herdr_relay, "run_herdr_checked", return_value=(True, pane_list)),
+            ):
+                agents, _online = herdr_relay.get_agents_from_host()
+                first_blocks, _first_signature = herdr_relay.pane_blocks("first")
+                second_blocks, _second_signature = herdr_relay.pane_blocks("second")
+
+            self.assertNotIn("agent_session", agents[0])
+            self.assertEqual(first_blocks[0]["markdown"], "first conversation")
+            self.assertEqual(second_blocks[0]["markdown"], "second conversation")
+            self.assertNotEqual(first_blocks, second_blocks)
+
+    def test_ambiguous_cwd_without_refs_is_not_streamed(self):
+        with (
+            patch.dict(
+                herdr_relay.pane_cwd_map,
+                {"ambiguous": ("/work/repo", "claude", None, True)},
+                clear=True,
+            ),
+            patch.dict(herdr_relay.pane_session_refs, {}, clear=True),
+        ):
+            self.assertEqual(herdr_relay.pane_blocks("ambiguous"), (None, None))
+
+    def test_claude_id_ref_uses_project_transcript_path(self):
+        cwd = "/work/repo"
+        session_id = "session-123"
+        with tempfile.TemporaryDirectory() as projects:
+            project = os.path.join(projects, herdr_relay.claude_project_dir(cwd))
+            os.mkdir(project)
+            with open(os.path.join(project, session_id + ".jsonl"), "w") as transcript:
+                transcript.write(json.dumps({
+                    "type": "assistant",
+                    "message": {"content": [{"type": "text", "text": "id conversation"}]},
+                }))
+            with (
+                patch.object(herdr_relay, "CLAUDE_PROJECTS", projects),
+                patch.dict(
+                    herdr_relay.pane_cwd_map,
+                    {"pane-id": (cwd, "claude", None, True)},
+                    clear=True,
+                ),
+                patch.dict(
+                    herdr_relay.pane_session_refs,
+                    {(None, "pane-id"): {"kind": "id", "value": session_id}},
+                    clear=True,
+                ),
+            ):
+                blocks, _signature = herdr_relay.pane_blocks("pane-id")
+
+        self.assertEqual(blocks[0]["markdown"], "id conversation")
+
+    def test_malformed_agent_session_refs_are_ignored(self):
+        pane_list = json.dumps({"result": {"panes": [
+            {
+                "pane_id": "bad-kind", "agent": "claude", "cwd": "/work/repo",
+                "agent_session": {"kind": "session", "value": "session-1"},
+            },
+            {
+                "pane_id": "empty", "agent": "claude", "cwd": "/work/repo",
+                "agent_session": {"kind": "id", "value": ""},
+            },
+            {
+                "pane_id": "null", "agent": "claude", "cwd": "/work/repo",
+                "agent_session": None,
+            },
+        ]}})
+        with (
+            patch.dict(herdr_relay.pane_session_refs, {}, clear=True),
+            patch.dict(
+                herdr_relay.pane_cwd_map,
+                {pane_id: ("/work/repo", "claude", None, True)
+                 for pane_id in ("bad-kind", "empty", "null")},
+                clear=True,
+            ),
+            patch.object(herdr_relay, "run_herdr_checked", return_value=(True, pane_list)),
+        ):
+            herdr_relay.get_agents_from_host()
+            self.assertEqual(herdr_relay.pane_session_refs, {})
+            for pane_id in ("bad-kind", "empty", "null"):
+                self.assertEqual(herdr_relay.pane_blocks(pane_id), (None, None))
+
+    def test_opencode_id_ref_selects_session_instead_of_cwd(self):
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = os.path.join(directory, "opencode.db")
+            db = sqlite3.connect(db_path)
+            try:
+                db.executescript("""
+                    CREATE TABLE session (id TEXT, directory TEXT, parent_id TEXT, time_updated INTEGER);
+                    CREATE TABLE message (id TEXT, session_id TEXT, data TEXT, time_created INTEGER);
+                    CREATE TABLE part (id TEXT, message_id TEXT, data TEXT, time_created INTEGER);
+                """)
+                db.execute(
+                    "INSERT INTO session VALUES (?, ?, ?, ?)",
+                    ("target-session", "/another/repo", None, 1),
+                )
+                db.execute(
+                    "INSERT INTO message VALUES (?, ?, ?, ?)",
+                    ("message-1", "target-session", '{"role": "assistant"}', 1),
+                )
+                db.execute(
+                    "INSERT INTO part VALUES (?, ?, ?, ?)",
+                    ("part-1", "message-1", '{"type": "text", "text": "target session"}', 1),
+                )
+                db.commit()
+            finally:
+                db.close()
+            with (
+                patch.object(herdr_relay, "OPENCODE_DB", db_path),
+                patch.dict(
+                    herdr_relay.pane_cwd_map,
+                    {"opencode": ("/wrong/repo", "opencode", None, True)},
+                    clear=True,
+                ),
+                patch.dict(
+                    herdr_relay.pane_session_refs,
+                    {(None, "opencode"): {"kind": "id", "value": "target-session"}},
+                    clear=True,
+                ),
+            ):
+                blocks, _signature = herdr_relay.pane_blocks("opencode")
+
+        self.assertEqual(blocks[0]["markdown"], "target session")
 
     def test_opencode_mapping(self):
         document = {
