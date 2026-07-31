@@ -41,6 +41,7 @@ class NativeContractTests(unittest.TestCase):
             "remote": "deploy@buildbox",
             "workspace_id": "workspace-2",
             "tab_id": "tab-4",
+            "output_revision": 7,
         }]
         hosts = [{"host_id": "buildbox", "online": True}]
         presets = [{
@@ -62,6 +63,10 @@ class NativeContractTests(unittest.TestCase):
             patch.object(herdr_relay, "PRESETS_BY_ID", {"review": presets[0]}),
             patch.object(herdr_relay, "broadcast", side_effect=broadcast),
             patch.dict(herdr_relay.last_statuses, {}, clear=True),
+            patch.dict(herdr_relay.pane_activity, {}, clear=True),
+            patch.dict(herdr_relay.pane_revisions, {}, clear=True),
+            patch.dict(herdr_relay.pane_attention_states, {}, clear=True),
+            patch.object(herdr_relay, "now_ms", return_value=1700000000000),
             patch.dict(herdr_relay.pane_remote_map, {}, clear=True),
             patch.dict(herdr_relay.session_target_map, {}, clear=True),
             patch.dict(herdr_relay.pane_cwd_map, {}, clear=True),
@@ -106,6 +111,10 @@ class NativeContractTests(unittest.TestCase):
             patch.object(herdr_relay, "read_pane", return_value=prompt),
             patch.object(herdr_relay, "send_web_push", side_effect=send_web_push),
             patch.dict(herdr_relay.last_statuses, {}, clear=True),
+            patch.dict(herdr_relay.pane_activity, {}, clear=True),
+            patch.dict(herdr_relay.pane_revisions, {}, clear=True),
+            patch.dict(herdr_relay.pane_attention_states, {}, clear=True),
+            patch.object(herdr_relay, "now_ms", return_value=1700000000000),
             patch.dict(herdr_relay.pane_response_options, {}, clear=True),
         ):
             asyncio.run(herdr_relay._poll_once())
@@ -132,6 +141,7 @@ class NativeContractTests(unittest.TestCase):
             "remote": "deploy@buildbox",
             "workspace_id": "workspace-2",
             "tab_id": "tab-4",
+            "output_revision": 7,
         }]
         blocks = [
             {"id": "b0", "kind": "status", "label": "You", "text": "Run tests"},
@@ -149,6 +159,10 @@ class NativeContractTests(unittest.TestCase):
             patch.dict(herdr_relay.subscriptions, {socket: "pane-7"}, clear=True),
             patch.dict(herdr_relay.stream_sigs, {}, clear=True),
             patch.dict(herdr_relay.last_statuses, {}, clear=True),
+            patch.dict(herdr_relay.pane_activity, {}, clear=True),
+            patch.dict(herdr_relay.pane_revisions, {}, clear=True),
+            patch.dict(herdr_relay.pane_attention_states, {}, clear=True),
+            patch.object(herdr_relay, "now_ms", return_value=1700000000000),
         ):
             asyncio.run(herdr_relay._poll_once())
 

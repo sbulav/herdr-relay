@@ -84,6 +84,9 @@ contains `pane_id`, `agent`, `status`, `cwd`, `project`, and `host` only.
 | `remote` | string or null | Poll agents only | SSH target used by the relay, or `null` for a local pane. |
 | `workspace_id` | string | Poll agents only | Workspace identifier reported by `herdr`; defaults to an empty string. |
 | `tab_id` | string | Poll agents only | Tab identifier reported by `herdr`; defaults to an empty string. |
+| `attention_state` | string | Optional | Additive explicit attention state: `"working"`, `"waiting"`, `"done"`, or `"idle"`. `"waiting"` means the agent is waiting on the user. Unknown statuses are omitted rather than guessed. |
+| `updated_at` | integer | Optional | Additive epoch milliseconds when this pane's status or output revision last changed. |
+| `output_revision` | integer | Optional | Additive monotonic per-pane output revision reported by `herdr`; omitted when unavailable or invalid. |
 
 Each public preset has this shape:
 
@@ -185,9 +188,13 @@ subscription updates contain `output_blocks` without `content`.
 | `pane_id` | string | Required | Pane whose content is represented. |
 | `content` | string | `read_pane` responses only | Output of `herdr pane read`. |
 | `output_blocks` | array of output block objects | Optional | At most 200 recent structured Claude or OpenCode transcript blocks. |
+| `attention_state` | string | Optional | Additive explicit attention state: `"working"`, `"waiting"`, `"done"`, or `"idle"`. `"waiting"` means the agent is waiting on the user. Unknown statuses are omitted rather than guessed. |
+| `updated_at` | integer | Optional | Additive epoch milliseconds when this pane's status or output revision last changed. |
+| `output_revision` | integer | Optional | Additive monotonic per-pane output revision reported by `herdr`; omitted when unavailable or invalid. |
 
-The current relay does not emit `attention_state`, `updated_at`, or
-`output_revision` in `pane_content`.
+These optional fields have the same values as the latest `agents` entry for the
+pane. They are omitted rather than set to `null` when the relay cannot determine
+them.
 
 Every output block has `id` and `kind`. Fields after those depend on `kind`.
 
