@@ -3,7 +3,7 @@
 # requires-python = ">=3.10"
 # dependencies = ["websockets>=14.0", "pywebpush>=2.0.0", "py-vapid>=1.9.0"]
 # ///
-"""herdr-remote relay — polls herdr, accepts push events (HTTP POST + WebSocket + UDP), broadcasts to clients."""
+"""herdr-remote relay — polls herdr, accepts push events over HTTP, broadcasts over WebSocket."""
 import asyncio, glob, hmac, json, logging, os, re, shlex, shutil, signal, socket, sqlite3, subprocess, time, uuid
 
 try:
@@ -1061,7 +1061,12 @@ async def event_push():
 
 
 async def process_request(connection, request):
-    """Handle HTTP POST on the same port as WebSocket."""
+    """Serve plain HTTP on the same port as WebSocket.
+
+    Everything here is a GET: the websockets library's request parser accepts no
+    other method and rejects any request carrying a body, so an event arrives as
+    a `?d=<url-encoded JSON>` query rather than a POST payload.
+    """
     from websockets.http11 import Response
     from websockets.datastructures import Headers
 
@@ -1092,6 +1097,22 @@ async def process_request(connection, request):
             upgrade = value.lower()
     if upgrade == "websocket":
         return None  # proceed with WebSocket handshake
+
+    # Event push — checked before the static routes below, because those match on
+    # path and the plugin hook's relay URL is usually just the host, i.e. "/".
+    # A `d=` query is unambiguous: nothing that serves web/ carries one.
+    import urllib.parse
+    if "?" in (request.path or ""):
+        _, qs = request.path.split("?", 1)
+        params = urllib.parse.parse_qs(qs)
+        if "d" in params:
+            try:
+                event = json.loads(urllib.parse.unquote(params["d"][0]))
+                event_queue.put_nowait(event)
+            except Exception:
+                log.warning("Discarded malformed pushed event")
+            headers = Headers([("Access-Control-Allow-Origin", "*")])
+            return Response(200, "OK", headers, b"ok\n")
 
     # For CORS preflight
     if request.path and "OPTIONS" in str(request.headers):
@@ -1152,18 +1173,6 @@ async def process_request(connection, request):
                 body = f.read()
             headers = Headers([("Content-Type", "image/svg+xml")])
             return Response(200, "OK", headers, body)
-
-    # HTTP POST — parse event from URL query params as fallback
-    import urllib.parse
-    if "?" in (request.path or ""):
-        _, qs = request.path.split("?", 1)
-        params = urllib.parse.parse_qs(qs)
-        if "d" in params:
-            try:
-                event = json.loads(urllib.parse.unquote(params["d"][0]))
-                event_queue.put_nowait(event)
-            except Exception:
-                pass
 
     headers = Headers([("Access-Control-Allow-Origin", "*")])
     return Response(200, "OK", headers, b"ok\n")
@@ -1479,14 +1488,6 @@ def shutdown_host(msg):
     return {"type": "command_ack", "request_id": request_id, "result": {"host_id": host_id}}
 
 
-class UDPPlugin(asyncio.DatagramProtocol):
-    def datagram_received(self, data, addr):
-        try:
-            event_queue.put_nowait(json.loads(data.decode()))
-        except Exception:
-            pass
-
-
 def require_auth_token():
     if not AUTH_TOKEN:
         raise SystemExit("HERDR_RELAY_TOKEN is required; set it before starting the relay")
@@ -1495,17 +1496,13 @@ def require_auth_token():
 async def main():
     require_auth_token()
     loop = asyncio.get_running_loop()
-    try:
-        await loop.create_datagram_endpoint(UDPPlugin, local_addr=("127.0.0.1", 8376))
-    except OSError:
-        log.warning("UDP 8376 in use, plugin push disabled")
     server = await serve(handle_client, "0.0.0.0", WS_PORT, process_request=process_request)
     background_tasks = [
         asyncio.create_task(poll_loop(), name="poll-loop"),
         asyncio.create_task(event_push(), name="event-push"),
     ]
     hosts = ["local"] + REMOTES
-    log.info("herdr-remote relay on :%d (WebSocket + HTTP POST)", WS_PORT)
+    log.info("herdr-remote relay on :%d (WebSocket + HTTP)", WS_PORT)
     log.info("Polling: %s", ", ".join(hosts))
     stop = loop.create_future()
     for task in background_tasks:

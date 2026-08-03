@@ -28,7 +28,7 @@ Clients (android/web/telegram)
    herdr CLI (local or SSH to HERDR_REMOTES)
 ```
 
-The relay (`relay/herdr_relay.py`) is the central hub: it polls herdr for agent state, accepts push events via HTTP POST and UDP, and broadcasts to connected WebSocket clients. Clients send `respond`, `read_pane`, `send_keys`, and `send_text` messages back through the relay to control agents.
+The relay (`relay/herdr_relay.py`) is the central hub: it polls herdr for agent state, accepts push events over authenticated HTTP, and broadcasts to connected WebSocket clients. Clients send `respond`, `read_pane`, `send_keys`, and `send_text` messages back through the relay to control agents.
 
 ## Components
 

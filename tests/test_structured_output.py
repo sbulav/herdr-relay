@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 import threading
 import unittest
+import urllib.parse
 from unittest.mock import AsyncMock, patch
 
 from relay import herdr_relay
@@ -1186,6 +1187,65 @@ class AuthTokenTests(unittest.TestCase):
             response = asyncio.run(herdr_relay.process_request(None, Request()))
 
         self.assertIsNone(response)
+
+
+class EventPushRouteTests(unittest.TestCase):
+    """The plugin hook's route — a ?d= query on an ordinary authenticated GET."""
+
+    @staticmethod
+    def _request(path):
+        class Headers:
+            def raw_items(self):
+                return [("Authorization", "Bearer token")]
+
+        class Request:
+            headers = Headers()
+
+        Request.path = path
+        return Request()
+
+    def _push(self, path):
+        queue = asyncio.Queue()
+        with patch.object(herdr_relay, "AUTH_TOKEN", "token"), \
+                patch.object(herdr_relay, "event_queue", queue):
+            response = asyncio.run(herdr_relay.process_request(None, self._request(path)))
+        events = []
+        while not queue.empty():
+            events.append(queue.get_nowait())
+        return response, events
+
+    def _query(self, event):
+        return "?" + urllib.parse.urlencode({"d": json.dumps(event)})
+
+    def test_event_is_queued_on_the_hooks_default_path(self):
+        event = {"type": "agent_event", "pane_id": "%1", "status": "blocked"}
+        response, events = self._push("/event" + self._query(event))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(events, [event])
+
+    def test_event_on_root_beats_the_static_pwa_route(self):
+        # Regression: "/" matched the LEGACY (#14) index.html route first, so the
+        # relay answered 200 with the PWA and dropped the event silently.
+        event = {"type": "agent_event", "pane_id": "%2", "status": "idle"}
+        response, events = self._push("/" + self._query(event))
+
+        self.assertEqual(events, [event])
+        self.assertEqual(response.body, b"ok\n")
+
+    def test_malformed_event_answers_200_and_queues_nothing(self):
+        # The hook must not retry or block a status change on our parse failure.
+        response, events = self._push("/event?d=not-json")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(events, [])
+
+    def test_request_without_an_event_query_still_serves_static_routes(self):
+        response, events = self._push("/api/vapid-public-key")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(events, [])
+        self.assertIn(b"publicKey", response.body)
 
 
 if __name__ == "__main__":

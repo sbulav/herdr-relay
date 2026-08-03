@@ -59,8 +59,21 @@ Non-upgrade requests do match on path:
 | `GET` | `/`, `/index.html` | the PWA from `web/` — LEGACY (#14) |
 | `GET` | `/sw.js`, `/logo.svg` | PWA assets — LEGACY (#14) |
 | `GET` | `/api/vapid-public-key` | Web Push key — LEGACY (#14) |
-| `OPTIONS` | any | CORS preflight |
-| `POST` | any, with `?d=<url-encoded JSON>` | queues a push event, answers `200 ok` |
+| `GET` | any, with `?d=<url-encoded JSON>` | queues a push event, answers `200 ok` |
+
+**Every HTTP request is a `GET`.** The websockets library parses the request line
+before the relay sees it and accepts no other method, and rejects any request
+carrying `Content-Length` — so a push event travels in the query string, not a
+request body. A proxy that rewrites methods or strips query strings breaks it.
+
+The event route is how `relay/on_event.py` — the herdr plugin hook registered by
+`relay/herdr-plugin.toml` — reports a status change without waiting for the next
+poll. Because it is an ordinary authenticated request, every host running the hook
+needs `HERDR_RELAY` pointing at the relay and `HERDR_RELAY_TOKEN` in the hook's
+environment. The hook targets `/event` when `HERDR_RELAY` carries no path of its
+own; the relay accepts the event on any path, and checks for `?d=` before the
+static routes so that `/` works too. Push is an optimisation, not a requirement:
+without it a status change surfaces on the next 2 s poll instead of immediately.
 
 ## What a reverse proxy must do
 

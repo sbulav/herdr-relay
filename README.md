@@ -22,7 +22,7 @@ protocol.
   and stamps `updated_at` and `output_revision`, so clients don't infer it from
   status strings
 - **Multi-host** — polls local herdr plus any SSH targets in `HERDR_REMOTES`
-- **Push and poll** — HTTP POST and UDP events beat the poll interval
+- **Push and poll** — authenticated HTTP events beat the poll interval
 
 ## Components
 
@@ -94,7 +94,7 @@ herdr-mobile (Android)   web PWA   Telegram bot
                        │
          ┌─────────────┴─────────────┐
     poll herdr CLI            pushed events
-    (local + SSH)             (HTTP POST / UDP)
+    (local + SSH)             (HTTP, same port)
 ```
 
 Server-side state stays server-side: the SSH target behind a host, and a
