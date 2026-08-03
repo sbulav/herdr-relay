@@ -14,11 +14,23 @@ protocol has to bear unknown clients forever. There is one client and both
 deploys are the same person's; a change that cannot be made additively is
 allowed, and `server_info.min_client` below is how it is announced.
 
-This document describes the **native dialect** spoken by the production relay
-today. It is distinct from the aspirational "protocol v1" design based on
-`snapshot`, `session_id`, and `dialog_id`. The relay does not speak protocol v1;
-its native state and terminal operations use `agents`, `blocked`, and
+This document describes the **native dialect**, and the native dialect is *the*
+protocol. State and terminal operations use `agents`, `blocked`, and
 `pane_content` frames keyed by `pane_id`.
+
+There was once a second, unbuilt design — "protocol v1", based on `snapshot`,
+opaque `session_id`, and `dialog_id` + `revision`. It was never deployed on
+either side and has been deleted (#17, and sbulav/herdr-mobile#33); the
+reasoning is recorded in `ROADMAP.md` Phase 5. Nothing in this document is
+transitional, and there is no second dialect to migrate toward.
+
+One consequence is worth stating plainly rather than leaving for a client author
+to discover: `pane_id` is assigned by tmux and changes when tmux renumbers, so a
+pane's identity is **not stable across a restart**. A client must treat a
+`pane_id` as valid only for as long as it keeps appearing in `agents` snapshots,
+and must not persist one as a durable session key. If that proves too weak in
+practice, the fix is an opaque session-ID layer added to this dialect on its
+own — announced through `server_info.min_client`, not through a new protocol.
 
 ## Authentication
 
@@ -440,9 +452,13 @@ rejected.
 
 ### `terminate_session`
 
-Closes the pane mapped to an active native session key. Although this command
-uses a field named `session_id`, it is not protocol v1. The relay creates this
-internal key as `legacy:<host_id>:<pane_id>` from the latest poll.
+Closes the pane mapped to an active native session key. The relay derives that
+key as `legacy:<host_id>:<pane_id>` from the latest poll, so it inherits
+`pane_id`'s instability: the key is not itself on the wire, so a client composes
+it from the `host` and `pane_id` of the current snapshot rather than remembering
+a key from an earlier one. The `legacy:` prefix is a fossil of the deleted v1 split and
+carries no meaning; it stays on the wire only because renaming it would break
+clients for nothing.
 
 | Name | Type | Presence | Meaning |
 | --- | --- | --- | --- |

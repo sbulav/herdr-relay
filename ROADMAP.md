@@ -322,43 +322,50 @@ repo says why.
 
 ## Phase 5 — Decide protocol v1, in writing
 
-`herdr-mobile` carries a full v1 implementation (`protocol/Protocol.kt`, 329
-lines) plus 20 fixtures for a protocol **the relay does not speak** — v1 uses
-`snapshot` / opaque `session_id` / `dialog_id` + `revision` /
-`attention_state` / `output_revision`; the relay emits none of those. The
-app's own README calls it "not deployed yet." That is dead weight in one repo
-and an unbuilt obligation in the other.
+**Decided: v1 is deleted.** The native dialect in
+[`docs/native-protocol.md`](docs/native-protocol.md) is *the* protocol. There
+is no v1, no v1 migration, and no dual-dialect client. Recorded here and in the
+protocol document itself so it does not have to be re-argued; the deletion is
+sbulav/herdr-relay#17 and sbulav/herdr-mobile#33.
 
-**Recommendation: delete it.** The native dialect is in production and works;
-v1 is an unbuilt obligation held open on the strength of being nicer on paper.
-A solo developer should not carry a second protocol implementation for a
-migration with no date. Delete `Protocol.kt` and the v1 fixtures from
-herdr-mobile, promote the native dialect with the Phase 1 docs, and revisit
-only if a specific native-dialect defect forces it.
-
-The one caveat worth naming, because it is the strongest argument for the
-other choice: `pane_id` is tmux-assigned and changes when tmux renumbers, so
-session identity in the native dialect is not stable across a pane
-restart. If that bites in practice, the fix is an opaque session-ID layer —
-which is v1's core idea and can be added to the native dialect additively,
-without adopting the rest of v1.
+The problem it settled: `herdr-mobile` carried a full v1 implementation
+(`protocol/Protocol.kt`) plus ~19 fixtures for a protocol **the relay does not
+speak** — v1 used `snapshot` / opaque `session_id` / `dialog_id` + `revision`;
+the relay emits none of those. The app's own README called it "not deployed
+yet." Dead weight in one repo and an unbuilt obligation in the other.
 
 For the record, the two options were:
 
-- **Build it.** v1 is genuinely better than the native dialect: opaque session
-  IDs instead of `pane_id` (which changes when tmux renumbers), idempotent
-  request IDs, monotonic `revision` for dialog races, `attention_state` so the
-  phone stops re-deriving "does this need me" from `status` strings. The
-  relay-side gap is a session-identity layer and per-session revision
-  counters.
-- **Delete it.** Remove `Protocol.kt` and the v1 fixtures from herdr-mobile,
-  and promote the native dialect to *the* protocol with the Phase 1 docs.
+- **Build it.** v1 was genuinely nicer on paper than the native dialect:
+  opaque session IDs instead of `pane_id` (which changes when tmux renumbers),
+  idempotent request IDs, monotonic `revision` for dialog races,
+  `attention_state` so the phone stops re-deriving "does this need me" from
+  `status` strings. The relay-side gap was a session-identity layer and
+  per-session revision counters.
+- **Delete it.** Remove the v1 codec and fixtures from herdr-mobile and
+  promote the native dialect to *the* protocol with the Phase 1 docs.
 
-Do not leave it half-built. Note the coupling with the mobile roadmap
-(`../ROADMAP.md` Phase 1), which wants an additive `pane_width` field on
-`session_output` — but see Phase 1b.1: if the relay ships blocks instead of
-rendered text, the phone never needs the wrap column, and that item should be
-dropped rather than moved.
+**Why delete won.** Two of v1's four real advantages arrived without it:
+Phase 1b.2 shipped `attention_state` and `output_revision` on native `agents`
+and `pane_content` frames, additively, and the native lifecycle commands
+already carry `request_id` for idempotency and ack correlation. What remained
+exclusive to v1 was opaque session identity and per-dialog `revision` — one
+deferrable, one solving a race that has not been observed. A solo developer
+should not carry a second protocol implementation for a migration with no date.
+
+The one caveat worth naming, because it is the strongest argument for the
+other choice: `pane_id` is tmux-assigned and changes when tmux renumbers, so
+session identity in the native dialect is not stable across a pane restart.
+That is accepted, not solved. If it bites in practice, the fix is an opaque
+session-ID layer — v1's core idea, addable to the native dialect on its own,
+without adopting the rest of v1. With the Phase 1b.3 `min_client` handshake in
+place that is a cheap breaking change rather than a migration, which is
+precisely what makes deleting v1 safe rather than merely cheaper.
+
+Note what this drops from the mobile roadmap (`../ROADMAP.md` Phase 1): an
+additive `pane_width` field on `session_output`. There is no `session_output`
+frame, and per Phase 1b.1, if the relay ships blocks instead of rendered text
+the phone never needs the wrap column. Dropped rather than moved.
 
 ---
 
