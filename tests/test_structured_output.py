@@ -1233,6 +1233,19 @@ class EventPushRouteTests(unittest.TestCase):
         self.assertEqual(events, [event])
         self.assertEqual(response.body, b"ok\n")
 
+    def test_pane_id_that_looks_like_an_escape_survives(self):
+        # tmux numbers panes "%N", so pane 22 is "%22" — decoding the query value
+        # a second time turned that into a bare quote and the JSON failed to
+        # parse. %20 was worse: it became a space and the event was accepted with
+        # a corrupted id.
+        event = {"type": "agent_event", "pane_id": "%22", "status": "blocked"}
+        _, events = self._push("/event" + self._query(event))
+        self.assertEqual(events, [event])
+
+        event = {"type": "agent_event", "pane_id": "%20", "status": "idle"}
+        _, events = self._push("/event" + self._query(event))
+        self.assertEqual(events, [event])
+
     def test_malformed_event_answers_200_and_queues_nothing(self):
         # The hook must not retry or block a status change on our parse failure.
         response, events = self._push("/event?d=not-json")

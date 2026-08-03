@@ -1115,7 +1115,10 @@ async def process_request(connection, request):
         params = urllib.parse.parse_qs(qs)
         if "d" in params:
             try:
-                event = json.loads(urllib.parse.unquote(params["d"][0]))
+                # parse_qs has already decoded this. Decoding it a second time
+                # would eat any pane id that looks like an escape: tmux pane 22
+                # is "%22", which unquote turns into a bare double quote.
+                event = json.loads(params["d"][0])
                 event_queue.put_nowait(event)
             except Exception:
                 log.warning("Discarded malformed pushed event")
