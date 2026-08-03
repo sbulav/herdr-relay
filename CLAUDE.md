@@ -28,13 +28,14 @@ Clients (android/web/telegram)
    herdr CLI (local or SSH to HERDR_REMOTES)
 ```
 
-The relay (`relay/herdr_relay.py`) is the central hub: it polls herdr for agent state, accepts push events over authenticated HTTP, and broadcasts to connected WebSocket clients. Clients send `respond`, `read_pane`, `send_keys`, and `send_text` messages back through the relay to control agents.
+The relay (`relay/herdr_relay/`) is the central hub: it polls herdr for agent state, accepts push events over authenticated HTTP, and broadcasts to connected WebSocket clients. Clients send `respond`, `read_pane`, `send_keys`, and `send_text` messages back through the relay to control agents.
 
 ## Components
 
 | Path | What | Language |
 |------|------|----------|
-| `relay/herdr_relay.py` | WebSocket+HTTP relay server | Python (websockets) |
+| `relay/herdr-relay.py` | Launcher `uv run` reads PEP 723 metadata from | Python |
+| `relay/herdr_relay/` | WebSocket+HTTP relay server | Python (websockets) |
 | `relay/herdr_telegram.py` | Telegram bot client | Python (python-telegram-bot) |
 | `web/index.html` | Mobile/desktop web app (single file) | HTML/CSS/JS |
 | `docs/native-protocol.md` | The wire contract clients are written against | Markdown |
@@ -49,7 +50,7 @@ All Python scripts use [PEP 723 inline metadata](https://peps.python.org/pep-072
 
 ```bash
 # Relay (main server)
-uv run relay/herdr_relay.py
+uv run relay/herdr-relay.py
 
 # Packaged, as a real host runs it
 nix run .#herdr-relay

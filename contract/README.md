@@ -6,7 +6,7 @@ native dialect described by [`../docs/native-protocol.md`](../docs/native-protoc
 The files are **generated, not hand-written**. `tests/test_native_contract.py`
 drives the real emitters (`_poll_once`, `launch_session`, `terminate_session`,
 `wake_host`, `shutdown_host`) against fakes and compares their output to these
-files. Editing a frame in `relay/herdr_relay.py` fails the suite here, before
+files. Editing a frame in `relay/herdr_relay/` fails the suite here, before
 the change reaches a phone.
 
 After an *intentional* protocol change, regenerate and review the diff:

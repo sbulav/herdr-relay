@@ -2,9 +2,10 @@
 # nixosModules.herdr-relay instead — this is for everyone else.
 #
 # Install:
-#   1. Put herdr_relay.py and web/ somewhere stable, keeping the relay at
-#      <root>/relay/herdr_relay.py and the PWA at <root>/web — the relay
-#      resolves its LEGACY static routes relative to its own file.
+#   1. Put relay/ and web/ somewhere stable, keeping the launcher at
+#      <root>/relay/herdr-relay.py next to the <root>/relay/herdr_relay/
+#      package, and the PWA at <root>/web — the relay resolves its LEGACY
+#      static routes relative to the package directory.
 #   2. Write /etc/herdr-relay/config.env, owned by root and mode 0600:
 #        HERDR_RELAY_TOKEN=...
 #        HERDR_BIN=/usr/local/bin/herdr
@@ -29,7 +30,7 @@ Environment=HERDR_LOG_DIR=/var/log/herdr-relay
 Environment=HOME=/var/lib/herdr-relay
 
 # --- adjust this line ---
-ExecStart=/usr/bin/python3 /opt/herdr-relay/relay/herdr_relay.py
+ExecStart=/usr/bin/python3 /opt/herdr-relay/relay/herdr-relay.py
 
 Restart=on-failure
 RestartSec=5s

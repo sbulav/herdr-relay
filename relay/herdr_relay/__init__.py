@@ -1,9 +1,9 @@
-#!/usr/bin/env python3
-# /// script
-# requires-python = ">=3.10"
-# dependencies = ["websockets>=14.0", "pywebpush>=2.0.0", "py-vapid>=1.9.0"]
-# ///
-"""herdr-remote relay — polls herdr, accepts push events over HTTP, broadcasts over WebSocket."""
+"""herdr-remote relay — polls herdr, accepts push events over HTTP, broadcasts over WebSocket.
+
+Start it through `relay/herdr-relay.py`, which carries the PEP 723 dependency
+metadata `uv run` needs — inline metadata only works on a single file, and a
+package cannot hold it.
+"""
 import asyncio, glob, hmac, json, logging, os, re, shlex, shutil, signal, socket, sqlite3, subprocess, time, uuid
 
 try:
@@ -21,6 +21,14 @@ def _get_log_dir():
     if os.path.isdir("/var/log") and os.access("/var/log", os.W_OK):
         return "/var/log/herdr-remote"
     return os.path.expanduser("~/.local/state/herdr-remote/log")
+
+# The LEGACY (#14) static routes serve web/ from the repo root. Resolve it once,
+# here, rather than from __file__ at each route: this file sits one directory
+# deeper than it used to, and three separate copies of the same ".." arithmetic
+# is how that kind of move breaks quietly.
+WEB_DIR = os.path.abspath(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "web")
+)
 
 LOG_DIR = os.environ.get("HERDR_LOG_DIR", _get_log_dir())
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -1130,8 +1138,7 @@ async def process_request(connection, request):
     # Serve web app for GET / or GET /index.html
     path = (request.path or "/").split("?")[0]
     if path in ("/", "/index.html"):
-        web_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "web")
-        index_path = os.path.join(web_dir, "index.html")
+        index_path = os.path.join(WEB_DIR, "index.html")
         if os.path.isfile(index_path):
             with open(index_path, "rb") as f:
                 body = f.read()
@@ -1143,8 +1150,7 @@ async def process_request(connection, request):
 
     # Serve service worker
     if path == "/sw.js":
-        web_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "web")
-        sw_path = os.path.join(web_dir, "sw.js")
+        sw_path = os.path.join(WEB_DIR, "sw.js")
         if os.path.isfile(sw_path):
             with open(sw_path, "rb") as f:
                 body = f.read()
@@ -1166,8 +1172,7 @@ async def process_request(connection, request):
 
     # Serve logo.svg
     if path == "/logo.svg":
-        web_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "web")
-        svg_path = os.path.join(web_dir, "logo.svg")
+        svg_path = os.path.join(WEB_DIR, "logo.svg")
         if os.path.isfile(svg_path):
             with open(svg_path, "rb") as f:
                 body = f.read()
@@ -1517,7 +1522,3 @@ async def main():
         for task in background_tasks:
             task.cancel()
         await asyncio.gather(*background_tasks, return_exceptions=True)
-
-
-if __name__ == "__main__":
-    asyncio.run(main())

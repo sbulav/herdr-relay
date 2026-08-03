@@ -28,7 +28,8 @@ protocol.
 
 | Path | What |
 |------|------|
-| `relay/herdr_relay.py` | The relay: WebSocket + HTTP server, host polling |
+| `relay/herdr-relay.py` | Launcher: PEP 723 metadata, starts the package below |
+| `relay/herdr_relay/` | The relay: WebSocket + HTTP server, host polling |
 | `relay/herdr_telegram.py` | Telegram bot client |
 | `web/index.html` | Single-file web PWA (browser client) |
 | `docs/native-protocol.md` | **The wire contract.** Clients are written against it |
@@ -44,7 +45,7 @@ metadata, so `uv run` installs dependencies itself.
 
 ```bash
 export HERDR_RELAY_TOKEN="$(openssl rand -hex 16)"   # required
-uv run relay/herdr_relay.py
+uv run relay/herdr-relay.py
 ```
 
 For a real host, `nix run github:sbulav/herdr-relay` or the NixOS module — see

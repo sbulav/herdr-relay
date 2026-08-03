@@ -10,7 +10,7 @@ the throwaway path — for a host you intend to keep, see
 git clone https://github.com/sbulav/herdr-relay
 cd herdr-relay
 export HERDR_RELAY_TOKEN="$(openssl rand -hex 16)"   # required — no default
-uv run relay/herdr_relay.py
+uv run relay/herdr-relay.py
 ```
 
 ## 2. Expose it

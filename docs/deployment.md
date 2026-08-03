@@ -38,7 +38,7 @@ clients send the header.
 
 **A WebSocket upgrade is accepted on any path.** The relay checks for
 `Upgrade: websocket` before it looks at the path, so it never matches one
-(`relay/herdr_relay.py:1088-1094`). `wss://host/native/ws`, `wss://host/`, and
+(`process_request` in `relay/herdr_relay/`). `wss://host/native/ws`, `wss://host/`, and
 `wss://host/anything` all reach the same handler and return `101`.
 
 This matters because it means **no proxy rewrite is required** to serve the relay
@@ -204,11 +204,11 @@ repo's flake pins instead.
 [`contrib/herdr-relay.service`](../contrib/herdr-relay.service) is the same unit
 without Nix: an `EnvironmentFile` for configuration, `DynamicUser`, and the same
 hardening. Adjust its `ExecStart`, keeping the repo layout intact —
-`herdr_relay.py` resolves `web/` at `../web` relative to itself.
+the relay resolves `web/` relative to the package directory.
 
 Dependencies are `websockets` (required) and `pywebpush` plus `py-vapid` (Web
 Push — the relay logs a warning and carries on without them).
-`uv run relay/herdr_relay.py` installs them from the script's PEP 723 metadata.
+`uv run relay/herdr-relay.py` installs them from that launcher's PEP 723 metadata.
 
 ## SSH access to remotes
 

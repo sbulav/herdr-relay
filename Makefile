@@ -1,7 +1,7 @@
 .PHONY: relay-run test lint check
 
 relay-run:
-	python3 relay/herdr_relay.py
+	python3 relay/herdr-relay.py
 
 test:
 	python3 -m unittest discover -s tests -p 'test_*.py'
