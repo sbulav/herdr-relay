@@ -302,12 +302,12 @@ class PaneMetadataTests(unittest.TestCase):
         for status, previous_status, expected in cases:
             with self.subTest(status=status):
                 self.assertEqual(
-                    herdr_relay.attention_state(status, previous_status), expected
+                    herdr_relay.protocol.attention_state(status, previous_status), expected
                 )
 
-        self.assertEqual(herdr_relay.attention_state("idle", "working"), "done")
-        self.assertEqual(herdr_relay.attention_state("idle", "idle"), "idle")
-        self.assertEqual(herdr_relay.attention_state("idle", "idle", "done"), "done")
+        self.assertEqual(herdr_relay.protocol.attention_state("idle", "working"), "done")
+        self.assertEqual(herdr_relay.protocol.attention_state("idle", "idle"), "idle")
+        self.assertEqual(herdr_relay.protocol.attention_state("idle", "idle", "done"), "done")
 
     def test_done_survives_while_the_pane_stays_idle(self):
         snapshots = [
@@ -327,7 +327,7 @@ class PaneMetadataTests(unittest.TestCase):
         with self.poll_state(), patch.object(
             herdr_relay.herdr, "get_all_agents", side_effect=get_all_agents
         ), patch.object(herdr_relay, "broadcast", side_effect=broadcast), patch.object(
-            herdr_relay, "now_ms", return_value=1000
+            herdr_relay.protocol, "now_ms", return_value=1000
         ):
             for _ in range(4):
                 asyncio.run(herdr_relay._poll_once())
@@ -373,7 +373,7 @@ class PaneMetadataTests(unittest.TestCase):
         with self.poll_state(), patch.object(
             herdr_relay.herdr, "get_all_agents", side_effect=get_all_agents
         ), patch.object(herdr_relay, "broadcast", side_effect=broadcast), patch.object(
-            herdr_relay, "now_ms", side_effect=[1000, 2000, 3000]
+            herdr_relay.protocol, "now_ms", side_effect=[1000, 2000, 3000]
         ):
             for _ in range(4):
                 asyncio.run(herdr_relay._poll_once())
@@ -405,7 +405,7 @@ class PaneMetadataTests(unittest.TestCase):
         with self.poll_state(), patch.object(
             herdr_relay.herdr, "get_all_agents", side_effect=get_all_agents
         ), patch.object(herdr_relay, "broadcast", side_effect=broadcast), patch.object(
-            herdr_relay, "now_ms", return_value=1000
+            herdr_relay.protocol, "now_ms", return_value=1000
         ):
             asyncio.run(herdr_relay._poll_once())
             asyncio.run(herdr_relay._poll_once())
@@ -542,7 +542,7 @@ class StructuredOutputTests(unittest.TestCase):
                 patch.object(herdr_relay.state, "known_panes", {"pane-1"}),
                 patch.dict(herdr_relay.state.pane_response_options, {}, clear=True),
                 patch.object(herdr_relay.herdr, "run_herdr", return_value=prompt),
-                patch.object(herdr_relay, "pane_blocks", return_value=(None, None)),
+                patch.object(herdr_relay.transcripts.blocks, "pane_blocks", return_value=(None, None)),
             ):
                 asyncio.run(herdr_relay.handle_client(socket))
 
@@ -557,24 +557,24 @@ class StructuredOutputTests(unittest.TestCase):
 
     def test_claude_project_dir(self):
         self.assertEqual(
-            herdr_relay.claude_project_dir("/Users/me/src/herdr-mobile"),
+            herdr_relay.transcripts.claude.claude_project_dir("/Users/me/src/herdr-mobile"),
             "-Users-me-src-herdr-mobile",
         )
         self.assertEqual(
-            herdr_relay.claude_project_dir("/home/me/my_app.v2"),
+            herdr_relay.transcripts.claude.claude_project_dir("/home/me/my_app.v2"),
             "-home-me-my-app-v2",
         )
 
     def test_summarize_tool(self):
         self.assertEqual(
-            herdr_relay.summarize_tool({"file_path": "/etc/hosts", "content": "x"}),
+            herdr_relay.transcripts.claude.summarize_tool({"file_path": "/etc/hosts", "content": "x"}),
             "/etc/hosts",
         )
         self.assertEqual(
-            herdr_relay.summarize_tool({"command": "make build\nmake test"}),
+            herdr_relay.transcripts.claude.summarize_tool({"command": "make build\nmake test"}),
             "make build",
         )
-        self.assertEqual(herdr_relay.summarize_tool(None), "")
+        self.assertEqual(herdr_relay.transcripts.claude.summarize_tool(None), "")
 
     def test_claude_transcript_mapping(self):
         fixture = "\n".join(
@@ -605,7 +605,7 @@ class StructuredOutputTests(unittest.TestCase):
             ]
         )
 
-        blocks = herdr_relay.transcript_to_blocks(fixture)
+        blocks = herdr_relay.transcripts.claude.transcript_to_blocks(fixture)
 
         self.assertEqual(
             [(block["kind"], block.get("label")) for block in blocks],
@@ -630,7 +630,7 @@ class StructuredOutputTests(unittest.TestCase):
             }
         )
         self.assertEqual(
-            [block["kind"] for block in herdr_relay.transcript_to_blocks(fixture)],
+            [block["kind"] for block in herdr_relay.transcripts.claude.transcript_to_blocks(fixture)],
             ["assistant_text"],
         )
 
@@ -646,7 +646,7 @@ class StructuredOutputTests(unittest.TestCase):
             )
             for index in range(250)
         )
-        blocks = herdr_relay.transcript_to_blocks(fixture, limit=10)
+        blocks = herdr_relay.transcripts.claude.transcript_to_blocks(fixture, limit=10)
         self.assertEqual(
             [block["markdown"] for block in blocks],
             [str(index) for index in range(240, 250)],
@@ -689,8 +689,8 @@ class StructuredOutputTests(unittest.TestCase):
                 patch.object(herdr_relay.herdr, "run_herdr_checked", return_value=(True, pane_list)),
             ):
                 agents, _online = herdr_relay.herdr.get_agents_from_host()
-                first_blocks, _first_signature = herdr_relay.pane_blocks("first")
-                second_blocks, _second_signature = herdr_relay.pane_blocks("second")
+                first_blocks, _first_signature = herdr_relay.transcripts.blocks.pane_blocks("first")
+                second_blocks, _second_signature = herdr_relay.transcripts.blocks.pane_blocks("second")
 
             self.assertNotIn("agent_session", agents[0])
             self.assertEqual(first_blocks[0]["markdown"], "first conversation")
@@ -706,13 +706,13 @@ class StructuredOutputTests(unittest.TestCase):
             ),
             patch.dict(herdr_relay.state.pane_session_refs, {}, clear=True),
         ):
-            self.assertEqual(herdr_relay.pane_blocks("ambiguous"), (None, None))
+            self.assertEqual(herdr_relay.transcripts.blocks.pane_blocks("ambiguous"), (None, None))
 
     def test_claude_id_ref_uses_project_transcript_path(self):
         cwd = "/work/repo"
         session_id = "session-123"
         with tempfile.TemporaryDirectory() as projects:
-            project = os.path.join(projects, herdr_relay.claude_project_dir(cwd))
+            project = os.path.join(projects, herdr_relay.transcripts.claude.claude_project_dir(cwd))
             os.mkdir(project)
             with open(os.path.join(project, session_id + ".jsonl"), "w") as transcript:
                 transcript.write(json.dumps({
@@ -732,7 +732,7 @@ class StructuredOutputTests(unittest.TestCase):
                     clear=True,
                 ),
             ):
-                blocks, _signature = herdr_relay.pane_blocks("pane-id")
+                blocks, _signature = herdr_relay.transcripts.blocks.pane_blocks("pane-id")
 
         self.assertEqual(blocks[0]["markdown"], "id conversation")
 
@@ -764,7 +764,7 @@ class StructuredOutputTests(unittest.TestCase):
             herdr_relay.herdr.get_agents_from_host()
             self.assertEqual(herdr_relay.state.pane_session_refs, {})
             for pane_id in ("bad-kind", "empty", "null"):
-                self.assertEqual(herdr_relay.pane_blocks(pane_id), (None, None))
+                self.assertEqual(herdr_relay.transcripts.blocks.pane_blocks(pane_id), (None, None))
 
     def test_opencode_id_ref_selects_session_instead_of_cwd(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -804,7 +804,7 @@ class StructuredOutputTests(unittest.TestCase):
                     clear=True,
                 ),
             ):
-                blocks, _signature = herdr_relay.pane_blocks("opencode")
+                blocks, _signature = herdr_relay.transcripts.blocks.pane_blocks("opencode")
 
         self.assertEqual(blocks[0]["markdown"], "target session")
 
@@ -838,7 +838,7 @@ class StructuredOutputTests(unittest.TestCase):
             ],
         }
 
-        blocks = herdr_relay.opencode_to_blocks(document)
+        blocks = herdr_relay.transcripts.opencode.opencode_to_blocks(document)
 
         self.assertEqual(
             [(block["kind"], block.get("label")) for block in blocks],
@@ -868,7 +868,7 @@ class StructuredOutputTests(unittest.TestCase):
             ],
         }
 
-        blocks = herdr_relay.opencode_to_blocks(document)
+        blocks = herdr_relay.transcripts.opencode.opencode_to_blocks(document)
 
         self.assertEqual(blocks[0]["markdown"], markdown)
 
@@ -992,7 +992,7 @@ class RelayInputValidationTests(unittest.TestCase):
         socket = Socket()
         with (
             patch.object(herdr_relay.state, "known_panes", {"pane-1"}),
-            patch.object(herdr_relay, "pane_blocks", return_value=(None, None)),
+            patch.object(herdr_relay.transcripts.blocks, "pane_blocks", return_value=(None, None)),
         ):
             asyncio.run(herdr_relay.handle_client(socket))
 

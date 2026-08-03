@@ -31,7 +31,7 @@ class NativeContractTests(unittest.TestCase):
 
     def test_server_info(self):
         # The first frame on every connection, pinned like any other.
-        self.assert_contract("server_info", herdr_relay.server_info())
+        self.assert_contract("server_info", herdr_relay.protocol.server_info())
 
     def test_agents_snapshot(self):
         agents = [{
@@ -70,7 +70,7 @@ class NativeContractTests(unittest.TestCase):
             patch.dict(herdr_relay.state.pane_activity, {}, clear=True),
             patch.dict(herdr_relay.state.pane_revisions, {}, clear=True),
             patch.dict(herdr_relay.state.pane_attention_states, {}, clear=True),
-            patch.object(herdr_relay, "now_ms", return_value=1700000000000),
+            patch.object(herdr_relay.protocol, "now_ms", return_value=1700000000000),
             patch.dict(herdr_relay.state.pane_remote_map, {}, clear=True),
             patch.dict(herdr_relay.state.session_target_map, {}, clear=True),
             patch.dict(herdr_relay.state.pane_cwd_map, {}, clear=True),
@@ -126,7 +126,7 @@ class NativeContractTests(unittest.TestCase):
             patch.dict(herdr_relay.state.pane_activity, {}, clear=True),
             patch.dict(herdr_relay.state.pane_revisions, {}, clear=True),
             patch.dict(herdr_relay.state.pane_attention_states, {}, clear=True),
-            patch.object(herdr_relay, "now_ms", return_value=1700000000000),
+            patch.object(herdr_relay.protocol, "now_ms", return_value=1700000000000),
             patch.dict(herdr_relay.state.pane_response_options, {}, clear=True),
         ):
             asyncio.run(herdr_relay._poll_once())
@@ -167,14 +167,14 @@ class NativeContractTests(unittest.TestCase):
         with (
             patch.object(herdr_relay.herdr, "get_all_agents", return_value=(agents, [])),
             patch.object(herdr_relay, "broadcast", side_effect=broadcast),
-            patch.object(herdr_relay, "pane_blocks", return_value=(blocks, "stable-signature")),
+            patch.object(herdr_relay.transcripts.blocks, "pane_blocks", return_value=(blocks, "stable-signature")),
             patch.dict(herdr_relay.state.subscriptions, {socket: "pane-7"}, clear=True),
             patch.dict(herdr_relay.state.stream_sigs, {}, clear=True),
             patch.dict(herdr_relay.state.last_statuses, {}, clear=True),
             patch.dict(herdr_relay.state.pane_activity, {}, clear=True),
             patch.dict(herdr_relay.state.pane_revisions, {}, clear=True),
             patch.dict(herdr_relay.state.pane_attention_states, {}, clear=True),
-            patch.object(herdr_relay, "now_ms", return_value=1700000000000),
+            patch.object(herdr_relay.protocol, "now_ms", return_value=1700000000000),
         ):
             asyncio.run(herdr_relay._poll_once())
 
