@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["websockets>=14.0", "zeroconf>=0.80.0", "pywebpush>=2.0.0", "py-vapid>=1.9.0"]
+# dependencies = ["websockets>=14.0", "pywebpush>=2.0.0", "py-vapid>=1.9.0"]
 # ///
 """herdr-remote relay — polls herdr, accepts push events (HTTP POST + WebSocket + UDP), broadcasts to clients."""
 import asyncio, glob, hmac, json, logging, os, re, shlex, shutil, signal, socket, sqlite3, subprocess, time, uuid
@@ -1487,25 +1487,6 @@ class UDPPlugin(asyncio.DatagramProtocol):
             pass
 
 
-def start_mdns():
-    try:
-        from zeroconf import Zeroconf, ServiceInfo
-        import socket as sock_mod
-        import threading
-        ip = sock_mod.gethostbyname(sock_mod.gethostname())
-        info = ServiceInfo(
-            "_herdr-remote._tcp.local.", "herdr-remote._herdr-remote._tcp.local.",
-            addresses=[sock_mod.inet_aton(ip)], port=WS_PORT,
-        )
-        zc = Zeroconf()
-        threading.Thread(target=zc.register_service, args=(info,), daemon=True).start()
-        log.info("mDNS registering at %s", ip)
-        return zc, info
-    except Exception as e:
-        log.warning("mDNS skipped: %s", e)
-        return None, None
-
-
 def require_auth_token():
     if not AUTH_TOKEN:
         raise SystemExit("HERDR_RELAY_TOKEN is required; set it before starting the relay")
@@ -1513,7 +1494,6 @@ def require_auth_token():
 
 async def main():
     require_auth_token()
-    zc, info = start_mdns()
     loop = asyncio.get_running_loop()
     try:
         await loop.create_datagram_endpoint(UDPPlugin, local_addr=("127.0.0.1", 8376))
@@ -1540,9 +1520,6 @@ async def main():
         for task in background_tasks:
             task.cancel()
         await asyncio.gather(*background_tasks, return_exceptions=True)
-        if zc and info:
-            zc.unregister_service(info)
-            zc.close()
 
 
 if __name__ == "__main__":

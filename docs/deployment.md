@@ -10,13 +10,11 @@ the frames. This document specifies the socket they arrive on.
 
 ## What the relay serves
 
-One process, one listener, three transports:
+One process, one listener, one transport:
 
 | Transport | Bind | Purpose |
 |-----------|------|---------|
 | TCP `HERDR_RELAY_PORT` (default 8375) | `0.0.0.0` | WebSocket **and** HTTP, same port |
-| UDP 8376 | `127.0.0.1` | herdr plugin push, loopback only — never proxied |
-| mDNS `_herdr-remote._tcp` | LAN | LEGACY (#16), advertises LAN discovery no current client uses |
 
 The relay speaks plain HTTP. It terminates no TLS and knows nothing about its
 public name, so anything reachable from the internet needs a proxy in front.
@@ -79,8 +77,6 @@ Requirements, not a configuration:
   every 20 s by default, so an idle socket stays warm, but set the read timeout
   to at least 60 s — a proxy default of 30 s or less will still cut it.
 - **Do not buffer.** Responses are streamed frames, not documents.
-- Only the TCP port needs proxying. The UDP listener is loopback-only by design;
-  exposing it would accept unauthenticated events.
 
 ### nginx
 
@@ -197,10 +193,9 @@ without Nix: an `EnvironmentFile` for configuration, `DynamicUser`, and the same
 hardening. Adjust its `ExecStart`, keeping the repo layout intact —
 `herdr_relay.py` resolves `web/` at `../web` relative to itself.
 
-Dependencies are `websockets` (required), `zeroconf` (mDNS, LEGACY #16), and
-`pywebpush` plus `py-vapid` (Web Push, LEGACY #14 — the relay logs a warning and
-carries on without them). `uv run relay/herdr_relay.py` installs all of them
-from the script's PEP 723 metadata.
+Dependencies are `websockets` (required) and `pywebpush` plus `py-vapid` (Web
+Push — the relay logs a warning and carries on without them).
+`uv run relay/herdr_relay.py` installs them from the script's PEP 723 metadata.
 
 ## SSH access to remotes
 

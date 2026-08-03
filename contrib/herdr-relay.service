@@ -62,7 +62,8 @@ ProtectKernelTunables=yes
 ProtectProc=invisible
 ProtectSystem=strict
 RemoveIPC=yes
-# AF_NETLINK is how zeroconf enumerates interfaces for mDNS.
+# AF_NETLINK: glibc's resolver enumerates interfaces over netlink, and polling a
+# remote resolves its name through ssh in this same cgroup.
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 RestrictNamespaces=yes
 RestrictRealtime=yes

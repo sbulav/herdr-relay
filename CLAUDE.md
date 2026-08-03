@@ -34,7 +34,7 @@ The relay (`relay/herdr_relay.py`) is the central hub: it polls herdr for agent 
 
 | Path | What | Language |
 |------|------|----------|
-| `relay/herdr_relay.py` | WebSocket+HTTP relay server | Python (websockets, zeroconf) |
+| `relay/herdr_relay.py` | WebSocket+HTTP relay server | Python (websockets) |
 | `relay/herdr_telegram.py` | Telegram bot client | Python (python-telegram-bot) |
 | `web/index.html` | Mobile/desktop web app (single file) | HTML/CSS/JS |
 | `docs/native-protocol.md` | The wire contract clients are written against | Markdown |

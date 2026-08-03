@@ -8,9 +8,6 @@
   # (#14). The relay already degrades to a warning when pywebpush is missing, so
   # this stays off by default rather than dragging cryptography into the closure.
   withWebPush ? false,
-  # mDNS advertises LAN discovery no current client uses; #16 deletes it. Kept
-  # on until then so the packaged relay behaves like `uv run` does.
-  withZeroconf ? true,
 }:
 let
   version = "0.7.0";
@@ -18,7 +15,6 @@ let
   pythonEnv = python3.withPackages (
     ps:
     [ ps.websockets ]
-    ++ lib.optional withZeroconf ps.zeroconf
     ++ lib.optionals withWebPush [
       ps.pywebpush
       ps.py-vapid

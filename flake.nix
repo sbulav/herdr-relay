@@ -43,10 +43,7 @@
         system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
-          python = pkgs.python3.withPackages (ps: [
-            ps.websockets
-            ps.zeroconf
-          ]);
+          python = pkgs.python3.withPackages (ps: [ ps.websockets ]);
         in
         {
           default = pkgs.mkShell {
@@ -65,10 +62,7 @@
         system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
-          python = pkgs.python3.withPackages (ps: [
-            ps.websockets
-            ps.zeroconf
-          ]);
+          python = pkgs.python3.withPackages (ps: [ ps.websockets ]);
         in
         {
           package = self.packages.${system}.herdr-relay;
