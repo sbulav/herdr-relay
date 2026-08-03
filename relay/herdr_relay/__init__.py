@@ -18,42 +18,9 @@ from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
 # rest of this module moves out into siblings. `log` and `audit` are the exceptions
 # worth importing by name — a logger and one write to it, singletons no test
 # replaces.
-from . import config, presets, push, state
+from . import config, herdr, panes, presets, push, state
 from .audit import audit
 from .config import log
-
-# Kiro CLI free-text permission menus
-TOOL_OPTIONS = ["yes, single permission", "trust, always allow", "no (tab to edit)"]
-SUBAGENT_OPTIONS = ["approve all pending", "configure individually", "exit (cancel subagents)"]
-# OpenCode TUI: left/right + enter (default selection = Allow once)
-OPENCODE_OPTIONS = ["Allow once", "Allow always", "Reject"]
-# Claude Code numbered selection menus: "❯ 1. Yes" / "  2. No"
-CLAUDE_YES_NO = ["1. Yes", "2. No"]
-NUMBERED_OPT_RE = re.compile(r"(?:^|\n)[ \t]*[❯>]?[ \t]*(\d+)\.\s+(\S[^\n]*)")
-# Bullet-style free-text options: "> yes, single permission" or "• Allow once"
-BULLET_OPT_RE = re.compile(
-    r"(?:^|\n)[ \t]*(?:[❯>•*-]|\[\s?\])[ \t]+([A-Za-z][^\n]{0,80})"
-)
-CHROME_RE = re.compile(
-    r"^[\s\u2500-\u259f⬝_—|◔◑◕●]+$"
-    r"|^[\s\u2500-\u259f⬝]*(?i:esc\s+interrupt)\s*$"
-    r"|Kiro\s[·•]"
-    r"|esc to cancel"
-    r"|type to queue"
-    r"|^\s*[◔◑◕●]\s+(Shell|Bash)"
-)
-
-
-SAFE_RESPONSES = {"y", "n", "a", "yes", "no", "trust", "yes, single permission", "trust, always allow", "no (tab to edit)", "approve all pending", "configure individually", "exit (cancel subagents)"}
-SAFE_KEYS = {"y", "n", "a", "Enter", "Tab", "Escape", "Space", "C-c", "Ctrl+c", "Up", "Down", "Left", "Right", "BSpace", *map(str, range(1, 10))}
-
-
-def is_safe_key(key):
-    if key in SAFE_KEYS:
-        return True
-    return bool(re.fullmatch(r"(?:ctrl|shift)\+(?:[a-z]|[1-9]|Enter|Tab|Escape|Space|Up|Down|Left|Right)", key))
-
-
 
 
 def server_info():
@@ -123,250 +90,6 @@ def add_pane_metadata(entry, pane_id):
         entry["output_revision"] = revision
 
 
-def run_herdr_checked(*args, remote=None):
-    try:
-        if remote:
-            cmd = [
-                "ssh",
-                "-o", "ConnectTimeout=5",
-                "-o", "ServerAliveInterval=3",
-                "-o", "ServerAliveCountMax=2",
-                "-o", "BatchMode=yes",
-                remote, config.HERDR, *args,
-            ]
-        else:
-            cmd = [config.HERDR, *args]
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
-        return r.returncode == 0, r.stdout.strip()
-    except Exception as exc:
-        if remote:
-            print(f"herdr poll failed for {remote}: {exc!r}", flush=True)
-        return False, ""
-
-
-def run_herdr(*args, remote=None):
-    return run_herdr_checked(*args, remote=remote)[1]
-
-
-def get_agents_from_host(remote=None, host_id=None):
-    online, raw = run_herdr_checked("pane", "list", remote=remote)
-    host_label = host_id or remote or "local"
-    try:
-        data = json.loads(raw)
-        panes = data.get("result", {}).get("panes", [])
-        agents = []
-        for p in panes:
-            if not p.get("agent"):
-                continue
-            ref = p.get("agent_session")
-            if (
-                isinstance(ref, dict)
-                and ref.get("kind") in ("id", "path")
-                and isinstance(ref.get("value"), str)
-                and ref["value"]
-            ):
-                state.pane_session_refs[(remote, p["pane_id"])] = {
-                    "kind": ref["kind"], "value": ref["value"]
-                }
-            agent = {
-                "pane_id": p["pane_id"],
-                "agent": p.get("agent", ""),
-                "label": p.get("label", ""),
-                "status": p.get("agent_status", "unknown"),
-                "cwd": p.get("cwd", ""),
-                "project": os.path.basename(p.get("cwd", "")),
-                "host": host_label,
-                "remote": remote,
-                "workspace_id": p.get("workspace_id", ""),
-                "tab_id": p.get("tab_id", ""),
-            }
-            revision = p.get("revision")
-            if isinstance(revision, int) and not isinstance(revision, bool):
-                agent["output_revision"] = revision
-            agents.append(agent)
-    except (json.JSONDecodeError, KeyError):
-        agents = []
-    return agents, online
-
-
-async def get_all_agents():
-    if presets.HOST_TARGETS:
-        targets = list(presets.HOST_TARGETS.items())
-        results = await asyncio.gather(*(
-            asyncio.to_thread(
-                get_agents_from_host,
-                remote=remote,
-                host_id=host_id,
-            )
-            for host_id, remote in targets
-        ))
-        hosts = [
-            {"host_id": host_id, "online": online}
-            for (host_id, _remote), (_host_agents, online) in zip(targets, results)
-        ]
-    else:
-        targets = [(None, None), *((None, remote) for remote in config.REMOTES)]
-        results = await asyncio.gather(*(
-            asyncio.to_thread(get_agents_from_host, remote=remote)
-            for _host_id, remote in targets
-        ))
-        hosts = []
-    agents = [
-        agent
-        for host_agents, _online in results
-        for agent in host_agents
-    ]
-    return agents, hosts
-
-
-def _read_pane_lines(value, default=30, maximum=2000):
-    """Coerce a client-supplied line count into a sane positive int.
-
-    Anything unparseable falls back to the default rather than reaching herdr,
-    which reports a bad --lines as an error string on stdout with exit code 0 —
-    indistinguishable, downstream, from real terminal output.
-    """
-    try:
-        count = int(str(value).strip())
-    except (TypeError, ValueError):
-        return default
-    if count < 1:
-        return default
-    return min(count, maximum)
-
-
-def read_pane(pane_id, remote=None):
-    raw = run_herdr("pane", "read", pane_id, "--lines", "50", "--source", "recent", remote=remote)
-    lines = [l for l in raw.splitlines() if l.strip() and not CHROME_RE.search(l)]
-    return "\n".join(lines[-20:])
-
-
-def _numbered_options(text):
-    numbered = NUMBERED_OPT_RE.findall(text)
-    if len(numbered) < 2:
-        return None
-    seen = {}
-    for num, label in numbered:
-        if num not in seen:
-            seen[num] = f"{num}. {label.strip()}"
-    opts = [seen[k] for k in sorted(seen, key=int)]
-    return opts if len(opts) >= 2 else None
-
-
-def _bullet_options(text):
-    labels = []
-    seen = set()
-    for label in BULLET_OPT_RE.findall(text):
-        cleaned = label.strip().rstrip(".,;")
-        key = cleaned.lower()
-        if key in seen or len(cleaned) < 2:
-            continue
-        # Skip chrome / prose that looks like a bullet but isn't a choice.
-        if any(x in key for x in ("esc to", "tab to", "ctrl+", "type to", "press ")):
-            continue
-        seen.add(key)
-        labels.append(cleaned)
-    return labels if len(labels) >= 2 else None
-
-
-def detect_options(text):
-    """Return selectable response labels for a blocked-agent prompt, or None.
-
-    Labels are what clients display. respond_action() maps a chosen label to
-    either free-text (send-text) or a key sequence (send-keys) for the agent TUI.
-    """
-    if not text:
-        return None
-    lower = text.lower()
-
-    # --- Known free-text menus (exact option strings the agent reads) ---
-    if "yes, single permission" in lower:
-        return TOOL_OPTIONS
-    if "approve all pending" in lower or "pending from subagents" in lower:
-        return SUBAGENT_OPTIONS
-
-    # OpenCode: "Permission required" with Allow once / Allow always / Reject
-    if "permission required" in lower or (
-        "allow once" in lower and "allow always" in lower and "reject" in lower
-    ):
-        return list(OPENCODE_OPTIONS)
-
-    # --- Numbered menus (Claude Code and similar) ---
-    numbered = _numbered_options(text)
-    if numbered:
-        return numbered
-
-    # Bullet-style free-text options (> / • / -)
-    bullets = _bullet_options(text)
-    if bullets:
-        return bullets
-
-    # Claude "Do you want to proceed?" without captured numbers
-    if (
-        "do you want to proceed" in lower
-        or "do you want to allow" in lower
-        or "ask rule" in lower
-        or "/permissions to let auto mode decide" in lower
-    ):
-        return list(CLAUDE_YES_NO)
-
-    # Codex / simple y/n
-    if "[y/n]" in lower or "yes (y)" in lower or "proceed (y)" in lower:
-        return ["y", "n"]
-
-    # Cursor-style write approval
-    if "write to this file?" in lower and "proceed (y)" in lower:
-        return ["y", "n"]
-
-    # Hermes / generic allow once | session | deny
-    if "allow once" in lower and ("deny" in lower or "allow for this session" in lower):
-        return ["allow once", "allow for this session", "deny"]
-
-    return None
-
-
-def respond_action(text):
-    """Map a client option label to a send action.
-
-    Returns ("text", payload) for pane send-text, or ("keys", [key...]) for
-    pane send-keys. OpenCode uses left/right + enter; Claude uses digits.
-    """
-    if not text:
-        return "text", text
-    raw = text.strip()
-    lower = raw.lower()
-
-    # Numbered menu label -> digit
-    m = re.match(r"^(\d+)\.\s+", raw)
-    if m:
-        return "text", m.group(1)
-
-    # OpenCode permission dialog (default selection = first = Allow once).
-    # Only exact OpenCode labels map to keys — free-text "deny"/"always" stay text.
-    if lower == "allow once":
-        return "keys", ["Enter"]
-    if lower in ("allow always", "always allow"):
-        # move right to "Allow always", enter, then confirm stage
-        return "keys", ["Right", "Enter", "Enter"]
-    if lower == "reject":
-        return "keys", ["Escape"]
-
-    # y/n style
-    if lower in ("y", "yes"):
-        return "text", "y"
-    if lower in ("n", "no"):
-        return "text", "n"
-
-    return "text", raw
-
-
-def respond_text(text):
-    """Backward-compatible: return free-text payload only (no key sequences)."""
-    kind, payload = respond_action(text)
-    if kind == "text":
-        return payload
-    # Callers that only support text fall back to first meaningful token.
-    return text
 
 
 # ---------------------------------------------------------------------------
@@ -692,8 +415,8 @@ async def poll_loop():
 
 
 async def _poll_once():
-    state.pane_session_refs.clear()  # Host threads populate refs while get_all_agents() awaits.
-    agents, hosts = await get_all_agents()
+    state.pane_session_refs.clear()  # Host threads populate refs while herdr.get_all_agents() awaits.
+    agents, hosts = await herdr.get_all_agents()
     current_pane_ids = {a["pane_id"] for a in agents}
     state.pane_remote_map.clear()
     state.session_target_map.clear()
@@ -751,7 +474,7 @@ async def _poll_once():
     blocked_content = dict(zip(
         (a["pane_id"] for a in newly_blocked),
         await asyncio.gather(*(
-            asyncio.to_thread(read_pane, a["pane_id"], remote=a.get("remote"))
+            asyncio.to_thread(herdr.read_pane, a["pane_id"], remote=a.get("remote"))
             for a in newly_blocked
         )),
     ))
@@ -759,16 +482,16 @@ async def _poll_once():
         pid, status = a["pane_id"], a["status"]
         if status == "blocked" and state.last_statuses.get(pid) != "blocked":
             content = blocked_content.get(pid, "")
-            options = detect_options(content)
+            options = panes.detect_options(content)
             state.pane_response_options[pid] = {
-                option.lower() for option in (options or TOOL_OPTIONS)
+                option.lower() for option in (options or panes.TOOL_OPTIONS)
             }
             await broadcast({
                 "type": "blocked", "pane_id": pid,
                 "agent": a["agent"], "project": a["project"],
                 "host": a.get("host", "local"),
                 "prompt": content[:500],
-                "options": options or TOOL_OPTIONS
+                "options": options or panes.TOOL_OPTIONS
             })
             await push.send_web_push(
                 title=f"🐑 {a['project']} blocked",
@@ -829,17 +552,17 @@ async def event_push():
             if remote or host == "local":
                 # Same 15s ssh-backed call the poll loop offloads (#26); inline
                 # here it would stall every client on a pushed blocked event.
-                content = await asyncio.to_thread(read_pane, pane_id, remote=remote)
+                content = await asyncio.to_thread(herdr.read_pane, pane_id, remote=remote)
             else:
                 content = event.get("prompt", "Agent is blocked")
-            options = detect_options(content)
+            options = panes.detect_options(content)
             await broadcast({
                 "type": "blocked", "pane_id": pane_id,
                 "agent": event.get("agent", ""),
                 "project": event.get("project", ""),
                 "host": host,
                 "prompt": content[:500],
-                "options": options or TOOL_OPTIONS
+                "options": options or panes.TOOL_OPTIONS
             })
 
         if pane_id and event.get("type") == "agent_event":
@@ -1058,18 +781,18 @@ async def handle_client(ws):
                     continue
                 text = msg.get("text", "")
                 normalized_text = text.strip().lower()
-                allowed_responses = SAFE_RESPONSES | state.pane_response_options.get(pane_id, set())
+                allowed_responses = panes.SAFE_RESPONSES | state.pane_response_options.get(pane_id, set())
                 if normalized_text not in allowed_responses:
                     await ws.send(json.dumps({"type": "error", "message": "response not in allowlist"}))
                     continue
                 remote = state.pane_remote_map.get(pane_id)
                 log.info("Response from %s (%s): pane=%s text=%r", ip, device, pane_id, text)
                 audit("respond", ip, device, pane_id, f"text={text!r}")
-                kind, payload = respond_action(text)
+                kind, payload = panes.respond_action(text)
                 if kind == "keys":
-                    await asyncio.to_thread(run_herdr, "pane", "send-keys", pane_id, *payload, remote=remote)
+                    await asyncio.to_thread(herdr.run_herdr, "pane", "send-keys", pane_id, *payload, remote=remote)
                 else:
-                    await asyncio.to_thread(run_herdr, "pane", "send-text", pane_id, payload + "\n", remote=remote)
+                    await asyncio.to_thread(herdr.run_herdr, "pane", "send-text", pane_id, payload + "\n", remote=remote)
             elif msg_type == "agent_event":
                 state.event_queue.put_nowait(msg)
             elif msg_type == "read_pane":
@@ -1079,9 +802,9 @@ async def handle_client(ws):
                     continue
                 # herdr rejects a non-numeric --lines by printing an error and
                 # exiting 0, which would reach the client as pane content.
-                lines = _read_pane_lines(msg.get("lines"))
+                lines = herdr._read_pane_lines(msg.get("lines"))
                 remote = state.pane_remote_map.get(pane_id)
-                content = await asyncio.to_thread(run_herdr, "pane", "read", pane_id, "--lines", str(lines), "--source", "recent", remote=remote)
+                content = await asyncio.to_thread(herdr.run_herdr, "pane", "read", pane_id, "--lines", str(lines), "--source", "recent", remote=remote)
                 payload = {"type": "pane_content", "pane_id": pane_id, "content": content}
                 add_pane_metadata(payload, pane_id)
                 # Include structured blocks on demand without changing which pane
@@ -1095,7 +818,7 @@ async def handle_client(ws):
                     if state.subscriptions.get(ws) == pane_id:
                         state.stream_sigs[(id(ws), pane_id)] = sig
                 await ws.send(json.dumps(payload))
-                options = detect_options(content) if state.last_statuses.get(pane_id) == "blocked" else None
+                options = panes.detect_options(content) if state.last_statuses.get(pane_id) == "blocked" else None
                 if options:
                     state.pane_response_options[pane_id] = {option.lower() for option in options}
                     await ws.send(json.dumps({
@@ -1130,13 +853,13 @@ async def handle_client(ws):
                     await ws.send(json.dumps({"type": "error", "message": "unknown pane_id"}))
                     continue
                 keys = msg.get("keys", [])
-                if not all(is_safe_key(k) for k in keys):
+                if not all(panes.is_safe_key(k) for k in keys):
                     await ws.send(json.dumps({"type": "error", "message": "keys contain disallowed values"}))
                     continue
                 remote = state.pane_remote_map.get(pane_id)
                 log.info("Keys from %s (%s): pane=%s keys=%s", ip, device, pane_id, keys)
                 audit("send_keys", ip, device, pane_id, f"keys={keys}")
-                await asyncio.to_thread(run_herdr, "pane", "send-keys", pane_id, *keys, remote=remote)
+                await asyncio.to_thread(herdr.run_herdr, "pane", "send-keys", pane_id, *keys, remote=remote)
             elif msg_type == "send_text":
                 pane_id = msg["pane_id"]
                 if pane_id not in state.known_panes:
@@ -1149,13 +872,13 @@ async def handle_client(ws):
                 remote = state.pane_remote_map.get(pane_id)
                 log.info("Text from %s (%s): pane=%s text=%r", ip, device, pane_id, text)
                 audit("send_text", ip, device, pane_id, f"text={text!r}")
-                await asyncio.to_thread(run_herdr, "pane", "send-text", pane_id, text, remote=remote)
+                await asyncio.to_thread(herdr.run_herdr, "pane", "send-text", pane_id, text, remote=remote)
             elif msg_type == "create_tab":
                 workspace_id = msg.get("workspace_id", "")
                 if workspace_id:
                     log.info("Create tab from %s (%s): workspace=%s", ip, device, workspace_id)
                     audit("create_tab", ip, device, "", f"workspace={workspace_id}")
-                    await asyncio.to_thread(run_herdr, "tab", "create", "--workspace", workspace_id, "--focus")
+                    await asyncio.to_thread(herdr.run_herdr, "tab", "create", "--workspace", workspace_id, "--focus")
                     await ws.send(json.dumps({"type": "tab_created", "ok": True}))
                 else:
                     await ws.send(json.dumps({"type": "error", "message": "workspace_id required"}))
@@ -1199,7 +922,7 @@ def launch_session(msg):
     if preset["model"] != "default":
         argv.extend(["--model", preset["model"]])
     name = f"mobile-{preset['id']}-{uuid.uuid4().hex[:8]}"
-    success, output = run_herdr_checked("agent", "start", name, "--cwd", host["cwd"], "--no-focus", "--", *argv, remote=remote)
+    success, output = herdr.run_herdr_checked("agent", "start", name, "--cwd", host["cwd"], "--no-focus", "--", *argv, remote=remote)
     if not success:
         return command_error(request_id, "LAUNCH_FAILED", "Herdr did not start the client")
     return {"type": "command_ack", "request_id": request_id, "result": {"host_id": host_id}}
@@ -1215,7 +938,7 @@ def terminate_session(msg):
     if not target:
         return command_error(request_id, "STALE_SESSION", "Session is no longer active")
     pane_id, remote = target
-    success, output = run_herdr_checked("pane", "close", pane_id, remote=remote)
+    success, output = herdr.run_herdr_checked("pane", "close", pane_id, remote=remote)
     if not success:
         return command_error(request_id, "TERMINATE_FAILED", "Herdr did not terminate the client")
     state.session_target_map.pop(msg["session_id"], None)

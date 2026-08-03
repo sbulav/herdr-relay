@@ -62,7 +62,7 @@ class NativeContractTests(unittest.TestCase):
             sent.append(frame)
 
         with (
-            patch.object(herdr_relay, "get_all_agents", return_value=(agents, hosts)),
+            patch.object(herdr_relay.herdr, "get_all_agents", return_value=(agents, hosts)),
             patch.object(herdr_relay.presets, "PRESETS", presets),
             patch.object(herdr_relay.presets, "PRESETS_BY_ID", {"review": presets[0]}),
             patch.object(herdr_relay, "broadcast", side_effect=broadcast),
@@ -118,9 +118,9 @@ class NativeContractTests(unittest.TestCase):
 
         prompt = "Do you want to proceed?\n1. Yes\n2. No"
         with (
-            patch.object(herdr_relay, "get_all_agents", return_value=(agents, [])),
+            patch.object(herdr_relay.herdr, "get_all_agents", return_value=(agents, [])),
             patch.object(herdr_relay, "broadcast", side_effect=broadcast),
-            patch.object(herdr_relay, "read_pane", return_value=prompt),
+            patch.object(herdr_relay.herdr, "read_pane", return_value=prompt),
             patch.object(herdr_relay.push, "send_web_push", side_effect=send_web_push),
             patch.dict(herdr_relay.state.last_statuses, {}, clear=True),
             patch.dict(herdr_relay.state.pane_activity, {}, clear=True),
@@ -165,7 +165,7 @@ class NativeContractTests(unittest.TestCase):
             pass
 
         with (
-            patch.object(herdr_relay, "get_all_agents", return_value=(agents, [])),
+            patch.object(herdr_relay.herdr, "get_all_agents", return_value=(agents, [])),
             patch.object(herdr_relay, "broadcast", side_effect=broadcast),
             patch.object(herdr_relay, "pane_blocks", return_value=(blocks, "stable-signature")),
             patch.dict(herdr_relay.state.subscriptions, {socket: "pane-7"}, clear=True),
@@ -195,7 +195,7 @@ class NativeContractTests(unittest.TestCase):
         with (
             patch.object(herdr_relay.presets, "PRESETS_BY_ID", {"review": preset}),
             patch.object(herdr_relay.uuid, "uuid4", return_value=UUID()),
-            patch.object(herdr_relay, "run_herdr_checked", return_value=(True, "started")) as run,
+            patch.object(herdr_relay.herdr, "run_herdr_checked", return_value=(True, "started")) as run,
         ):
             frame = herdr_relay.launch_session({
                 "request_id": "req-launch-17",
@@ -217,7 +217,7 @@ class NativeContractTests(unittest.TestCase):
                 {session: ("pane-7", "deploy@buildbox")},
                 clear=True,
             ),
-            patch.object(herdr_relay, "run_herdr_checked", return_value=(True, "pane closed")),
+            patch.object(herdr_relay.herdr, "run_herdr_checked", return_value=(True, "pane closed")),
         ):
             frame = herdr_relay.terminate_session({
                 "request_id": "req-stop-18",
@@ -249,7 +249,7 @@ class NativeContractTests(unittest.TestCase):
                     "request_id": "req-host", "preset_id": "review", "host_id": "other"
                 }),
             )
-            with patch.object(herdr_relay, "run_herdr_checked", return_value=(False, "")):
+            with patch.object(herdr_relay.herdr, "run_herdr_checked", return_value=(False, "")):
                 self.assert_contract(
                     "command_error_launch_failed",
                     herdr_relay.launch_session({
@@ -275,7 +275,7 @@ class NativeContractTests(unittest.TestCase):
                 {"legacy:buildbox:pane-7": ("pane-7", "deploy@buildbox")},
                 clear=True,
             ),
-            patch.object(herdr_relay, "run_herdr_checked", return_value=(False, "")),
+            patch.object(herdr_relay.herdr, "run_herdr_checked", return_value=(False, "")),
         ):
             self.assert_contract(
                 "command_error_terminate_failed",
