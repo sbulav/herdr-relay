@@ -65,7 +65,7 @@ class NativeContractTests(unittest.TestCase):
             patch.object(herdr_relay.herdr, "get_all_agents", return_value=(agents, hosts)),
             patch.object(herdr_relay.presets, "PRESETS", presets),
             patch.object(herdr_relay.presets, "PRESETS_BY_ID", {"review": presets[0]}),
-            patch.object(herdr_relay, "broadcast", side_effect=broadcast),
+            patch.object(herdr_relay.transport, "broadcast", side_effect=broadcast),
             patch.dict(herdr_relay.state.last_statuses, {}, clear=True),
             patch.dict(herdr_relay.state.pane_activity, {}, clear=True),
             patch.dict(herdr_relay.state.pane_revisions, {}, clear=True),
@@ -119,7 +119,7 @@ class NativeContractTests(unittest.TestCase):
         prompt = "Do you want to proceed?\n1. Yes\n2. No"
         with (
             patch.object(herdr_relay.herdr, "get_all_agents", return_value=(agents, [])),
-            patch.object(herdr_relay, "broadcast", side_effect=broadcast),
+            patch.object(herdr_relay.transport, "broadcast", side_effect=broadcast),
             patch.object(herdr_relay.herdr, "read_pane", return_value=prompt),
             patch.object(herdr_relay.push, "send_web_push", side_effect=send_web_push),
             patch.dict(herdr_relay.state.last_statuses, {}, clear=True),
@@ -166,7 +166,7 @@ class NativeContractTests(unittest.TestCase):
 
         with (
             patch.object(herdr_relay.herdr, "get_all_agents", return_value=(agents, [])),
-            patch.object(herdr_relay, "broadcast", side_effect=broadcast),
+            patch.object(herdr_relay.transport, "broadcast", side_effect=broadcast),
             patch.object(herdr_relay.transcripts.blocks, "pane_blocks", return_value=(blocks, "stable-signature")),
             patch.dict(herdr_relay.state.subscriptions, {socket: "pane-7"}, clear=True),
             patch.dict(herdr_relay.state.stream_sigs, {}, clear=True),
@@ -194,7 +194,7 @@ class NativeContractTests(unittest.TestCase):
         }
         with (
             patch.object(herdr_relay.presets, "PRESETS_BY_ID", {"review": preset}),
-            patch.object(herdr_relay.uuid, "uuid4", return_value=UUID()),
+            patch.object(herdr_relay.lifecycle.uuid, "uuid4", return_value=UUID()),
             patch.object(herdr_relay.herdr, "run_herdr_checked", return_value=(True, "started")) as run,
         ):
             frame = herdr_relay.launch_session({
@@ -288,7 +288,7 @@ class NativeContractTests(unittest.TestCase):
         with (
             patch.object(herdr_relay.config, "POWER_HOST_ID", "buildbox"),
             patch.object(herdr_relay.config, "POWER_HOST_MAC", "00:11:22:33:44:55"),
-            patch.object(herdr_relay.subprocess, "run", return_value=failed_process),
+            patch.object(herdr_relay.lifecycle.subprocess, "run", return_value=failed_process),
         ):
             self.assert_contract(
                 "command_error_wake_failed",
@@ -314,7 +314,7 @@ class NativeContractTests(unittest.TestCase):
         with (
             patch.object(herdr_relay.config, "POWER_HOST_ID", "buildbox"),
             patch.object(herdr_relay.presets, "HOST_TARGETS", {"buildbox": "deploy@buildbox"}),
-            patch.object(herdr_relay.subprocess, "run", return_value=failed_process),
+            patch.object(herdr_relay.lifecycle.subprocess, "run", return_value=failed_process),
         ):
             self.assert_contract(
                 "command_error_shutdown_failed",

@@ -100,7 +100,7 @@ class HostStatusTests(unittest.TestCase):
             ],
         )
 
-    @patch.object(herdr_relay.subprocess, "run")
+    @patch.object(herdr_relay.lifecycle.subprocess, "run")
     def test_remote_poll_uses_keepalives(self, run):
         run.return_value.returncode = 0
         run.return_value.stdout = "ok\n"
@@ -123,7 +123,7 @@ class HostStatusTests(unittest.TestCase):
             timeout=15,
         )
 
-    @patch.object(herdr_relay.subprocess, "run")
+    @patch.object(herdr_relay.lifecycle.subprocess, "run")
     def test_remote_poll_reports_failures(self, run):
         run.side_effect = subprocess.TimeoutExpired("ssh", 15)
 
@@ -236,7 +236,7 @@ class PollLoopBlockingTests(unittest.TestCase):
         with (
             patch.object(herdr_relay.herdr, "get_all_agents", fake_get_all_agents),
             patch.object(herdr_relay.herdr, "read_pane", blocking_read),
-            patch.object(herdr_relay, "broadcast", AsyncMock()),
+            patch.object(herdr_relay.transport, "broadcast", AsyncMock()),
             patch.object(herdr_relay.push, "send_web_push", AsyncMock()),
             patch.dict(herdr_relay.state.last_statuses, {}, clear=True),
             patch.dict(herdr_relay.state.subscriptions, {}, clear=True),
@@ -279,7 +279,7 @@ class PollLoopBlockingTests(unittest.TestCase):
         try:
             with (
                 patch.object(herdr_relay.herdr, "read_pane", blocking_read),
-                patch.object(herdr_relay, "broadcast", AsyncMock()),
+                patch.object(herdr_relay.transport, "broadcast", AsyncMock()),
                 patch.object(herdr_relay.push, "send_web_push", AsyncMock()),
                 patch.dict(herdr_relay.state.pane_remote_map, {}, clear=True),
                 patch.dict(herdr_relay.state.pane_response_options, {}, clear=True),
@@ -326,7 +326,7 @@ class PaneMetadataTests(unittest.TestCase):
 
         with self.poll_state(), patch.object(
             herdr_relay.herdr, "get_all_agents", side_effect=get_all_agents
-        ), patch.object(herdr_relay, "broadcast", side_effect=broadcast), patch.object(
+        ), patch.object(herdr_relay.transport, "broadcast", side_effect=broadcast), patch.object(
             herdr_relay.protocol, "now_ms", return_value=1000
         ):
             for _ in range(4):
@@ -350,7 +350,7 @@ class PaneMetadataTests(unittest.TestCase):
 
                 with self.poll_state(), patch.object(
                     herdr_relay.herdr, "get_all_agents", return_value=(agents, [])
-                ), patch.object(herdr_relay, "broadcast", side_effect=broadcast):
+                ), patch.object(herdr_relay.transport, "broadcast", side_effect=broadcast):
                     asyncio.run(herdr_relay._poll_once())
 
                 self.assertNotIn("attention_state", sent[0]["agents"][0])
@@ -372,7 +372,7 @@ class PaneMetadataTests(unittest.TestCase):
 
         with self.poll_state(), patch.object(
             herdr_relay.herdr, "get_all_agents", side_effect=get_all_agents
-        ), patch.object(herdr_relay, "broadcast", side_effect=broadcast), patch.object(
+        ), patch.object(herdr_relay.transport, "broadcast", side_effect=broadcast), patch.object(
             herdr_relay.protocol, "now_ms", side_effect=[1000, 2000, 3000]
         ):
             for _ in range(4):
@@ -404,7 +404,7 @@ class PaneMetadataTests(unittest.TestCase):
 
         with self.poll_state(), patch.object(
             herdr_relay.herdr, "get_all_agents", side_effect=get_all_agents
-        ), patch.object(herdr_relay, "broadcast", side_effect=broadcast), patch.object(
+        ), patch.object(herdr_relay.transport, "broadcast", side_effect=broadcast), patch.object(
             herdr_relay.protocol, "now_ms", return_value=1000
         ):
             asyncio.run(herdr_relay._poll_once())
@@ -435,7 +435,7 @@ class PaneMetadataTests(unittest.TestCase):
 class HostPowerTests(unittest.TestCase):
     @patch.object(herdr_relay.config, "POWER_HOST_ID", "mz")
     @patch.object(herdr_relay.config, "POWER_HOST_MAC", "34:5a:60:ba:8e:20")
-    @patch.object(herdr_relay.subprocess, "run")
+    @patch.object(herdr_relay.lifecycle.subprocess, "run")
     def test_wake_is_a_fixed_magic_packet_command(self, run):
         run.return_value.returncode = 0
 
@@ -451,7 +451,7 @@ class HostPowerTests(unittest.TestCase):
 
     @patch.object(herdr_relay.config, "POWER_HOST_ID", "mz")
     @patch.object(herdr_relay.presets, "HOST_TARGETS", {"mz": "mz"})
-    @patch.object(herdr_relay.subprocess, "run")
+    @patch.object(herdr_relay.lifecycle.subprocess, "run")
     def test_shutdown_is_a_fixed_non_interactive_ssh_command(self, run):
         run.return_value.returncode = 0
 
@@ -478,7 +478,7 @@ class HostPowerTests(unittest.TestCase):
         )
 
     @patch.object(herdr_relay.config, "POWER_HOST_ID", "mz")
-    @patch.object(herdr_relay.subprocess, "run")
+    @patch.object(herdr_relay.lifecycle.subprocess, "run")
     def test_power_commands_reject_other_hosts_and_missing_confirmation(self, run):
         wake = herdr_relay.wake_host({"request_id": "request-1", "host_id": "other"})
         shutdown = herdr_relay.shutdown_host({"request_id": "request-2", "host_id": "mz"})
@@ -1120,7 +1120,7 @@ class HandshakeTests(unittest.TestCase):
             request = type("Request", (), {"headers": {}})()
 
             async def send(self, raw):
-                raise herdr_relay.ConnectionClosedOK(None, None)
+                raise herdr_relay.server.ConnectionClosedOK(None, None)
 
             def __aiter__(self):
                 return self
