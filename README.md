@@ -22,13 +22,14 @@ protocol.
   and stamps `updated_at` and `output_revision`, so clients don't infer it from
   status strings
 - **Multi-host** — polls local herdr plus any SSH targets in `HERDR_REMOTES`
-- **Push and poll** — HTTP POST and UDP events beat the poll interval
+- **Push and poll** — authenticated HTTP events beat the poll interval
 
 ## Components
 
 | Path | What |
 |------|------|
-| `relay/herdr_relay.py` | The relay: WebSocket + HTTP server, host polling |
+| `relay/herdr-relay.py` | Launcher: PEP 723 metadata, starts the package below |
+| `relay/herdr_relay/` | The relay: WebSocket + HTTP server, host polling |
 | `relay/herdr_telegram.py` | Telegram bot client |
 | `web/index.html` | Single-file web PWA (browser client) |
 | `docs/native-protocol.md` | **The wire contract.** Clients are written against it |
@@ -44,7 +45,7 @@ metadata, so `uv run` installs dependencies itself.
 
 ```bash
 export HERDR_RELAY_TOKEN="$(openssl rand -hex 16)"   # required
-uv run relay/herdr_relay.py
+uv run relay/herdr-relay.py
 ```
 
 For a real host, `nix run github:sbulav/herdr-relay` or the NixOS module — see
@@ -94,7 +95,7 @@ herdr-mobile (Android)   web PWA   Telegram bot
                        │
          ┌─────────────┴─────────────┐
     poll herdr CLI            pushed events
-    (local + SSH)             (HTTP POST / UDP)
+    (local + SSH)             (HTTP, same port)
 ```
 
 Server-side state stays server-side: the SSH target behind a host, and a

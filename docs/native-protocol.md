@@ -734,7 +734,7 @@ These are all code and message pairs produced through `command_error`.
 
 ## Source Of Truth
 
-This reference was derived from `relay/herdr_relay.py`, especially
+This reference was derived from `relay/herdr_relay/`, especially
 `handle_client`, `_poll_once`, `event_push`, `broadcast`, `process_request`,
 `public_presets`, `get_agents_from_host`, `get_all_agents`, `pane_blocks`,
 `transcript_to_blocks`, `opencode_to_blocks`, `command_error`,

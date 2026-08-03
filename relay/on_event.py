@@ -1,11 +1,26 @@
 #!/usr/bin/env python3
-"""Local plugin hook — pushes event to herdr-remote relay via UDP."""
-import json, os, socket
+"""Local plugin hook — pushes a herdr agent event to the relay over HTTP.
+
+Runs under herdr's plugin runner as plain `python3` with no virtualenv, so this
+stays stdlib-only.
+
+This used to send a UDP datagram to 127.0.0.1:8376. HTTP replaces it for two
+reasons: the relay authenticates every HTTP request, where the UDP listener
+accepted anything that reached the socket, and loopback UDP only ever worked when
+the relay ran on the same machine as the agent. A remote host's hook now reaches
+the relay like any other client, so pushed events work there too.
+
+Environment:
+  HERDR_RELAY        relay URL, ws/wss accepted and mapped to http/https
+                     (default ws://127.0.0.1:8375)
+  HERDR_RELAY_TOKEN  shared secret; without it the relay answers 401
+"""
+import json, os, socket, sys, urllib.parse, urllib.request
 
 event = json.loads(os.environ.get("HERDR_PLUGIN_EVENT_JSON", "{}"))
 data = event.get("data", {})
 
-payload = json.dumps({
+payload = {
     "type": "agent_event",
     "pane_id": data.get("pane_id", ""),
     "status": (data.get("agent_status") or "").lower(),
@@ -13,8 +28,37 @@ payload = json.dumps({
     "project": os.path.basename(data.get("cwd", "")),
     "cwd": data.get("cwd", ""),
     "host": socket.gethostname().split(".")[0],
-}).encode()
+}
 
-sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-sock.sendto(payload, ("127.0.0.1", 8376))
-sock.close()
+relay = os.environ.get("HERDR_RELAY", "ws://127.0.0.1:8375")
+parts = urllib.parse.urlsplit(relay)
+scheme = {"ws": "http", "wss": "https"}.get(parts.scheme, parts.scheme or "http")
+# GET with the event on the query string, not POST with a body: the relay's HTTP
+# surface is served by the websockets library, whose request parser accepts only
+# GET and rejects any request carrying Content-Length before the relay's own
+# handler sees it. The path does not matter — see docs/deployment.md.
+url = urllib.parse.urlunsplit((
+    scheme, parts.netloc, parts.path or "/event",
+    urllib.parse.urlencode({"d": json.dumps(payload)}), "",
+))
+
+request = urllib.request.Request(url)
+token = os.environ.get("HERDR_RELAY_TOKEN", "")
+if token:
+    request.add_header("Authorization", "Bearer " + token)
+
+# A proxy must never swallow a loopback push. HTTP_PROXY set without a matching
+# no_proxy is common enough, and the relay's default target is this machine, so
+# a forward proxy would answer for it and the event would vanish. Remote relays
+# still go through the proxy, which is what a proxy is for.
+opener = urllib.request.build_opener()
+if (urllib.parse.urlsplit(url).hostname or "") in ("localhost", "127.0.0.1", "::1"):
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+try:
+    # Short timeout on purpose: this hook runs inside herdr's status-change path,
+    # and a slow or unreachable relay must not hold up the agent.
+    with opener.open(request, timeout=2):
+        pass
+except Exception as exc:
+    print(f"herdr-relay push failed: {exc!r}", file=sys.stderr)

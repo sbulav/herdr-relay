@@ -8,9 +8,6 @@
   # (#14). The relay already degrades to a warning when pywebpush is missing, so
   # this stays off by default rather than dragging cryptography into the closure.
   withWebPush ? false,
-  # mDNS advertises LAN discovery no current client uses; #16 deletes it. Kept
-  # on until then so the packaged relay behaves like `uv run` does.
-  withZeroconf ? true,
 }:
 let
   version = "0.7.0";
@@ -18,7 +15,6 @@ let
   pythonEnv = python3.withPackages (
     ps:
     [ ps.websockets ]
-    ++ lib.optional withZeroconf ps.zeroconf
     ++ lib.optionals withWebPush [
       ps.pywebpush
       ps.py-vapid
@@ -34,7 +30,8 @@ stdenvNoCC.mkDerivation {
   src = lib.fileset.toSource {
     root = ../.;
     fileset = lib.fileset.unions [
-      ../relay/herdr_relay.py
+      ../relay/herdr-relay.py
+      ../relay/herdr_relay
       ../relay/on_event.py
       ../web
     ];
@@ -51,23 +48,25 @@ stdenvNoCC.mkDerivation {
   doCheck = true;
   checkPhase = ''
     runHook preCheck
-    grep -q 'RELAY_VERSION = "${version}"' relay/herdr_relay.py || {
-      echo "RELAY_VERSION in relay/herdr_relay.py does not match package version ${version}" >&2
+    grep -q 'RELAY_VERSION = "${version}"' relay/herdr_relay/config.py || {
+      echo "RELAY_VERSION in relay/herdr_relay/config.py does not match package version ${version}" >&2
       exit 1
     }
     runHook postCheck
   '';
 
-  # Layout matters: herdr_relay.py finds web/ at ../web relative to itself.
+  # Layout matters: the package resolves web/ two levels up from itself, and the
+  # launcher imports the package from its own directory.
   installPhase = ''
     runHook preInstall
 
     mkdir -p $out/share/herdr-relay/relay
-    cp relay/herdr_relay.py relay/on_event.py $out/share/herdr-relay/relay/
+    cp relay/herdr-relay.py relay/on_event.py $out/share/herdr-relay/relay/
+    cp -R relay/herdr_relay $out/share/herdr-relay/relay/herdr_relay
     cp -R web $out/share/herdr-relay/web
 
     makeWrapper ${pythonEnv}/bin/python3 $out/bin/herdr-relay \
-      --add-flags $out/share/herdr-relay/relay/herdr_relay.py \
+      --add-flags $out/share/herdr-relay/relay/herdr-relay.py \
       --prefix PATH : ${lib.makeBinPath [ openssh ]}
 
     runHook postInstall

@@ -10,13 +10,11 @@ the frames. This document specifies the socket they arrive on.
 
 ## What the relay serves
 
-One process, one listener, three transports:
+One process, one listener, one transport:
 
 | Transport | Bind | Purpose |
 |-----------|------|---------|
 | TCP `HERDR_RELAY_PORT` (default 8375) | `0.0.0.0` | WebSocket **and** HTTP, same port |
-| UDP 8376 | `127.0.0.1` | herdr plugin push, loopback only — never proxied |
-| mDNS `_herdr-remote._tcp` | LAN | LEGACY (#16), advertises LAN discovery no current client uses |
 
 The relay speaks plain HTTP. It terminates no TLS and knows nothing about its
 public name, so anything reachable from the internet needs a proxy in front.
@@ -40,7 +38,7 @@ clients send the header.
 
 **A WebSocket upgrade is accepted on any path.** The relay checks for
 `Upgrade: websocket` before it looks at the path, so it never matches one
-(`relay/herdr_relay.py:1088-1094`). `wss://host/native/ws`, `wss://host/`, and
+(`process_request` in `relay/herdr_relay/`). `wss://host/native/ws`, `wss://host/`, and
 `wss://host/anything` all reach the same handler and return `101`.
 
 This matters because it means **no proxy rewrite is required** to serve the relay
@@ -61,8 +59,21 @@ Non-upgrade requests do match on path:
 | `GET` | `/`, `/index.html` | the PWA from `web/` — LEGACY (#14) |
 | `GET` | `/sw.js`, `/logo.svg` | PWA assets — LEGACY (#14) |
 | `GET` | `/api/vapid-public-key` | Web Push key — LEGACY (#14) |
-| `OPTIONS` | any | CORS preflight |
-| `POST` | any, with `?d=<url-encoded JSON>` | queues a push event, answers `200 ok` |
+| `GET` | any, with `?d=<url-encoded JSON>` | queues a push event, answers `200 ok` |
+
+**Every HTTP request is a `GET`.** The websockets library parses the request line
+before the relay sees it and accepts no other method, and rejects any request
+carrying `Content-Length` — so a push event travels in the query string, not a
+request body. A proxy that rewrites methods or strips query strings breaks it.
+
+The event route is how `relay/on_event.py` — the herdr plugin hook registered by
+`relay/herdr-plugin.toml` — reports a status change without waiting for the next
+poll. Because it is an ordinary authenticated request, every host running the hook
+needs `HERDR_RELAY` pointing at the relay and `HERDR_RELAY_TOKEN` in the hook's
+environment. The hook targets `/event` when `HERDR_RELAY` carries no path of its
+own; the relay accepts the event on any path, and checks for `?d=` before the
+static routes so that `/` works too. Push is an optimisation, not a requirement:
+without it a status change surfaces on the next 2 s poll instead of immediately.
 
 ## What a reverse proxy must do
 
@@ -79,8 +90,6 @@ Requirements, not a configuration:
   every 20 s by default, so an idle socket stays warm, but set the read timeout
   to at least 60 s — a proxy default of 30 s or less will still cut it.
 - **Do not buffer.** Responses are streamed frames, not documents.
-- Only the TCP port needs proxying. The UDP listener is loopback-only by design;
-  exposing it would accept unauthenticated events.
 
 ### nginx
 
@@ -195,12 +204,11 @@ repo's flake pins instead.
 [`contrib/herdr-relay.service`](../contrib/herdr-relay.service) is the same unit
 without Nix: an `EnvironmentFile` for configuration, `DynamicUser`, and the same
 hardening. Adjust its `ExecStart`, keeping the repo layout intact —
-`herdr_relay.py` resolves `web/` at `../web` relative to itself.
+the relay resolves `web/` relative to the package directory.
 
-Dependencies are `websockets` (required), `zeroconf` (mDNS, LEGACY #16), and
-`pywebpush` plus `py-vapid` (Web Push, LEGACY #14 — the relay logs a warning and
-carries on without them). `uv run relay/herdr_relay.py` installs all of them
-from the script's PEP 723 metadata.
+Dependencies are `websockets` (required) and `pywebpush` plus `py-vapid` (Web
+Push — the relay logs a warning and carries on without them).
+`uv run relay/herdr-relay.py` installs them from that launcher's PEP 723 metadata.
 
 ## SSH access to remotes
 

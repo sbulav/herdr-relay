@@ -304,8 +304,9 @@ in
         ProtectProc = "invisible";
         ProtectSystem = "strict";
         RemoveIPC = true;
-        # AF_NETLINK is how zeroconf enumerates interfaces; drop it once mDNS
-        # goes away with #16.
+        # AF_NETLINK outlived the mDNS advertisement it was added for: glibc's
+        # resolver enumerates interfaces over netlink for AI_ADDRCONFIG, and
+        # polling a remote resolves its name through ssh in this same cgroup.
         RestrictAddressFamilies = [
           "AF_INET"
           "AF_INET6"
