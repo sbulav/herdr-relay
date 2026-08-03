@@ -22,7 +22,7 @@ because upstream has it.
 Clients (android/web/telegram)
         │ WebSocket
         ▼
-   relay (:8375)  ←── Cloudflare tunnel (public wss://)
+   relay (:8375)  ←── reverse proxy (public wss://)
         │
         ▼
    herdr CLI (local or SSH to HERDR_REMOTES)
@@ -38,7 +38,10 @@ The relay (`relay/herdr_relay.py`) is the central hub: it polls herdr for agent 
 | `relay/herdr_telegram.py` | Telegram bot client | Python (python-telegram-bot) |
 | `web/index.html` | Mobile/desktop web app (single file) | HTML/CSS/JS |
 | `docs/native-protocol.md` | The wire contract clients are written against | Markdown |
+| `docs/deployment.md` | The deployment contract: ports, paths, proxy requirements, env | Markdown |
 | `contract/native/` | Golden frames the relay generates and both repos assert | JSON |
+| `nix/package.nix`, `nix/module.nix` | Package output and a generic NixOS module | Nix |
+| `contrib/herdr-relay.service` | The same unit for hosts without Nix | systemd |
 
 ## Running Components
 
@@ -48,11 +51,11 @@ All Python scripts use [PEP 723 inline metadata](https://peps.python.org/pep-072
 # Relay (main server)
 uv run relay/herdr_relay.py
 
-# Full setup with Cloudflare tunnel
-relay/start.sh
+# Packaged, as a real host runs it
+nix run .#herdr-relay
 
 # Telegram bot
-HERDI_TG_TOKEN="..." HERDI_TG_CHAT_ID="..." uv run relay/herdr_telegram.py
+HERDR_TG_TOKEN="..." HERDR_TG_CHAT_ID="..." uv run relay/herdr_telegram.py
 ```
 
 ## Key Environment Variables
@@ -104,4 +107,21 @@ means checking it is not one of these.
 
 ## Deployment
 
-- Web app: Cloudflare Pages (push to main deploys `web/`)
+[`docs/deployment.md`](docs/deployment.md) is the deployment contract: ports,
+which paths mean what, what a reverse proxy must do, and every environment
+variable. Keep it current when any of those change.
+
+- Relay: `packages.herdr-relay` plus `nixosModules.herdr-relay` from the flake,
+  or `contrib/herdr-relay.service` without Nix
+- Web app: Cloudflare Pages (push to main deploys `web/`) — LEGACY (#14)
+
+**What does not belong in this repo.** Hostnames, TLS certificates, proxy or
+tunnel instance configuration, secret material, and the identity of any polled
+host all live in the operator's own configuration repo. The module and unit here
+carry the shape and no values: every secret is a file path handed to systemd as a
+credential, which is also what makes them work under `DynamicUser`. Do not add a
+real hostname or secret to make an example concrete.
+
+Note that a WebSocket upgrade is accepted on *any* path — `process_request`
+checks for the `Upgrade` header before it ever looks at the path — so a public
+route like `/native/ws` needs no proxy rewrite.

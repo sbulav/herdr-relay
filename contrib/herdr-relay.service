@@ -1,0 +1,76 @@
+# Distro-agnostic systemd unit for herdr-relay. NixOS users want
+# nixosModules.herdr-relay instead — this is for everyone else.
+#
+# Install:
+#   1. Put herdr_relay.py and web/ somewhere stable, keeping the relay at
+#      <root>/relay/herdr_relay.py and the PWA at <root>/web — the relay
+#      resolves its LEGACY static routes relative to its own file.
+#   2. Write /etc/herdr-relay/config.env, owned by root and mode 0600:
+#        HERDR_RELAY_TOKEN=...
+#        HERDR_BIN=/usr/local/bin/herdr
+#        HERDR_REMOTES=herdr@builder
+#   3. Adjust ExecStart below, then:
+#        systemctl enable --now herdr-relay
+#
+# docs/deployment.md documents every variable and what a proxy in front of this
+# has to do.
+
+[Unit]
+Description=herdr-relay WebSocket relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# EnvironmentFile is read by root before privileges drop, so the token file does
+# not need to be readable by the service user.
+EnvironmentFile=/etc/herdr-relay/config.env
+Environment=HERDR_RELAY_PORT=8375
+Environment=HERDR_LOG_DIR=/var/log/herdr-relay
+Environment=HOME=/var/lib/herdr-relay
+
+# --- adjust this line ---
+ExecStart=/usr/bin/python3 /opt/herdr-relay/relay/herdr_relay.py
+
+Restart=on-failure
+RestartSec=5s
+
+# $HOME lives in the state directory: polling HERDR_REMOTES runs plain ssh with
+# no -i, so it needs a writable ~/.ssh holding a key and known_hosts.
+DynamicUser=yes
+StateDirectory=herdr-relay
+StateDirectoryMode=0700
+LogsDirectory=herdr-relay
+WorkingDirectory=/var/lib/herdr-relay
+
+AmbientCapabilities=
+CapabilityBoundingSet=
+DevicePolicy=closed
+LockPersonality=yes
+NoNewPrivileges=yes
+PrivateDevices=yes
+PrivateTmp=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+# Blocks the local host's ~/.claude/projects and OpenCode database. Point
+# HERDR_CLAUDE_PROJECTS / HERDR_OPENCODE_DB at readable copies, or relax this
+# deliberately.
+ProtectHome=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectProc=invisible
+ProtectSystem=strict
+RemoveIPC=yes
+# AF_NETLINK is how zeroconf enumerates interfaces for mDNS.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged ~@resources
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

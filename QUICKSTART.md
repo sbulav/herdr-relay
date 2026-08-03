@@ -1,19 +1,22 @@
 # Quick Start
 
-Get mobile notifications + approval for your herdr agents in 60 seconds.
+Get mobile notifications + approval for your herdr agents in 60 seconds. This is
+the throwaway path — for a host you intend to keep, see
+[`docs/deployment.md`](docs/deployment.md).
 
-## 1. Start the relay (on your Mac)
+## 1. Start the relay
 
 ```bash
-git clone https://github.com/sbulav/herdr-remote
-cd herdr-remote/relay
-uv run herdr_relay.py
+git clone https://github.com/sbulav/herdr-relay
+cd herdr-relay
+export HERDR_RELAY_TOKEN="$(openssl rand -hex 16)"   # required — no default
+uv run relay/herdr_relay.py
 ```
 
-## 2. Expose it (pick one)
+## 2. Expose it
 
 ```bash
-# Cloudflare tunnel (free, instant):
+# Cloudflare quick tunnel (free, instant, disposable):
 cloudflared tunnel --url http://localhost:8375
 # → gives you https://something.trycloudflare.com
 ```
@@ -30,12 +33,13 @@ herdr server reload-config
 ## 4. Monitor
 
 **Web app** (phone):
-Open [herdr-remote.pages.dev](https://herdr-remote.pages.dev), tap ⚙, paste your tunnel URL.
+Open [herdr-remote.pages.dev](https://herdr-remote.pages.dev), tap ⚙, paste your
+tunnel URL and the token from step 1.
 
 **Telegram bot**:
 ```bash
 export HERDR_TG_TOKEN="your-token" HERDR_TG_CHAT_ID="your-id"
-uv run herdr_telegram.py
+uv run relay/herdr_telegram.py
 ```
 
 ## 5. Test
