@@ -4,7 +4,7 @@ Start it through `relay/herdr-relay.py`, which carries the PEP 723 dependency
 metadata `uv run` needs — inline metadata only works on a single file, and a
 package cannot hold it.
 """
-import asyncio, glob, hmac, json, logging, os, re, shlex, shutil, signal, socket, sqlite3, subprocess, time, uuid
+import asyncio, glob, hmac, json, os, re, shlex, signal, sqlite3, subprocess, time, uuid
 
 try:
     from websockets.asyncio.server import serve
@@ -12,77 +12,15 @@ except ImportError:
     from websockets.server import serve
 from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
 
-from logging.handlers import RotatingFileHandler
-import sys
-
-def _get_log_dir():
-    if sys.platform == "darwin":
-        return os.path.expanduser("~/Library/Logs/herdr-remote")
-    if os.path.isdir("/var/log") and os.access("/var/log", os.W_OK):
-        return "/var/log/herdr-remote"
-    return os.path.expanduser("~/.local/state/herdr-remote/log")
-
-# The LEGACY (#14) static routes serve web/ from the repo root. Resolve it once,
-# here, rather than from __file__ at each route: this file sits one directory
-# deeper than it used to, and three separate copies of the same ".." arithmetic
-# is how that kind of move breaks quietly.
-WEB_DIR = os.path.abspath(
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "web")
-)
-
-LOG_DIR = os.environ.get("HERDR_LOG_DIR", _get_log_dir())
-os.makedirs(LOG_DIR, exist_ok=True)
-LOG_FILE = os.path.join(LOG_DIR, "relay.log")
-AUDIT_FILE = os.path.join(LOG_DIR, "audit.log")
-
-_formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
-_file_handler = RotatingFileHandler(LOG_FILE, maxBytes=5 * 1024 * 1024, backupCount=3)
-_file_handler.setFormatter(_formatter)
-_console_handler = logging.StreamHandler()
-_console_handler.setFormatter(_formatter)
-
-log = logging.getLogger("herdr-relay")
-log.setLevel(logging.INFO)
-log.addHandler(_file_handler)
-log.addHandler(_console_handler)
-logging.getLogger("websockets").setLevel(logging.WARNING)
-
-HERDR = os.environ.get("HERDR_BIN") or shutil.which("herdr") or "/opt/homebrew/bin/herdr"
-WS_PORT = int(os.environ.get("HERDR_RELAY_PORT", "8375"))
-POLL_INTERVAL = 2
-
-RELAY_VERSION = "0.7.0"  # this relay's own version; shown to a client that must update
-# The oldest client protocol revision this relay will work with. Deliberately not
-# an app version: a client's protocol revision changes only when the wire changes,
-# so a routine release never has to touch it, and a breaking change bumps it in
-# exactly two places (here and the app's CLIENT_PROTOCOL).
-#
-# Raising this locks out every older build, so it is a release decision: land the
-# client that declares the new revision first, then raise this. The relay does not
-# enforce it — it advertises, and the client blocks itself. Rejecting the socket
-# would park the app's reconnect loop, which looks like an outage rather than an
-# instruction to update.
-MIN_CLIENT = 1
-AUTH_TOKEN = os.environ.get("HERDR_RELAY_TOKEN", "")  # Shared secret for relay auth
-PRESETS_FILE = os.environ.get("HERDR_PRESETS_FILE", "")
-POWER_HOST_ID = os.environ.get("HERDR_POWER_HOST_ID", "")
-POWER_HOST_MAC = os.environ.get("HERDR_POWER_HOST_MAC", "")
-WAKE_BIN = os.environ.get("HERDR_WAKE_BIN", "wakeonlan")
-# Native structured stores used by supported coding agents.
-CLAUDE_PROJECTS = os.environ.get("HERDR_CLAUDE_PROJECTS", "~/.claude/projects")
-OPENCODE_DB = os.environ.get("HERDR_OPENCODE_DB", "~/.local/share/opencode/opencode-stable.db")
-TRANSCRIPT_MAX_BYTES = 262144  # tail window read per poll — bounds ssh transfer
-TRANSCRIPT_BLOCK_LIMIT = 200   # most recent blocks kept per session
-
-# VAPID Web Push
-VAPID_PUBLIC_KEY = os.environ.get("HERDR_VAPID_PUBLIC", "")
-VAPID_PRIVATE_KEY = os.environ.get("HERDR_VAPID_PRIVATE", "")
-VAPID_SUBJECT = os.environ.get("HERDR_VAPID_SUBJECT", "mailto:herdr@localhost")
-push_subscriptions = []  # list of PushSubscription dicts
-PUSH_SUBS_FILE = os.path.join(LOG_DIR, "push_subs.json")
-
-# Remote hosts: comma-separated SSH targets
-REMOTES = [r.strip() for r in os.environ.get("HERDR_REMOTES", "").split(",") if r.strip()]
+# Cross-module references go through the module object rather than the name:
+# `config.AUTH_TOKEN` is read at call time and `state.known_panes` is mutated in
+# place, so each tunable and each map stays patchable at exactly one address as the
+# rest of this module moves out into siblings. `log` and `audit` are the exceptions
+# worth importing by name — a logger and one write to it, singletons no test
+# replaces.
+from . import config, presets, push, state
+from .audit import audit
+from .config import log
 
 # Kiro CLI free-text permission menus
 TOOL_OPTIONS = ["yes, single permission", "trust, always allow", "no (tab to edit)"]
@@ -105,21 +43,6 @@ CHROME_RE = re.compile(
     r"|^\s*[◔◑◕●]\s+(Shell|Bash)"
 )
 
-clients = set()
-last_statuses = {}
-pane_activity = {}      # pane_id -> epoch milliseconds of the last status/output change
-pane_revisions = {}     # pane_id -> output revision, or None when unavailable
-pane_attention_states = {}  # pane_id -> last emitted attention state
-event_queue = asyncio.Queue()
-pane_remote_map = {}
-session_target_map = {}
-pane_session_refs = {}  # (remote, pane_id) -> {kind, value}; never sent to clients
-request_results = {}
-pane_cwd_map = {}      # pane_id -> (cwd, agent, remote, ambiguous agent/cwd)
-subscriptions = {}     # ws -> pane_id the client is currently viewing
-stream_sigs = {}       # (id(ws), pane_id) -> signature of the last blocks pushed
-known_panes = set()
-pane_response_options = {}
 
 SAFE_RESPONSES = {"y", "n", "a", "yes", "no", "trust", "yes, single permission", "trust, always allow", "no (tab to edit)", "approve all pending", "configure individually", "exit (cancel subagents)"}
 SAFE_KEYS = {"y", "n", "a", "Enter", "Tab", "Escape", "Space", "C-c", "Ctrl+c", "Up", "Down", "Left", "Right", "BSpace", *map(str, range(1, 10))}
@@ -130,131 +53,7 @@ def is_safe_key(key):
         return True
     return bool(re.fullmatch(r"(?:ctrl|shift)\+(?:[a-z]|[1-9]|Enter|Tab|Escape|Space|Up|Down|Left|Right)", key))
 
-# --- Audit logging ---
-_audit_handler = RotatingFileHandler(AUDIT_FILE, maxBytes=5 * 1024 * 1024, backupCount=3)
-_audit_handler.setFormatter(logging.Formatter("%(asctime)s %(message)s", datefmt="%Y-%m-%dT%H:%M:%S"))
-audit_log = logging.getLogger("herdr-audit")
-audit_log.setLevel(logging.INFO)
-audit_log.addHandler(_audit_handler)
-audit_log.propagate = False
 
-
-def audit(action: str, ip: str, device: str, pane_id: str, detail: str = ""):
-    """Append a write action to the audit log as structured JSONL."""
-    import datetime
-    entry = {
-        "ts": datetime.datetime.utcnow().isoformat() + "Z",
-        "action": action,
-        "paneId": pane_id,
-        "ip": ip,
-        "device": device,
-    }
-    if detail:
-        entry["detail"] = detail[:120]  # truncate like collie
-    audit_log.info(json.dumps(entry, separators=(",", ":")))
-
-
-# --- Web Push helpers ---
-# LEGACY (#14): browser-PWA only. herdr-mobile monitors the WebSocket in a
-# foreground service and never subscribes. This stack, the four HERDR_VAPID_*
-# vars, and the push_subscribe/push_unsubscribe handlers go once web/ does.
-def _load_push_subs():
-    global push_subscriptions
-    if os.path.isfile(PUSH_SUBS_FILE):
-        try:
-            with open(PUSH_SUBS_FILE) as f:
-                push_subscriptions = json.load(f)
-        except Exception:
-            push_subscriptions = []
-
-
-def _save_push_subs():
-    with open(PUSH_SUBS_FILE, "w") as f:
-        json.dump(push_subscriptions, f)
-
-
-async def send_web_push(title: str, body: str, url: str = "/", clear: bool = False):
-    """Send push notification to all registered subscriptions.
-
-    Uses collapse topic + TTL so offline devices get only the latest.
-    If clear=True, sends a clear instruction instead of showing a notification.
-    """
-    if not VAPID_PUBLIC_KEY or not VAPID_PRIVATE_KEY:
-        return
-    try:
-        from pywebpush import webpush, WebPushException
-    except ImportError:
-        log.warning("pywebpush not installed, skipping push")
-        return
-    if clear:
-        payload = json.dumps({"type": "clear", "tag": "herdr-blocked"})
-    else:
-        payload = json.dumps({"title": title, "body": body, "url": url})
-    headers = {"Topic": "herdr-herd", "TTL": "21600"}  # 6h TTL, collapse key
-    dead = []
-    for i, sub in enumerate(push_subscriptions):
-        try:
-            webpush(
-                subscription_info=sub,
-                data=payload,
-                vapid_private_key=VAPID_PRIVATE_KEY,
-                vapid_claims={"sub": VAPID_SUBJECT},
-                headers=headers,
-            )
-        except Exception as e:
-            log.warning("Push failed for sub %d: %s", i, e)
-            if "410" in str(e) or "404" in str(e):
-                dead.append(i)
-    if dead:
-        for i in reversed(dead):
-            push_subscriptions.pop(i)
-        _save_push_subs()
-
-_load_push_subs()
-
-
-def load_presets():
-    if not PRESETS_FILE:
-        return []
-    with open(PRESETS_FILE, encoding="utf-8") as f:
-        document = json.load(f)
-    if document.get("schema_version") != 1:
-        raise ValueError("unsupported preset schema version")
-    presets = document.get("presets")
-    if not isinstance(presets, list):
-        raise ValueError("presets must be a list")
-    seen = set()
-    for preset in presets:
-        preset_id = preset.get("id", "")
-        if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,63}", preset_id) or preset_id in seen:
-            raise ValueError(f"invalid or duplicate preset id: {preset_id}")
-        seen.add(preset_id)
-        if not isinstance(preset.get("repository"), str) or not preset["repository"]:
-            raise ValueError(f"missing repository in preset {preset_id}")
-        if preset.get("agent") not in ("claude", "opencode", "codex"):
-            raise ValueError(f"unsupported agent in preset {preset_id}")
-        if not isinstance(preset.get("model"), str) or not preset["model"]:
-            raise ValueError(f"missing model in preset {preset_id}")
-        hosts = preset.get("hosts")
-        if not isinstance(hosts, dict) or not hosts:
-            raise ValueError(f"missing hosts in preset {preset_id}")
-        for host_id, host in hosts.items():
-            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", host_id):
-                raise ValueError(f"invalid host id: {host_id}")
-            if not os.path.isabs(host.get("cwd", "")):
-                raise ValueError(f"cwd must be absolute for {preset_id}@{host_id}")
-            if host.get("target") is not None and not isinstance(host.get("target"), str):
-                raise ValueError(f"invalid target for {preset_id}@{host_id}")
-    return presets
-
-
-PRESETS = load_presets()
-PRESETS_BY_ID = {preset["id"]: preset for preset in PRESETS}
-HOST_TARGETS = {
-    host_id: host.get("target")
-    for preset in PRESETS
-    for host_id, host in preset["hosts"].items()
-}
 
 
 def server_info():
@@ -264,27 +63,15 @@ def server_info():
     that is too old can block before it renders a single agent, and so these two
     values do not ride on every fan-out frame for the life of the protocol.
     """
-    return {"type": "server_info", "relay_version": RELAY_VERSION, "min_client": MIN_CLIENT}
-
-
-def public_presets():
-    return [
-        {
-            "id": preset["id"], "label": preset["label"],
-            "repository": preset["repository"],
-            "agent": preset["agent"], "model": preset["model"],
-            "hosts": {host_id: {"cwd": host["cwd"]} for host_id, host in preset["hosts"].items()},
-        }
-        for preset in PRESETS
-    ]
+    return {"type": "server_info", "relay_version": config.RELAY_VERSION, "min_client": config.MIN_CLIENT}
 
 
 def public_agents(agents):
     """Strip server-side routing state from agent entries before broadcasting.
 
-    `remote` is the preset's SSH `target` — the same value public_presets()
+    `remote` is the preset's SSH `target` — the same value `presets.public_presets()`
     deliberately withholds. No client addresses a pane by it (they use `host` and
-    `pane_id`); the relay does, through pane_remote_map. Sending it would hand
+    `pane_id`); the relay does, through `state.pane_remote_map`. Sending it would hand
     every connected phone, and every proxy log, a login string for the host.
     """
     return [
@@ -326,12 +113,12 @@ def attention_state(status, previous_status, previous_state=None):
 
 
 def add_pane_metadata(entry, pane_id):
-    state = pane_attention_states.get(pane_id)
-    if state is not None:
-        entry["attention_state"] = state
-    if pane_id in pane_activity:
-        entry["updated_at"] = pane_activity[pane_id]
-    revision = pane_revisions.get(pane_id)
+    attention = state.pane_attention_states.get(pane_id)
+    if attention is not None:
+        entry["attention_state"] = attention
+    if pane_id in state.pane_activity:
+        entry["updated_at"] = state.pane_activity[pane_id]
+    revision = state.pane_revisions.get(pane_id)
     if isinstance(revision, int) and not isinstance(revision, bool):
         entry["output_revision"] = revision
 
@@ -345,10 +132,10 @@ def run_herdr_checked(*args, remote=None):
                 "-o", "ServerAliveInterval=3",
                 "-o", "ServerAliveCountMax=2",
                 "-o", "BatchMode=yes",
-                remote, HERDR, *args,
+                remote, config.HERDR, *args,
             ]
         else:
-            cmd = [HERDR, *args]
+            cmd = [config.HERDR, *args]
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
         return r.returncode == 0, r.stdout.strip()
     except Exception as exc:
@@ -378,7 +165,7 @@ def get_agents_from_host(remote=None, host_id=None):
                 and isinstance(ref.get("value"), str)
                 and ref["value"]
             ):
-                pane_session_refs[(remote, p["pane_id"])] = {
+                state.pane_session_refs[(remote, p["pane_id"])] = {
                     "kind": ref["kind"], "value": ref["value"]
                 }
             agent = {
@@ -403,8 +190,8 @@ def get_agents_from_host(remote=None, host_id=None):
 
 
 async def get_all_agents():
-    if HOST_TARGETS:
-        targets = list(HOST_TARGETS.items())
+    if presets.HOST_TARGETS:
+        targets = list(presets.HOST_TARGETS.items())
         results = await asyncio.gather(*(
             asyncio.to_thread(
                 get_agents_from_host,
@@ -418,7 +205,7 @@ async def get_all_agents():
             for (host_id, _remote), (_host_agents, online) in zip(targets, results)
         ]
     else:
-        targets = [(None, None), *((None, remote) for remote in REMOTES)]
+        targets = [(None, None), *((None, remote) for remote in config.REMOTES)]
         results = await asyncio.gather(*(
             asyncio.to_thread(get_agents_from_host, remote=remote)
             for _host_id, remote in targets
@@ -601,7 +388,7 @@ def claude_project_dir(cwd):
 def read_transcript(cwd, remote=None, path=None):
     """Return (path, jsonl_text) for the newest transcript in cwd, or (None, None).
 
-    Reads only the trailing TRANSCRIPT_MAX_BYTES so a long session stays cheap
+    Reads only the trailing `config.TRANSCRIPT_MAX_BYTES` so a long session stays cheap
     to poll; the (possibly partial) first line is tolerated by the parser.
     """
     if not path and not cwd:
@@ -612,18 +399,18 @@ def read_transcript(cwd, remote=None, path=None):
                 'f=$1; case "$f" in "~/"*) f="$HOME/${f#~/}" ;; esac; '
                 '[ -f "$f" ] || exit 0; '
                 'printf "%s\\n" "$f"; '
-                f'tail -c {TRANSCRIPT_MAX_BYTES} "$f"'
+                f'tail -c {config.TRANSCRIPT_MAX_BYTES} "$f"'
             )
             remote_cmd = "sh -c " + shlex.quote(script) + " sh " + shlex.quote(path)
         else:
             proj = claude_project_dir(cwd)
-            root = CLAUDE_PROJECTS.replace("~", "$HOME")
+            root = config.CLAUDE_PROJECTS.replace("~", "$HOME")
             script = (
                 f'd="{root}/$1"; '
                 'f=$(ls -t "$d"/*.jsonl 2>/dev/null | head -1); '
                 '[ -n "$f" ] || exit 0; '
                 'printf "%s\\n" "$f"; '
-                f'tail -c {TRANSCRIPT_MAX_BYTES} "$f"'
+                f'tail -c {config.TRANSCRIPT_MAX_BYTES} "$f"'
             )
             remote_cmd = "sh -c " + shlex.quote(script) + " sh " + shlex.quote(proj)
         try:
@@ -642,7 +429,7 @@ def read_transcript(cwd, remote=None, path=None):
             path = os.path.expanduser(path)
         else:
             proj = claude_project_dir(cwd)
-            d = os.path.join(os.path.expanduser(CLAUDE_PROJECTS), proj)
+            d = os.path.join(os.path.expanduser(config.CLAUDE_PROJECTS), proj)
             files = glob.glob(os.path.join(d, "*.jsonl"))
             if not files:
                 return None, None
@@ -650,7 +437,7 @@ def read_transcript(cwd, remote=None, path=None):
         with open(path, "rb") as fh:
             fh.seek(0, os.SEEK_END)
             size = fh.tell()
-            fh.seek(max(0, size - TRANSCRIPT_MAX_BYTES))
+            fh.seek(max(0, size - config.TRANSCRIPT_MAX_BYTES))
             body = fh.read().decode("utf-8", "replace")
         return path, body
     except Exception:
@@ -668,7 +455,7 @@ def summarize_tool(inp):
     return ""
 
 
-def transcript_to_blocks(jsonl_text, limit=TRANSCRIPT_BLOCK_LIMIT):
+def transcript_to_blocks(jsonl_text, limit=config.TRANSCRIPT_BLOCK_LIMIT):
     """Map a Claude Code JSONL transcript into a list of OutputBlock dicts."""
     blocks = []
 
@@ -741,7 +528,7 @@ def _read_opencode_local(db_path, cwd, session_id=None):
             return None
         session_id, updated = session
         rows = db.execute(
-            OPENCODE_PART_QUERY, (session_id, TRANSCRIPT_BLOCK_LIMIT * 4)
+            OPENCODE_PART_QUERY, (session_id, config.TRANSCRIPT_BLOCK_LIMIT * 4)
         ).fetchall()
     finally:
         db.close()
@@ -755,7 +542,7 @@ def read_opencode(cwd, remote=None, session_id=None):
         return None
     if not remote:
         try:
-            return _read_opencode_local(OPENCODE_DB, cwd, session_id)
+            return _read_opencode_local(config.OPENCODE_DB, cwd, session_id)
         except Exception:
             return None
     script = """
@@ -771,9 +558,9 @@ if session:
     print(json.dumps({"session_id": session[0], "updated": session[1], "rows": rows}))
 """
     remote_cmd = " ".join([
-        "python3", "-c", shlex.quote(script), shlex.quote(OPENCODE_DB),
+        "python3", "-c", shlex.quote(script), shlex.quote(config.OPENCODE_DB),
         shlex.quote(cwd), shlex.quote(OPENCODE_PART_QUERY),
-        str(TRANSCRIPT_BLOCK_LIMIT * 4), shlex.quote(session_id or ""),
+        str(config.TRANSCRIPT_BLOCK_LIMIT * 4), shlex.quote(session_id or ""),
     ])
     try:
         result = subprocess.run(
@@ -787,7 +574,7 @@ if session:
         return None
 
 
-def opencode_to_blocks(document, limit=TRANSCRIPT_BLOCK_LIMIT):
+def opencode_to_blocks(document, limit=config.TRANSCRIPT_BLOCK_LIMIT):
     """Map OpenCode message parts into OutputBlock dictionaries."""
     if not isinstance(document, dict):
         return []
@@ -817,19 +604,19 @@ def opencode_to_blocks(document, limit=TRANSCRIPT_BLOCK_LIMIT):
         elif role == "assistant" and part_type == "reasoning" and isinstance(text, str) and text.strip():
             add("status", label="Thought", text=text.strip().splitlines()[0][:200])
         elif role == "assistant" and part_type == "tool":
-            state = part.get("state") if isinstance(part.get("state"), dict) else {}
-            summary = summarize_tool(state.get("input")) or str(state.get("title") or "")[:200]
+            tool_state = part.get("state") if isinstance(part.get("state"), dict) else {}
+            summary = summarize_tool(tool_state.get("input")) or str(tool_state.get("title") or "")[:200]
             add("tool", label=part.get("tool") or "tool", text=summary)
     return blocks[-limit:]
 
 
 def pane_blocks(pane_id):
     """(blocks, signature) for a Claude pane's transcript, else (None, None)."""
-    info = pane_cwd_map.get(pane_id)
+    info = state.pane_cwd_map.get(pane_id)
     if not info:
         return None, None
     cwd, agent, remote, ambiguous = info
-    ref = pane_session_refs.get((remote, pane_id))
+    ref = state.pane_session_refs.get((remote, pane_id))
     if agent == "claude" and ref and ref["kind"] in ("id", "path"):
         usable_ref = ref
     elif agent == "opencode" and ref and ref["kind"] == "id":
@@ -846,7 +633,7 @@ def pane_blocks(pane_id):
                 path, body = read_transcript(cwd, remote, path=usable_ref["value"])
             elif usable_ref:
                 transcript_path = os.path.join(
-                    CLAUDE_PROJECTS, claude_project_dir(cwd), usable_ref["value"] + ".jsonl"
+                    config.CLAUDE_PROJECTS, claude_project_dir(cwd), usable_ref["value"] + ".jsonl"
                 ) if cwd else None
                 path, body = read_transcript(cwd, remote, path=transcript_path)
                 if path is None:
@@ -870,8 +657,8 @@ def pane_blocks(pane_id):
 async def broadcast(msg):
     data = json.dumps(msg)
     dead = set()
-    # Disconnect cleanup mutates clients while send() yields to the event loop.
-    for ws in clients.copy():
+    # Disconnect cleanup mutates state.clients while send() yields to the event loop.
+    for ws in state.clients.copy():
         try:
             await ws.send(data)
         except (ConnectionClosedError, ConnectionClosedOK):
@@ -880,7 +667,7 @@ async def broadcast(msg):
             dead.add(ws)
     if dead:
         log.debug("Removed %d dead client(s)", len(dead))
-    clients.difference_update(dead)
+    state.clients.difference_update(dead)
 
 
 def fail_on_background_exit(task, stop):
@@ -901,56 +688,56 @@ async def poll_loop():
             await _poll_once()
         except Exception:
             log.exception("poll cycle failed; retrying")
-        await asyncio.sleep(POLL_INTERVAL)
+        await asyncio.sleep(config.POLL_INTERVAL)
 
 
 async def _poll_once():
-    pane_session_refs.clear()  # Host threads populate refs while get_all_agents() awaits.
+    state.pane_session_refs.clear()  # Host threads populate refs while get_all_agents() awaits.
     agents, hosts = await get_all_agents()
     current_pane_ids = {a["pane_id"] for a in agents}
-    pane_remote_map.clear()
-    session_target_map.clear()
-    pane_cwd_map.clear()
-    known_panes.clear()
-    known_panes.update(current_pane_ids)
+    state.pane_remote_map.clear()
+    state.session_target_map.clear()
+    state.pane_cwd_map.clear()
+    state.known_panes.clear()
+    state.known_panes.update(current_pane_ids)
     agent_cwd_counts = {}
     for a in agents:
         if a.get("agent") in ("claude", "opencode") and a.get("cwd"):
             cwd_key = (a.get("remote"), a["cwd"], a["agent"])
             agent_cwd_counts[cwd_key] = agent_cwd_counts.get(cwd_key, 0) + 1
     for a in agents:
-        pane_remote_map[a["pane_id"]] = a.get("remote")
-        session_target_map[session_id(a["host"], a["pane_id"])] = (a["pane_id"], a.get("remote"))
+        state.pane_remote_map[a["pane_id"]] = a.get("remote")
+        state.session_target_map[session_id(a["host"], a["pane_id"])] = (a["pane_id"], a.get("remote"))
         cwd_key = (a.get("remote"), a.get("cwd", ""), a.get("agent", ""))
-        pane_cwd_map[a["pane_id"]] = (
+        state.pane_cwd_map[a["pane_id"]] = (
             a.get("cwd", ""), a.get("agent", ""), a.get("remote"),
             agent_cwd_counts.get(cwd_key, 0) > 1,
         )
         pid, status = a["pane_id"], a["status"]
-        # Snapshot broadcast precedes the last_statuses update below, so this
+        # Snapshot broadcast precedes the `state.last_statuses` update below, so this
         # still reads the prior poll's status for idle-after-work detection.
-        previous_status = last_statuses.get(pid)
-        state = attention_state(status, previous_status, pane_attention_states.get(pid))
-        if state is None:
-            pane_attention_states.pop(pid, None)
+        previous_status = state.last_statuses.get(pid)
+        attention = attention_state(status, previous_status, state.pane_attention_states.get(pid))
+        if attention is None:
+            state.pane_attention_states.pop(pid, None)
         else:
-            pane_attention_states[pid] = state
+            state.pane_attention_states[pid] = attention
         revision = a.get("output_revision")
-        previous_revision = pane_revisions.get(pid)
+        previous_revision = state.pane_revisions.get(pid)
         if (
-            pid not in pane_activity
+            pid not in state.pane_activity
             or status != previous_status
             or revision != previous_revision
         ):
-            pane_activity[pid] = now_ms()
-        pane_revisions[pid] = revision
+            state.pane_activity[pid] = now_ms()
+        state.pane_revisions[pid] = revision
         add_pane_metadata(a, pid)
 
     # Always send a complete snapshot. In particular, an empty snapshot
     # removes stale agents after every remote host goes offline.
     await broadcast({
         "type": "agents", "agents": public_agents(agents),
-        "presets": public_presets(),
+        "presets": presets.public_presets(),
         "hosts": hosts,
     })
     # Read every newly blocked pane off the event loop, and all of them at once:
@@ -959,7 +746,7 @@ async def _poll_once():
     # freezes every client on exactly the event they care about most.
     newly_blocked = [
         a for a in agents
-        if a["status"] == "blocked" and last_statuses.get(a["pane_id"]) != "blocked"
+        if a["status"] == "blocked" and state.last_statuses.get(a["pane_id"]) != "blocked"
     ]
     blocked_content = dict(zip(
         (a["pane_id"] for a in newly_blocked),
@@ -970,10 +757,10 @@ async def _poll_once():
     ))
     for a in agents:
         pid, status = a["pane_id"], a["status"]
-        if status == "blocked" and last_statuses.get(pid) != "blocked":
+        if status == "blocked" and state.last_statuses.get(pid) != "blocked":
             content = blocked_content.get(pid, "")
             options = detect_options(content)
-            pane_response_options[pid] = {
+            state.pane_response_options[pid] = {
                 option.lower() for option in (options or TOOL_OPTIONS)
             }
             await broadcast({
@@ -983,28 +770,28 @@ async def _poll_once():
                 "prompt": content[:500],
                 "options": options or TOOL_OPTIONS
             })
-            await send_web_push(
+            await push.send_web_push(
                 title=f"🐑 {a['project']} blocked",
                 body=content[:120],
                 url=f"/?pane={pid}",
             )
-        if status != "blocked" and last_statuses.get(pid) == "blocked":
-            pane_response_options.pop(pid, None)
-            await send_web_push("", "", clear=True)
-        last_statuses[pid] = status
-    for pid in set(last_statuses) - current_pane_ids:
-        del last_statuses[pid]
-        pane_response_options.pop(pid, None)
-        pane_activity.pop(pid, None)
-        pane_revisions.pop(pid, None)
-        pane_attention_states.pop(pid, None)
+        if status != "blocked" and state.last_statuses.get(pid) == "blocked":
+            state.pane_response_options.pop(pid, None)
+            await push.send_web_push("", "", clear=True)
+        state.last_statuses[pid] = status
+    for pid in set(state.last_statuses) - current_pane_ids:
+        del state.last_statuses[pid]
+        state.pane_response_options.pop(pid, None)
+        state.pane_activity.pop(pid, None)
+        state.pane_revisions.pop(pid, None)
+        state.pane_attention_states.pop(pid, None)
 
     # Live-stream structured transcript blocks to subscribed clients. Only
     # watched Claude panes are read; a changed signature (path or content)
     # triggers a push. Failures are swallowed so one bad host can't stall.
     watchers = {
-        pid: [ws for ws, subscribed_pid in list(subscriptions.items()) if subscribed_pid == pid]
-        for pid in set(subscriptions.values()) if pid in current_pane_ids
+        pid: [ws for ws, subscribed_pid in list(state.subscriptions.items()) if subscribed_pid == pid]
+        for pid in set(state.subscriptions.values()) if pid in current_pane_ids
     }
     pane_results = await asyncio.gather(
         *(asyncio.to_thread(pane_blocks, pid) for pid in watchers),
@@ -1021,9 +808,9 @@ async def _poll_once():
         payload = json.dumps(frame)
         for ws in watchers[pid]:
             key = (id(ws), pid)
-            if stream_sigs.get(key) == sig:
+            if state.stream_sigs.get(key) == sig:
                 continue
-            stream_sigs[key] = sig
+            state.stream_sigs[key] = sig
             try:
                 await ws.send(payload)
             except Exception:
@@ -1032,13 +819,13 @@ async def _poll_once():
 
 async def event_push():
     while True:
-        event = await event_queue.get()
+        event = await state.event_queue.get()
         pane_id = event.get("pane_id", "")
         status = event.get("status", "")
         host = event.get("host", "local")
 
         if status == "blocked" and pane_id:
-            remote = pane_remote_map.get(pane_id)
+            remote = state.pane_remote_map.get(pane_id)
             if remote or host == "local":
                 # Same 15s ssh-backed call the poll loop offloads (#26); inline
                 # here it would stall every client on a pushed blocked event.
@@ -1094,7 +881,7 @@ async def process_request(connection, request):
         params = urllib.parse.parse_qs(qs)
         token = params.get("token", [None])[0]
     # compare_digest raises TypeError on non-ASCII str, so compare encoded bytes.
-    if not token or not hmac.compare_digest(token.encode("utf-8", "replace"), AUTH_TOKEN.encode("utf-8", "replace")):
+    if not token or not hmac.compare_digest(token.encode("utf-8", "replace"), config.AUTH_TOKEN.encode("utf-8", "replace")):
         headers = Headers([("Content-Type", "text/plain")])
         return Response(401, "Unauthorized", headers, b"Invalid token\n")
 
@@ -1119,7 +906,7 @@ async def process_request(connection, request):
                 # would eat any pane id that looks like an escape: tmux pane 22
                 # is "%22", which unquote turns into a bare double quote.
                 event = json.loads(params["d"][0])
-                event_queue.put_nowait(event)
+                state.event_queue.put_nowait(event)
             except Exception:
                 log.warning("Discarded malformed pushed event")
             headers = Headers([("Access-Control-Allow-Origin", "*")])
@@ -1141,7 +928,7 @@ async def process_request(connection, request):
     # Serve web app for GET / or GET /index.html
     path = (request.path or "/").split("?")[0]
     if path in ("/", "/index.html"):
-        index_path = os.path.join(WEB_DIR, "index.html")
+        index_path = os.path.join(config.WEB_DIR, "index.html")
         if os.path.isfile(index_path):
             with open(index_path, "rb") as f:
                 body = f.read()
@@ -1153,7 +940,7 @@ async def process_request(connection, request):
 
     # Serve service worker
     if path == "/sw.js":
-        sw_path = os.path.join(WEB_DIR, "sw.js")
+        sw_path = os.path.join(config.WEB_DIR, "sw.js")
         if os.path.isfile(sw_path):
             with open(sw_path, "rb") as f:
                 body = f.read()
@@ -1166,7 +953,7 @@ async def process_request(connection, request):
 
     # Serve VAPID public key
     if path == "/api/vapid-public-key":
-        body = json.dumps({"publicKey": VAPID_PUBLIC_KEY}).encode()
+        body = json.dumps({"publicKey": config.VAPID_PUBLIC_KEY}).encode()
         headers = Headers([
             ("Content-Type", "application/json"),
             ("Access-Control-Allow-Origin", "*"),
@@ -1175,7 +962,7 @@ async def process_request(connection, request):
 
     # Serve logo.svg
     if path == "/logo.svg":
-        svg_path = os.path.join(WEB_DIR, "logo.svg")
+        svg_path = os.path.join(config.WEB_DIR, "logo.svg")
         if os.path.isfile(svg_path):
             with open(svg_path, "rb") as f:
                 body = f.read()
@@ -1216,7 +1003,7 @@ async def handle_client(ws):
     try:
         # Handshake before registering, so the ordering this frame exists to
         # guarantee is a property of this function rather than of the library.
-        # `broadcast` fans out to everything in `clients`; a socket in that set
+        # `broadcast` fans out to everything in `state.clients`; a socket in that set
         # before its `server_info` is written is one an `agents` frame could
         # reach first. Today it cannot — websockets writes a str frame to the
         # transport before its first await, so there is no suspension point
@@ -1226,7 +1013,7 @@ async def handle_client(ws):
         # closed connection like any other, and the finally below discards, so
         # cleaning up a socket that was never registered is a no-op.
         await ws.send(json.dumps(server_info()))
-        clients.add(ws)
+        state.clients.add(ws)
         async for raw in ws:
             try:
                 msg = json.loads(raw)
@@ -1234,48 +1021,48 @@ async def handle_client(ws):
                 continue
             msg_type = msg.get("type")
             request_id = msg.get("request_id")
-            if request_id and request_id in request_results:
-                await ws.send(json.dumps(request_results[request_id]))
+            if request_id and request_id in state.request_results:
+                await ws.send(json.dumps(state.request_results[request_id]))
             elif msg_type == "launch_session":
                 response = await asyncio.to_thread(launch_session, msg)
                 if request_id:
-                    request_results[request_id] = response
-                    if len(request_results) > 512:
-                        request_results.pop(next(iter(request_results)))
+                    state.request_results[request_id] = response
+                    if len(state.request_results) > 512:
+                        state.request_results.pop(next(iter(state.request_results)))
                 await ws.send(json.dumps(response))
             elif msg_type == "terminate_session":
                 response = await asyncio.to_thread(terminate_session, msg)
                 if request_id:
-                    request_results[request_id] = response
-                    if len(request_results) > 512:
-                        request_results.pop(next(iter(request_results)))
+                    state.request_results[request_id] = response
+                    if len(state.request_results) > 512:
+                        state.request_results.pop(next(iter(state.request_results)))
                 await ws.send(json.dumps(response))
             elif msg_type == "wake_host":
                 response = await asyncio.to_thread(wake_host, msg)
                 if request_id:
-                    request_results[request_id] = response
-                    if len(request_results) > 512:
-                        request_results.pop(next(iter(request_results)))
+                    state.request_results[request_id] = response
+                    if len(state.request_results) > 512:
+                        state.request_results.pop(next(iter(state.request_results)))
                 await ws.send(json.dumps(response))
             elif msg_type == "shutdown_host":
                 response = await asyncio.to_thread(shutdown_host, msg)
                 if request_id:
-                    request_results[request_id] = response
-                    if len(request_results) > 512:
-                        request_results.pop(next(iter(request_results)))
+                    state.request_results[request_id] = response
+                    if len(state.request_results) > 512:
+                        state.request_results.pop(next(iter(state.request_results)))
                 await ws.send(json.dumps(response))
             elif msg_type == "respond":
                 pane_id = msg["pane_id"]
-                if pane_id not in known_panes:
+                if pane_id not in state.known_panes:
                     await ws.send(json.dumps({"type": "error", "message": "unknown pane_id"}))
                     continue
                 text = msg.get("text", "")
                 normalized_text = text.strip().lower()
-                allowed_responses = SAFE_RESPONSES | pane_response_options.get(pane_id, set())
+                allowed_responses = SAFE_RESPONSES | state.pane_response_options.get(pane_id, set())
                 if normalized_text not in allowed_responses:
                     await ws.send(json.dumps({"type": "error", "message": "response not in allowlist"}))
                     continue
-                remote = pane_remote_map.get(pane_id)
+                remote = state.pane_remote_map.get(pane_id)
                 log.info("Response from %s (%s): pane=%s text=%r", ip, device, pane_id, text)
                 audit("respond", ip, device, pane_id, f"text={text!r}")
                 kind, payload = respond_action(text)
@@ -1284,16 +1071,16 @@ async def handle_client(ws):
                 else:
                     await asyncio.to_thread(run_herdr, "pane", "send-text", pane_id, payload + "\n", remote=remote)
             elif msg_type == "agent_event":
-                event_queue.put_nowait(msg)
+                state.event_queue.put_nowait(msg)
             elif msg_type == "read_pane":
                 pane_id = msg["pane_id"]
-                if pane_id not in known_panes:
+                if pane_id not in state.known_panes:
                     await ws.send(json.dumps({"type": "error", "message": "unknown pane_id"}))
                     continue
                 # herdr rejects a non-numeric --lines by printing an error and
                 # exiting 0, which would reach the client as pane content.
                 lines = _read_pane_lines(msg.get("lines"))
-                remote = pane_remote_map.get(pane_id)
+                remote = state.pane_remote_map.get(pane_id)
                 content = await asyncio.to_thread(run_herdr, "pane", "read", pane_id, "--lines", str(lines), "--source", "recent", remote=remote)
                 payload = {"type": "pane_content", "pane_id": pane_id, "content": content}
                 add_pane_metadata(payload, pane_id)
@@ -1305,12 +1092,12 @@ async def handle_client(ws):
                     blocks, sig = None, None
                 if blocks is not None:
                     payload["output_blocks"] = blocks
-                    if subscriptions.get(ws) == pane_id:
-                        stream_sigs[(id(ws), pane_id)] = sig
+                    if state.subscriptions.get(ws) == pane_id:
+                        state.stream_sigs[(id(ws), pane_id)] = sig
                 await ws.send(json.dumps(payload))
-                options = detect_options(content) if last_statuses.get(pane_id) == "blocked" else None
+                options = detect_options(content) if state.last_statuses.get(pane_id) == "blocked" else None
                 if options:
-                    pane_response_options[pane_id] = {option.lower() for option in options}
+                    state.pane_response_options[pane_id] = {option.lower() for option in options}
                     await ws.send(json.dumps({
                         "type": "blocked",
                         "pane_id": pane_id,
@@ -1319,47 +1106,47 @@ async def handle_client(ws):
                     }))
             elif msg_type == "subscribe_pane":
                 pane_id = msg.get("pane_id")
-                if pane_id in pane_cwd_map:
-                    previous = subscriptions.get(ws)
-                    subscriptions[ws] = pane_id
+                if pane_id in state.pane_cwd_map:
+                    previous = state.subscriptions.get(ws)
+                    state.subscriptions[ws] = pane_id
                     if previous is not None:
-                        stream_sigs.pop((id(ws), previous), None)
+                        state.stream_sigs.pop((id(ws), previous), None)
                     try:
                         blocks, sig = await asyncio.to_thread(pane_blocks, pane_id)
                     except Exception:
                         blocks, sig = None, None
                     if blocks is not None:
-                        stream_sigs[(id(ws), pane_id)] = sig
+                        state.stream_sigs[(id(ws), pane_id)] = sig
                         payload = {"type": "pane_content", "pane_id": pane_id, "output_blocks": blocks}
                         add_pane_metadata(payload, pane_id)
                         await ws.send(json.dumps(payload))
             elif msg_type == "unsubscribe_pane":
-                previous = subscriptions.pop(ws, None)
+                previous = state.subscriptions.pop(ws, None)
                 if previous is not None:
-                    stream_sigs.pop((id(ws), previous), None)
+                    state.stream_sigs.pop((id(ws), previous), None)
             elif msg_type == "send_keys":
                 pane_id = msg["pane_id"]
-                if pane_id not in known_panes:
+                if pane_id not in state.known_panes:
                     await ws.send(json.dumps({"type": "error", "message": "unknown pane_id"}))
                     continue
                 keys = msg.get("keys", [])
                 if not all(is_safe_key(k) for k in keys):
                     await ws.send(json.dumps({"type": "error", "message": "keys contain disallowed values"}))
                     continue
-                remote = pane_remote_map.get(pane_id)
+                remote = state.pane_remote_map.get(pane_id)
                 log.info("Keys from %s (%s): pane=%s keys=%s", ip, device, pane_id, keys)
                 audit("send_keys", ip, device, pane_id, f"keys={keys}")
                 await asyncio.to_thread(run_herdr, "pane", "send-keys", pane_id, *keys, remote=remote)
             elif msg_type == "send_text":
                 pane_id = msg["pane_id"]
-                if pane_id not in known_panes:
+                if pane_id not in state.known_panes:
                     await ws.send(json.dumps({"type": "error", "message": "unknown pane_id"}))
                     continue
                 text = msg.get("text", "")
                 if not text or len(text) > 1000:
                     await ws.send(json.dumps({"type": "error", "message": "text empty or too long"}))
                     continue
-                remote = pane_remote_map.get(pane_id)
+                remote = state.pane_remote_map.get(pane_id)
                 log.info("Text from %s (%s): pane=%s text=%r", ip, device, pane_id, text)
                 audit("send_text", ip, device, pane_id, f"text={text!r}")
                 await asyncio.to_thread(run_herdr, "pane", "send-text", pane_id, text, remote=remote)
@@ -1374,27 +1161,21 @@ async def handle_client(ws):
                     await ws.send(json.dumps({"type": "error", "message": "workspace_id required"}))
             # LEGACY (#14): browser-PWA only, retired with web/.
             elif msg_type == "push_subscribe":
-                sub = msg.get("subscription")
-                if sub and sub not in push_subscriptions:
-                    push_subscriptions.append(sub)
-                    _save_push_subs()
+                if push.subscribe(msg.get("subscription")):
                     log.info("Push subscription added from %s (%s)", ip, device)
                 await ws.send(json.dumps({"type": "push_subscribed", "ok": True}))
             elif msg_type == "push_unsubscribe":
-                sub = msg.get("subscription")
-                if sub and sub in push_subscriptions:
-                    push_subscriptions.remove(sub)
-                    _save_push_subs()
+                push.unsubscribe(msg.get("subscription"))
                 await ws.send(json.dumps({"type": "push_unsubscribed", "ok": True}))
     except (ConnectionClosedError, ConnectionClosedOK):
         pass
     finally:
         duration = int(time.monotonic() - connected_at)
         log.info("Client disconnected: ip=%s device=%s duration=%ds", ip, device, duration)
-        clients.discard(ws)
-        subscriptions.pop(ws, None)
-        for key in [k for k in stream_sigs if k[0] == id(ws)]:
-            stream_sigs.pop(key, None)
+        state.clients.discard(ws)
+        state.subscriptions.pop(ws, None)
+        for key in [k for k in state.stream_sigs if k[0] == id(ws)]:
+            state.stream_sigs.pop(key, None)
 
 
 def command_error(request_id, code, message):
@@ -1405,7 +1186,7 @@ def launch_session(msg):
     request_id = msg.get("request_id")
     if not isinstance(request_id, str) or not request_id:
         return command_error(None, "INVALID_REQUEST", "request_id is required")
-    preset = PRESETS_BY_ID.get(msg.get("preset_id"))
+    preset = presets.PRESETS_BY_ID.get(msg.get("preset_id"))
     if not preset:
         return command_error(request_id, "UNKNOWN_PRESET", "Unknown preset")
     host_id = msg.get("host_id")
@@ -1430,14 +1211,14 @@ def terminate_session(msg):
         return command_error(None, "INVALID_REQUEST", "request_id is required")
     if not isinstance(msg.get("confirmation_nonce"), str) or not msg["confirmation_nonce"]:
         return command_error(request_id, "CONFIRMATION_REQUIRED", "confirmation_nonce is required")
-    target = session_target_map.get(msg.get("session_id"))
+    target = state.session_target_map.get(msg.get("session_id"))
     if not target:
         return command_error(request_id, "STALE_SESSION", "Session is no longer active")
     pane_id, remote = target
     success, output = run_herdr_checked("pane", "close", pane_id, remote=remote)
     if not success:
         return command_error(request_id, "TERMINATE_FAILED", "Herdr did not terminate the client")
-    session_target_map.pop(msg["session_id"], None)
+    state.session_target_map.pop(msg["session_id"], None)
     return {"type": "command_ack", "request_id": request_id, "result": {"output": output}}
 
 
@@ -1446,11 +1227,11 @@ def wake_host(msg):
     if not isinstance(request_id, str) or not request_id:
         return command_error(None, "INVALID_REQUEST", "request_id is required")
     host_id = msg.get("host_id")
-    if host_id != POWER_HOST_ID or not POWER_HOST_MAC:
+    if host_id != config.POWER_HOST_ID or not config.POWER_HOST_MAC:
         return command_error(request_id, "HOST_NOT_ALLOWED", "Power control is not allowed for this host")
     try:
         result = subprocess.run(
-            [WAKE_BIN, POWER_HOST_MAC],
+            [config.WAKE_BIN, config.POWER_HOST_MAC],
             capture_output=True,
             text=True,
             timeout=10,
@@ -1469,9 +1250,9 @@ def shutdown_host(msg):
     if not isinstance(msg.get("confirmation_nonce"), str) or not msg["confirmation_nonce"]:
         return command_error(request_id, "CONFIRMATION_REQUIRED", "confirmation_nonce is required")
     host_id = msg.get("host_id")
-    if host_id != POWER_HOST_ID:
+    if host_id != config.POWER_HOST_ID:
         return command_error(request_id, "HOST_NOT_ALLOWED", "Power control is not allowed for this host")
-    target = HOST_TARGETS.get(host_id)
+    target = presets.HOST_TARGETS.get(host_id)
     if not target:
         return command_error(request_id, "UNKNOWN_HOST", "Power host has no SSH target")
     try:
@@ -1497,20 +1278,20 @@ def shutdown_host(msg):
 
 
 def require_auth_token():
-    if not AUTH_TOKEN:
+    if not config.AUTH_TOKEN:
         raise SystemExit("HERDR_RELAY_TOKEN is required; set it before starting the relay")
 
 
 async def main():
     require_auth_token()
     loop = asyncio.get_running_loop()
-    server = await serve(handle_client, "0.0.0.0", WS_PORT, process_request=process_request)
+    server = await serve(handle_client, "0.0.0.0", config.WS_PORT, process_request=process_request)
     background_tasks = [
         asyncio.create_task(poll_loop(), name="poll-loop"),
         asyncio.create_task(event_push(), name="event-push"),
     ]
-    hosts = ["local"] + REMOTES
-    log.info("herdr-remote relay on :%d (WebSocket + HTTP)", WS_PORT)
+    hosts = ["local"] + config.REMOTES
+    log.info("herdr-remote relay on :%d (WebSocket + HTTP)", config.WS_PORT)
     log.info("Polling: %s", ", ".join(hosts))
     stop = loop.create_future()
     for task in background_tasks:

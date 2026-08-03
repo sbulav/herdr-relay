@@ -48,8 +48,8 @@ stdenvNoCC.mkDerivation {
   doCheck = true;
   checkPhase = ''
     runHook preCheck
-    grep -q 'RELAY_VERSION = "${version}"' relay/herdr_relay/__init__.py || {
-      echo "RELAY_VERSION in relay/herdr_relay/__init__.py does not match package version ${version}" >&2
+    grep -q 'RELAY_VERSION = "${version}"' relay/herdr_relay/config.py || {
+      echo "RELAY_VERSION in relay/herdr_relay/config.py does not match package version ${version}" >&2
       exit 1
     }
     runHook postCheck

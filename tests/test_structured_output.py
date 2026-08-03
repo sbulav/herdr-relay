@@ -28,15 +28,15 @@ class RelayLifecycleTests(unittest.TestCase):
     def test_broadcast_tolerates_disconnect_during_send(self):
         class Socket:
             async def send(self, _message):
-                herdr_relay.clients.discard(self)
+                herdr_relay.state.clients.discard(self)
 
         async def run():
             sockets = {Socket(), Socket()}
-            herdr_relay.clients.update(sockets)
+            herdr_relay.state.clients.update(sockets)
             try:
                 await herdr_relay.broadcast({"type": "agents", "agents": []})
             finally:
-                herdr_relay.clients.clear()
+                herdr_relay.state.clients.clear()
 
         asyncio.run(run())
 
@@ -58,7 +58,7 @@ class RelayLifecycleTests(unittest.TestCase):
 
 
 class HostStatusTests(unittest.TestCase):
-    @patch.object(herdr_relay, "HOST_TARGETS", {"mba13": "mba", "mz": "mz"})
+    @patch.object(herdr_relay.presets, "HOST_TARGETS", {"mba13": "mba", "mz": "mz"})
     @patch.object(herdr_relay, "run_herdr_checked")
     def test_host_status_reflects_poll_success(self, run_herdr_checked):
         empty_result = json.dumps({"result": {"panes": []}})
@@ -78,7 +78,7 @@ class HostStatusTests(unittest.TestCase):
             ],
         )
 
-    @patch.object(herdr_relay, "HOST_TARGETS", {"host-a": "a", "host-b": "b"})
+    @patch.object(herdr_relay.presets, "HOST_TARGETS", {"host-a": "a", "host-b": "b"})
     @patch.object(herdr_relay, "get_agents_from_host")
     def test_hosts_are_polled_concurrently(self, get_agents_from_host):
         barrier = threading.Barrier(2, timeout=1)
@@ -116,7 +116,7 @@ class HostStatusTests(unittest.TestCase):
                 "-o", "ServerAliveInterval=3",
                 "-o", "ServerAliveCountMax=2",
                 "-o", "BatchMode=yes",
-                "workstation", herdr_relay.HERDR, "pane", "list",
+                "workstation", herdr_relay.config.HERDR, "pane", "list",
             ],
             capture_output=True,
             text=True,
@@ -189,8 +189,8 @@ class EventLoopBlockingTests(unittest.TestCase):
             self.assertTrue(made_progress.is_set())
 
         with (
-            patch.object(herdr_relay, "known_panes", {"pane-1"}),
-            patch.object(herdr_relay, "pane_remote_map", {}),
+            patch.object(herdr_relay.state, "known_panes", {"pane-1"}),
+            patch.object(herdr_relay.state, "pane_remote_map", {}),
             patch.object(herdr_relay, "run_herdr", side_effect=blocking_command),
         ):
             asyncio.run(run())
@@ -237,9 +237,9 @@ class PollLoopBlockingTests(unittest.TestCase):
             patch.object(herdr_relay, "get_all_agents", fake_get_all_agents),
             patch.object(herdr_relay, "read_pane", blocking_read),
             patch.object(herdr_relay, "broadcast", AsyncMock()),
-            patch.object(herdr_relay, "send_web_push", AsyncMock()),
-            patch.dict(herdr_relay.last_statuses, {}, clear=True),
-            patch.dict(herdr_relay.subscriptions, {}, clear=True),
+            patch.object(herdr_relay.push, "send_web_push", AsyncMock()),
+            patch.dict(herdr_relay.state.last_statuses, {}, clear=True),
+            patch.dict(herdr_relay.state.subscriptions, {}, clear=True),
         ):
             asyncio.run(run())
 
@@ -256,8 +256,8 @@ class PollLoopBlockingTests(unittest.TestCase):
 
         async def run():
             made_progress = asyncio.Event()
-            herdr_relay.event_queue = asyncio.Queue()
-            herdr_relay.event_queue.put_nowait({
+            herdr_relay.state.event_queue = asyncio.Queue()
+            herdr_relay.state.event_queue.put_nowait({
                 "pane_id": "pane-1", "status": "blocked", "host": "local",
             })
             pusher = asyncio.create_task(herdr_relay.event_push())
@@ -275,18 +275,18 @@ class PollLoopBlockingTests(unittest.TestCase):
                 pusher.cancel()
             self.assertTrue(made_progress.is_set())
 
-        original_queue = herdr_relay.event_queue
+        original_queue = herdr_relay.state.event_queue
         try:
             with (
                 patch.object(herdr_relay, "read_pane", blocking_read),
                 patch.object(herdr_relay, "broadcast", AsyncMock()),
-                patch.object(herdr_relay, "send_web_push", AsyncMock()),
-                patch.dict(herdr_relay.pane_remote_map, {}, clear=True),
-                patch.dict(herdr_relay.pane_response_options, {}, clear=True),
+                patch.object(herdr_relay.push, "send_web_push", AsyncMock()),
+                patch.dict(herdr_relay.state.pane_remote_map, {}, clear=True),
+                patch.dict(herdr_relay.state.pane_response_options, {}, clear=True),
             ):
                 asyncio.run(run())
         finally:
-            herdr_relay.event_queue = original_queue
+            herdr_relay.state.event_queue = original_queue
 
 
 class PaneMetadataTests(unittest.TestCase):
@@ -409,9 +409,9 @@ class PaneMetadataTests(unittest.TestCase):
         ):
             asyncio.run(herdr_relay._poll_once())
             asyncio.run(herdr_relay._poll_once())
-            self.assertEqual(herdr_relay.pane_activity, {})
-            self.assertEqual(herdr_relay.pane_revisions, {})
-            self.assertEqual(herdr_relay.pane_attention_states, {})
+            self.assertEqual(herdr_relay.state.pane_activity, {})
+            self.assertEqual(herdr_relay.state.pane_revisions, {})
+            self.assertEqual(herdr_relay.state.pane_attention_states, {})
 
     @staticmethod
     def agent(status="working", revision=0):
@@ -424,17 +424,17 @@ class PaneMetadataTests(unittest.TestCase):
     @staticmethod
     def poll_state():
         stack = contextlib.ExitStack()
-        stack.enter_context(patch.dict(herdr_relay.last_statuses, {}, clear=True))
-        stack.enter_context(patch.dict(herdr_relay.pane_activity, {}, clear=True))
-        stack.enter_context(patch.dict(herdr_relay.pane_revisions, {}, clear=True))
-        stack.enter_context(patch.dict(herdr_relay.pane_attention_states, {}, clear=True))
-        stack.enter_context(patch.dict(herdr_relay.subscriptions, {}, clear=True))
+        stack.enter_context(patch.dict(herdr_relay.state.last_statuses, {}, clear=True))
+        stack.enter_context(patch.dict(herdr_relay.state.pane_activity, {}, clear=True))
+        stack.enter_context(patch.dict(herdr_relay.state.pane_revisions, {}, clear=True))
+        stack.enter_context(patch.dict(herdr_relay.state.pane_attention_states, {}, clear=True))
+        stack.enter_context(patch.dict(herdr_relay.state.subscriptions, {}, clear=True))
         return stack
 
 
 class HostPowerTests(unittest.TestCase):
-    @patch.object(herdr_relay, "POWER_HOST_ID", "mz")
-    @patch.object(herdr_relay, "POWER_HOST_MAC", "34:5a:60:ba:8e:20")
+    @patch.object(herdr_relay.config, "POWER_HOST_ID", "mz")
+    @patch.object(herdr_relay.config, "POWER_HOST_MAC", "34:5a:60:ba:8e:20")
     @patch.object(herdr_relay.subprocess, "run")
     def test_wake_is_a_fixed_magic_packet_command(self, run):
         run.return_value.returncode = 0
@@ -443,14 +443,14 @@ class HostPowerTests(unittest.TestCase):
 
         self.assertEqual(response["type"], "command_ack")
         run.assert_called_once_with(
-            [herdr_relay.WAKE_BIN, "34:5a:60:ba:8e:20"],
+            [herdr_relay.config.WAKE_BIN, "34:5a:60:ba:8e:20"],
             capture_output=True,
             text=True,
             timeout=10,
         )
 
-    @patch.object(herdr_relay, "POWER_HOST_ID", "mz")
-    @patch.object(herdr_relay, "HOST_TARGETS", {"mz": "mz"})
+    @patch.object(herdr_relay.config, "POWER_HOST_ID", "mz")
+    @patch.object(herdr_relay.presets, "HOST_TARGETS", {"mz": "mz"})
     @patch.object(herdr_relay.subprocess, "run")
     def test_shutdown_is_a_fixed_non_interactive_ssh_command(self, run):
         run.return_value.returncode = 0
@@ -477,7 +477,7 @@ class HostPowerTests(unittest.TestCase):
             timeout=15,
         )
 
-    @patch.object(herdr_relay, "POWER_HOST_ID", "mz")
+    @patch.object(herdr_relay.config, "POWER_HOST_ID", "mz")
     @patch.object(herdr_relay.subprocess, "run")
     def test_power_commands_reject_other_hosts_and_missing_confirmation(self, run):
         wake = herdr_relay.wake_host({"request_id": "request-1", "host_id": "other"})
@@ -538,9 +538,9 @@ class StructuredOutputTests(unittest.TestCase):
         ):
             socket = Socket()
             with (
-                patch.dict(herdr_relay.last_statuses, {"pane-1": status}, clear=True),
-                patch.object(herdr_relay, "known_panes", {"pane-1"}),
-                patch.dict(herdr_relay.pane_response_options, {}, clear=True),
+                patch.dict(herdr_relay.state.last_statuses, {"pane-1": status}, clear=True),
+                patch.object(herdr_relay.state, "known_panes", {"pane-1"}),
+                patch.dict(herdr_relay.state.pane_response_options, {}, clear=True),
                 patch.object(herdr_relay, "run_herdr", return_value=prompt),
                 patch.object(herdr_relay, "pane_blocks", return_value=(None, None)),
             ):
@@ -677,9 +677,9 @@ class StructuredOutputTests(unittest.TestCase):
                 },
             ]}})
             with (
-                patch.dict(herdr_relay.pane_session_refs, {}, clear=True),
+                patch.dict(herdr_relay.state.pane_session_refs, {}, clear=True),
                 patch.dict(
-                    herdr_relay.pane_cwd_map,
+                    herdr_relay.state.pane_cwd_map,
                     {
                         "first": ("/work/repo", "claude", None, True),
                         "second": ("/work/repo", "claude", None, True),
@@ -700,11 +700,11 @@ class StructuredOutputTests(unittest.TestCase):
     def test_ambiguous_cwd_without_refs_is_not_streamed(self):
         with (
             patch.dict(
-                herdr_relay.pane_cwd_map,
+                herdr_relay.state.pane_cwd_map,
                 {"ambiguous": ("/work/repo", "claude", None, True)},
                 clear=True,
             ),
-            patch.dict(herdr_relay.pane_session_refs, {}, clear=True),
+            patch.dict(herdr_relay.state.pane_session_refs, {}, clear=True),
         ):
             self.assertEqual(herdr_relay.pane_blocks("ambiguous"), (None, None))
 
@@ -720,14 +720,14 @@ class StructuredOutputTests(unittest.TestCase):
                     "message": {"content": [{"type": "text", "text": "id conversation"}]},
                 }))
             with (
-                patch.object(herdr_relay, "CLAUDE_PROJECTS", projects),
+                patch.object(herdr_relay.config, "CLAUDE_PROJECTS", projects),
                 patch.dict(
-                    herdr_relay.pane_cwd_map,
+                    herdr_relay.state.pane_cwd_map,
                     {"pane-id": (cwd, "claude", None, True)},
                     clear=True,
                 ),
                 patch.dict(
-                    herdr_relay.pane_session_refs,
+                    herdr_relay.state.pane_session_refs,
                     {(None, "pane-id"): {"kind": "id", "value": session_id}},
                     clear=True,
                 ),
@@ -752,9 +752,9 @@ class StructuredOutputTests(unittest.TestCase):
             },
         ]}})
         with (
-            patch.dict(herdr_relay.pane_session_refs, {}, clear=True),
+            patch.dict(herdr_relay.state.pane_session_refs, {}, clear=True),
             patch.dict(
-                herdr_relay.pane_cwd_map,
+                herdr_relay.state.pane_cwd_map,
                 {pane_id: ("/work/repo", "claude", None, True)
                  for pane_id in ("bad-kind", "empty", "null")},
                 clear=True,
@@ -762,7 +762,7 @@ class StructuredOutputTests(unittest.TestCase):
             patch.object(herdr_relay, "run_herdr_checked", return_value=(True, pane_list)),
         ):
             herdr_relay.get_agents_from_host()
-            self.assertEqual(herdr_relay.pane_session_refs, {})
+            self.assertEqual(herdr_relay.state.pane_session_refs, {})
             for pane_id in ("bad-kind", "empty", "null"):
                 self.assertEqual(herdr_relay.pane_blocks(pane_id), (None, None))
 
@@ -792,14 +792,14 @@ class StructuredOutputTests(unittest.TestCase):
             finally:
                 db.close()
             with (
-                patch.object(herdr_relay, "OPENCODE_DB", db_path),
+                patch.object(herdr_relay.config, "OPENCODE_DB", db_path),
                 patch.dict(
-                    herdr_relay.pane_cwd_map,
+                    herdr_relay.state.pane_cwd_map,
                     {"opencode": ("/wrong/repo", "opencode", None, True)},
                     clear=True,
                 ),
                 patch.dict(
-                    herdr_relay.pane_session_refs,
+                    herdr_relay.state.pane_session_refs,
                     {(None, "opencode"): {"kind": "id", "value": "target-session"}},
                     clear=True,
                 ),
@@ -991,7 +991,7 @@ class RelayInputValidationTests(unittest.TestCase):
 
         socket = Socket()
         with (
-            patch.object(herdr_relay, "known_panes", {"pane-1"}),
+            patch.object(herdr_relay.state, "known_panes", {"pane-1"}),
             patch.object(herdr_relay, "pane_blocks", return_value=(None, None)),
         ):
             asyncio.run(herdr_relay.handle_client(socket))
@@ -1031,9 +1031,9 @@ class RelayInputValidationTests(unittest.TestCase):
                 self.sent.append(json.loads(message))
 
         with (
-            patch.object(herdr_relay, "known_panes", {"pane-1"}),
+            patch.object(herdr_relay.state, "known_panes", {"pane-1"}),
             patch.dict(
-                herdr_relay.pane_response_options,
+                herdr_relay.state.pane_response_options,
                 {"pane-1": {"allow once", "allow always", "reject"}},
                 clear=True,
             ),
@@ -1077,8 +1077,8 @@ class HandshakeTests(unittest.TestCase):
 
         self.assertEqual([1], frames_before_first_read)
         self.assertEqual("server_info", sent[0]["type"])
-        self.assertEqual(herdr_relay.MIN_CLIENT, sent[0]["min_client"])
-        self.assertEqual(herdr_relay.RELAY_VERSION, sent[0]["relay_version"])
+        self.assertEqual(herdr_relay.config.MIN_CLIENT, sent[0]["min_client"])
+        self.assertEqual(herdr_relay.config.RELAY_VERSION, sent[0]["relay_version"])
 
     def test_a_socket_is_not_broadcast_to_until_its_handshake_is_written(self):
         """`broadcast` fans out over `clients`, so membership means reachable.
@@ -1097,7 +1097,7 @@ class HandshakeTests(unittest.TestCase):
             async def send(inner, raw):
                 # `inner`, not `self`: the enclosing test's `self` stays reachable.
                 if json.loads(raw)["type"] == "server_info":
-                    registered_during_handshake.append(inner in herdr_relay.clients)
+                    registered_during_handshake.append(inner in herdr_relay.state.clients)
 
             def __aiter__(inner):
                 return inner
@@ -1130,17 +1130,17 @@ class HandshakeTests(unittest.TestCase):
 
         dead = DeadWS()
         asyncio.run(herdr_relay.handle_client(dead))
-        self.assertNotIn(dead, herdr_relay.clients)
+        self.assertNotIn(dead, herdr_relay.state.clients)
 
 
 class AuthTokenTests(unittest.TestCase):
     def test_require_auth_token_rejects_empty_token(self):
-        with patch.object(herdr_relay, "AUTH_TOKEN", ""):
+        with patch.object(herdr_relay.config, "AUTH_TOKEN", ""):
             with self.assertRaises(SystemExit):
                 herdr_relay.require_auth_token()
 
     def test_require_auth_token_accepts_configured_token(self):
-        with patch.object(herdr_relay, "AUTH_TOKEN", "token"):
+        with patch.object(herdr_relay.config, "AUTH_TOKEN", "token"):
             self.assertIsNone(herdr_relay.require_auth_token())
 
     def test_process_request_rejects_wrong_token(self):
@@ -1152,7 +1152,7 @@ class AuthTokenTests(unittest.TestCase):
             headers = Headers()
             path = "/"
 
-        with patch.object(herdr_relay, "AUTH_TOKEN", "token"):
+        with patch.object(herdr_relay.config, "AUTH_TOKEN", "token"):
             response = asyncio.run(herdr_relay.process_request(None, Request()))
 
         self.assertEqual(response.status_code, 401)
@@ -1166,7 +1166,7 @@ class AuthTokenTests(unittest.TestCase):
             headers = Headers()
             path = "/"
 
-        with patch.object(herdr_relay, "AUTH_TOKEN", "token"):
+        with patch.object(herdr_relay.config, "AUTH_TOKEN", "token"):
             response = asyncio.run(herdr_relay.process_request(None, Request()))
 
         self.assertEqual(response.status_code, 401)
@@ -1183,7 +1183,7 @@ class AuthTokenTests(unittest.TestCase):
             headers = Headers()
             path = "/"
 
-        with patch.object(herdr_relay, "AUTH_TOKEN", "token"):
+        with patch.object(herdr_relay.config, "AUTH_TOKEN", "token"):
             response = asyncio.run(herdr_relay.process_request(None, Request()))
 
         self.assertIsNone(response)
@@ -1206,8 +1206,8 @@ class EventPushRouteTests(unittest.TestCase):
 
     def _push(self, path):
         queue = asyncio.Queue()
-        with patch.object(herdr_relay, "AUTH_TOKEN", "token"), \
-                patch.object(herdr_relay, "event_queue", queue):
+        with patch.object(herdr_relay.config, "AUTH_TOKEN", "token"), \
+                patch.object(herdr_relay.state, "event_queue", queue):
             response = asyncio.run(herdr_relay.process_request(None, self._request(path)))
         events = []
         while not queue.empty():
