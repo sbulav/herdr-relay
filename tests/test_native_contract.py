@@ -47,7 +47,17 @@ class NativeContractTests(unittest.TestCase):
             "tab_id": "tab-4",
             "output_revision": 7,
         }]
-        hosts = [{"host_id": "buildbox", "online": True}]
+        hosts = [{
+            "host_id": "buildbox",
+            "display_name": "Build box",
+            "status": "ready",
+            "online": True,
+            "ssh_reachable": True,
+            "herdr_ready": True,
+            "active_agent_count": 1,
+            "capabilities": {"wake": False, "shutdown": False},
+            "harnesses": [],
+        }]
         presets = [{
             "id": "review",
             "label": "Review",
@@ -94,6 +104,66 @@ class NativeContractTests(unittest.TestCase):
         self.assertNotIn("remote", sent[0]["agents"][0])
         # Routing still works internally; only the wire is cleaned.
         self.assertEqual(routed_target, "deploy@buildbox")
+
+    def test_projects_snapshot(self):
+        row = {
+            "project_id": "0123456789abcdef0123456789abcdef",
+            "host_id": "buildbox",
+            "root_id": "root_95e8a4520dc48f2eacf6583c",
+            "label": "Herdr relay",
+            "canonical_path": "/srv/projects/herdr-relay",
+            "archived": 0,
+            "available": 1,
+            "unavailable_reason": None,
+            "last_launch_at": 1700000000000,
+        }
+
+        class Store:
+            def reconcile(self, _hosts, _roots):
+                pass
+
+            def list(self, _query):
+                return [row]
+
+        with (
+            patch.object(herdr_relay.projects, "store", return_value=Store()),
+            patch.object(
+                herdr_relay.projects,
+                "_configured_roots",
+                return_value=(
+                    {"buildbox"},
+                    {("buildbox", "root_95e8a4520dc48f2eacf6583c")},
+                    [{"host_id": "buildbox", "id": "root_95e8a4520dc48f2eacf6583c", "label": "projects"}],
+                ),
+            ),
+        ):
+            self.assert_contract("projects", herdr_relay.projects.public_snapshot())
+
+    def test_folder_entries_frame(self):
+        host = {
+            "id": "buildbox",
+            "ssh": {},
+            "project_roots": ["/srv/projects"],
+        }
+        with (
+            patch.object(herdr_relay.hosts, "HOSTS_BY_ID", {"buildbox": host}),
+            patch.object(
+                herdr_relay.project_fs,
+                "browse",
+                return_value={"canonical_path": "/srv/projects/herdr-relay", "entries": [{"name": "app", "kind": "directory"}]},
+            ),
+        ):
+            root_id = herdr_relay.hosts.project_roots(host)[0]["id"]
+            self.assert_contract(
+                "folder_entries",
+                herdr_relay.projects.browse({
+                    "type": "project_browse",
+                    "request_id": "req-browse-1",
+                    "host_id": "buildbox",
+                    "root_id": root_id,
+                    "path": ["herdr-relay"],
+                }),
+            )
 
     def test_blocked_transition(self):
         agents = [{
@@ -206,7 +276,8 @@ class NativeContractTests(unittest.TestCase):
         self.assert_contract("command_ack_launch_session", frame)
         run.assert_called_once_with(
             "agent", "start", "mobile-review-01234567", "--cwd", "/srv/herdr-remote",
-            "--no-focus", "--", "claude", "--model", "sonnet", remote="deploy@buildbox",
+            "--no-focus", "--", "claude", "--model", "sonnet",
+            remote="deploy@buildbox", host_id="buildbox", command=[herdr_relay.config.HERDR], timeout=15,
         )
 
     def test_terminate_session_ack(self):

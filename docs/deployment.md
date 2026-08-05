@@ -145,9 +145,11 @@ Everything the relay reads. Only the first is mandatory.
 | `HERDR_BIN` | `herdr` on `PATH`, else `/opt/homebrew/bin/herdr` | herdr binary. The fallback does not exist off macOS, so set it explicitly or every local poll reports the host offline |
 | `HERDR_LOG_DIR` | `/var/log/herdr-remote` if writable, else `~/.local/state/herdr-remote/log` (`~/Library/Logs/herdr-remote` on macOS) | Written at import, before anything else. Set it, or a hardened unit picks an unwritable path |
 | `HERDR_REMOTES` | — | Comma-separated SSH targets to poll alongside the local host |
+| `HERDR_HOSTS_FILE` | — | Versioned host configuration JSON; owns host IDs, SSH routing, project roots, Herdr wrappers, harnesses, power capabilities, and readiness timeouts |
+| `HERDR_PROJECTS_DB` | `~/.local/state/herdr-relay/projects.sqlite3` | Writable SQLite database for versioned saved-project metadata and migrations |
 | `HERDR_PRESETS_FILE` | — | JSON launch presets. Each preset's `target` is an SSH login string, so treat the file as a secret |
-| `HERDR_POWER_HOST_ID` | — | Host id `wake_host` and `shutdown_host` may act on. Both are refused unless this and the MAC are set |
-| `HERDR_POWER_HOST_MAC` | — | MAC address woken by `wake_host` |
+| `HERDR_POWER_HOST_ID` | — | Legacy preset-mode power host id; host-file deployments declare power per host |
+| `HERDR_POWER_HOST_MAC` | — | Legacy preset-mode Wake-on-LAN MAC; host-file deployments keep the MAC in private host configuration |
 | `HERDR_WAKE_BIN` | `wakeonlan` | Wake-on-LAN binary |
 | `HERDR_CLAUDE_PROJECTS` | `~/.claude/projects` | Claude Code session store, for transcript blocks |
 | `HERDR_OPENCODE_DB` | `~/.local/share/opencode/opencode-stable.db` | OpenCode session store |
@@ -157,6 +159,18 @@ Everything the relay reads. Only the first is mandatory.
 
 `HERDR_RELAY` is a *client* variable — the URL a client or the herdr push plugin
 dials. The relay itself never reads it.
+
+`HERDR_HOSTS_FILE` is the preferred multi-host configuration. Its schema is
+`contract/host-config-v1.schema.json`; keep the file in the operator's private
+configuration repository because it contains SSH targets, wrapper paths, and
+power addresses. The relay publishes only the host ID, display name, readiness,
+agent count, configured harness names, and boolean power capabilities.
+
+`HERDR_PROJECTS_DB` must be on writable relay state storage. The database contains
+opaque project IDs, host IDs, canonical paths, editable labels, archive state,
+availability, and launch timestamps. It never contains or accepts client shell
+commands. A service deployment should point it at its state directory so the
+database survives relay restarts without becoming part of the source checkout.
 
 The Telegram bot (`relay/herdr_telegram.py`) is a separate process with its own
 variables, `HERDR_TG_TOKEN` and `HERDR_TG_CHAT_ID`. It is not packaged here.
@@ -210,10 +224,11 @@ Dependencies are `websockets` (required) and `pywebpush` plus `py-vapid` (Web
 Push — the relay logs a warning and carries on without them).
 `uv run relay/herdr-relay.py` installs them from that launcher's PEP 723 metadata.
 
-## SSH access to remotes
+## SSH access to remotes and hosts
 
-Polling `HERDR_REMOTES` shells out to plain `ssh` with `BatchMode=yes` and no
-`-i`, so it needs, in the service user's `$HOME`:
+Polling `HERDR_REMOTES` or SSH targets declared by `HERDR_HOSTS_FILE` shells out
+to plain `ssh` with `BatchMode=yes` and no `-i`, so it needs, in the service
+user's `$HOME`:
 
 - a private key `ssh` will find, and
 - a `known_hosts` entry for every remote — `BatchMode` cannot prompt, so an

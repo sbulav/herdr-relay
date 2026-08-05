@@ -66,6 +66,11 @@ RELAY_VERSION = "0.7.0"  # this relay's own version; shown to a client that must
 MIN_CLIENT = 1
 AUTH_TOKEN = os.environ.get("HERDR_RELAY_TOKEN", "")  # Shared secret for relay auth
 PRESETS_FILE = os.environ.get("HERDR_PRESETS_FILE", "")
+HOSTS_FILE = os.environ.get("HERDR_HOSTS_FILE", "")
+PROJECTS_DB = os.environ.get(
+    "HERDR_PROJECTS_DB",
+    os.path.expanduser("~/.local/state/herdr-relay/projects.sqlite3"),
+)
 POWER_HOST_ID = os.environ.get("HERDR_POWER_HOST_ID", "")
 POWER_HOST_MAC = os.environ.get("HERDR_POWER_HOST_MAC", "")
 WAKE_BIN = os.environ.get("HERDR_WAKE_BIN", "wakeonlan")

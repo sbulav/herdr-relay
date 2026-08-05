@@ -10,6 +10,7 @@
 #        HERDR_RELAY_TOKEN=...
 #        HERDR_BIN=/usr/local/bin/herdr
 #        HERDR_REMOTES=herdr@builder
+#        HERDR_HOSTS_FILE=/etc/herdr-relay/hosts.json
 #   3. Adjust ExecStart below, then:
 #        systemctl enable --now herdr-relay
 #
@@ -28,6 +29,7 @@ EnvironmentFile=/etc/herdr-relay/config.env
 Environment=HERDR_RELAY_PORT=8375
 Environment=HERDR_LOG_DIR=/var/log/herdr-relay
 Environment=HOME=/var/lib/herdr-relay
+Environment=HERDR_PROJECTS_DB=/var/lib/herdr-relay/projects.sqlite3
 
 # --- adjust this line ---
 ExecStart=/usr/bin/python3 /opt/herdr-relay/relay/herdr-relay.py

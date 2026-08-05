@@ -42,7 +42,7 @@ The poll path is correctly off-thread (`asyncio.to_thread` at `:303`, `:317`,
 (`:1005`), `terminate_session` (`:1012`), `wake_host` (`:1019`),
 `shutdown_host` (`:1026`), and the `respond` / `read_pane` / `send_keys` /
 `send_text` branches all call `run_herdr` → `subprocess.run(..., timeout=15)`
-synchronously inside the async handler. One phone tapping "shutdown mz" stalls
+synchronously inside the async handler. One phone tapping "shutdown a host" stalls
 the entire relay — poll loop, broadcasts, every other client — for up to 15
 seconds, which reads on the phone as the relay having died. Wrap each in
 `asyncio.to_thread`. Roughly ten lines.

@@ -9,26 +9,46 @@ import json
 import os
 import subprocess
 
-from . import config, panes, presets, state
+from . import config, hosts, panes, presets, state
 
-def run_herdr_checked(*args, remote=None):
+
+SSH_OPTIONS = [
+    "-o", "ConnectTimeout=5",
+    "-o", "ServerAliveInterval=3",
+    "-o", "ServerAliveCountMax=2",
+    "-o", "BatchMode=yes",
+]
+
+
+def run_ssh_checked(remote, *args, host_id=None, timeout=5):
+    """Probe or invoke a fixed SSH command without logging the login target."""
     try:
+        result = subprocess.run(
+            ["ssh", *SSH_OPTIONS, remote, *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        return result.returncode == 0
+    except Exception:
+        # The target is private routing state.  Logs identify the configured host
+        # only, so an operator can diagnose a failure without leaking a login.
+        print(f"ssh probe failed for host {host_id or 'configured host'}", flush=True)
+        return False
+
+
+def run_herdr_checked(*args, remote=None, host_id=None, command=None, timeout=15):
+    try:
+        command = list(command or [config.HERDR])
         if remote:
-            cmd = [
-                "ssh",
-                "-o", "ConnectTimeout=5",
-                "-o", "ServerAliveInterval=3",
-                "-o", "ServerAliveCountMax=2",
-                "-o", "BatchMode=yes",
-                remote, config.HERDR, *args,
-            ]
+            cmd = ["ssh", *SSH_OPTIONS, remote, *command, *args]
         else:
-            cmd = [config.HERDR, *args]
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+            cmd = [*command, *args]
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         return r.returncode == 0, r.stdout.strip()
-    except Exception as exc:
+    except Exception:
         if remote:
-            print(f"herdr poll failed for {remote}: {exc!r}", flush=True)
+            print(f"herdr poll failed for host {host_id or 'configured host'}", flush=True)
         return False, ""
 
 
@@ -36,12 +56,38 @@ def run_herdr(*args, remote=None):
     return run_herdr_checked(*args, remote=remote)[1]
 
 
-def get_agents_from_host(remote=None, host_id=None):
-    online, raw = run_herdr_checked("pane", "list", remote=remote)
-    host_label = host_id or remote or "local"
+def get_agents_from_host(remote=None, host_id=None, host=None):
+    host = host or {
+        "id": host_id or remote or "local",
+        "ssh": {"target": remote} if remote else {},
+        "herdr": {},
+        "readiness_timeout_seconds": 15,
+    }
+    host_id = host["id"]
+    remote = hosts.ssh_target(host)
+    if remote and not run_ssh_checked(remote, "true", host_id=host_id, timeout=host["readiness_timeout_seconds"]):
+        return [], {"ssh_reachable": False, "herdr_ready": False, "active_agent_count": None}
+
+    ready, raw = run_herdr_checked(
+        "pane", "list",
+        remote=remote,
+        host_id=host_id,
+        command=hosts.herdr_command(host),
+        timeout=host["readiness_timeout_seconds"],
+    )
+    host_label = host_id
+    probe = {
+        "ssh_reachable": True,
+        "herdr_ready": False,
+        "active_agent_count": None,
+    }
+    if not ready:
+        return [], probe
     try:
         data = json.loads(raw)
         pane_list = data.get("result", {}).get("panes", [])
+        if not isinstance(pane_list, list):
+            return [], probe
         agents = []
         for p in pane_list:
             if not p.get("agent"):
@@ -72,39 +118,101 @@ def get_agents_from_host(remote=None, host_id=None):
             if isinstance(revision, int) and not isinstance(revision, bool):
                 agent["output_revision"] = revision
             agents.append(agent)
-    except (json.JSONDecodeError, KeyError):
-        agents = []
-    return agents, online
+    except (json.JSONDecodeError, KeyError, TypeError):
+        return [], probe
+    probe["herdr_ready"] = True
+    probe["active_agent_count"] = len(agents)
+    return agents, probe
+
+
+def configured_host_records():
+    """Return host definitions, with a temporary preset fallback for cutover."""
+    if hosts.HOSTS:
+        return list(hosts.HOSTS)
+    if presets.HOST_TARGETS:
+        records = []
+        for host_id, remote in presets.HOST_TARGETS.items():
+            roots = [
+                host.get("cwd")
+                for preset in presets.PRESETS
+                for configured_id, host in preset.get("hosts", {}).items()
+                if configured_id == host_id and host.get("cwd")
+            ]
+            records.append(
+                {
+                    "id": host_id,
+                    "display_name": host_id,
+                    "ssh": {"target": remote} if remote else {},
+                    "project_roots": sorted(set(roots)) or ["/"],
+                    "herdr": {},
+                    "harnesses": [],
+                    "power": {
+                        "wake": {"mac": config.POWER_HOST_MAC}
+                        if host_id == config.POWER_HOST_ID and config.POWER_HOST_MAC
+                        else None,
+                        "shutdown": host_id == config.POWER_HOST_ID,
+                    },
+                    "readiness_timeout_seconds": 15,
+                }
+            )
+        return records
+    return [
+        {
+            "id": "local",
+            "display_name": "Local host",
+            "ssh": {},
+            "project_roots": ["/"],
+            "herdr": {},
+            "harnesses": [],
+            "power": {"wake": None, "shutdown": False},
+            "readiness_timeout_seconds": 15,
+        },
+        *[
+            {
+                "id": remote,
+                "display_name": remote,
+                "ssh": {"target": remote},
+                "project_roots": ["/"],
+                "herdr": {},
+                "harnesses": [],
+                "power": {"wake": None, "shutdown": False},
+                "readiness_timeout_seconds": 15,
+            }
+            for remote in config.REMOTES
+        ],
+    ]
+
+
+def _probe_result(value, active_agent_count):
+    """Accept old test doubles while keeping the new probe shape explicit."""
+    if isinstance(value, dict):
+        return value
+    return {
+        "ssh_reachable": bool(value),
+        "herdr_ready": bool(value),
+        "active_agent_count": active_agent_count if value else None,
+    }
 
 
 async def get_all_agents():
-    if presets.HOST_TARGETS:
-        targets = list(presets.HOST_TARGETS.items())
-        results = await asyncio.gather(*(
-            asyncio.to_thread(
-                get_agents_from_host,
-                remote=remote,
-                host_id=host_id,
-            )
-            for host_id, remote in targets
-        ))
-        hosts = [
-            {"host_id": host_id, "online": online}
-            for (host_id, _remote), (_host_agents, online) in zip(targets, results)
-        ]
-    else:
-        targets = [(None, None), *((None, remote) for remote in config.REMOTES)]
-        results = await asyncio.gather(*(
-            asyncio.to_thread(get_agents_from_host, remote=remote)
-            for _host_id, remote in targets
-        ))
-        hosts = []
-    agents = [
-        agent
-        for host_agents, _online in results
-        for agent in host_agents
-    ]
-    return agents, hosts
+    records = configured_host_records()
+    results = await asyncio.gather(*(
+        asyncio.to_thread(
+            get_agents_from_host,
+            remote=hosts.ssh_target(host),
+            host_id=host["id"],
+            host=host,
+        )
+        for host in records
+    ))
+    probes = {}
+    agents = []
+    for host, result in zip(records, results):
+        host_agents, raw_probe = result
+        probe = _probe_result(raw_probe, len(host_agents))
+        probes[host["id"]] = probe
+        agents.extend(host_agents)
+    return agents, hosts.public_hosts(records, probes)
 
 
 def _read_pane_lines(value, default=30, maximum=2000):

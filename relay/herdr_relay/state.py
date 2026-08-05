@@ -18,7 +18,6 @@ event_queue = asyncio.Queue()
 pane_remote_map = {}
 session_target_map = {}
 pane_session_refs = {}  # (remote, pane_id) -> {kind, value}; never sent to clients
-request_results = {}
 pane_cwd_map = {}      # pane_id -> (cwd, agent, remote, ambiguous agent/cwd)
 subscriptions = {}     # ws -> pane_id the client is currently viewing
 stream_sigs = {}       # (id(ws), pane_id) -> signature of the last blocks pushed

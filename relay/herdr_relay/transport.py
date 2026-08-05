@@ -10,7 +10,7 @@ import json
 
 from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
 
-from . import config, herdr, panes, presets, protocol, push, state, transcripts
+from . import config, herdr, panes, presets, projects, protocol, push, state, transcripts
 from .config import log
 
 
@@ -83,10 +83,13 @@ async def _poll_once():
 
     # Always send a complete snapshot. In particular, an empty snapshot
     # removes stale agents after every remote host goes offline.
+    project_frame = projects.public_snapshot()
     await broadcast({
         "type": "agents", "agents": protocol.public_agents(agents),
         "presets": presets.public_presets(),
         "hosts": hosts,
+        "projects": project_frame["projects"],
+        "project_roots": project_frame["roots"],
     })
     # Read every newly blocked pane off the event loop, and all of them at once:
     # `herdr pane read` shells out (over ssh for remote hosts) with a 15s timeout,

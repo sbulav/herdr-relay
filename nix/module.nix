@@ -21,6 +21,9 @@ let
   logDir = "/var/log/herdr-relay";
 
   usesRemotes = cfg.remotes != [ ];
+  # A host file can carry SSH targets independently of the legacy remotes
+  # option, so it needs the same credential and ~/.ssh setup.
+  usesSsh = usesRemotes || cfg.hostsFile != null;
 
   # SSH is invoked as a plain `ssh` with no -i, so the identity has to come from
   # a config file in $HOME. Under DynamicUser $HOME is the state directory, so
@@ -114,7 +117,8 @@ in
       description = ''
         SSH targets to poll in addition to the local host. These are login
         strings and never reach a client — the relay strips them at the
-        broadcast boundary. Setting this requires
+         broadcast boundary. Setting this, or using a hostsFile with SSH
+         targets, requires
         {option}`services.herdr-relay.ssh.identityFile` and
         {option}`services.herdr-relay.ssh.knownHostsFile`.
       '';
@@ -126,7 +130,8 @@ in
         default = null;
         example = "/run/secrets/herdr-relay-ssh-key";
         description = ''
-          Private key used to reach {option}`services.herdr-relay.remotes`.
+           Private key used to reach {option}`services.herdr-relay.remotes` or
+           SSH targets in {option}`services.herdr-relay.hostsFile`.
           Passed in as a systemd credential.
         '';
       };
@@ -136,7 +141,7 @@ in
         default = null;
         example = "/etc/ssh/herdr_known_hosts";
         description = ''
-          `known_hosts` file for the remotes. Required alongside
+           `known_hosts` file for remotes and hosts-file targets. Required alongside
           {option}`services.herdr-relay.ssh.identityFile`: the relay runs ssh
           with `BatchMode=yes`, so an unverified host key fails the poll rather
           than prompting.
@@ -154,13 +159,24 @@ in
       '';
     };
 
+    hostsFile = lib.mkOption {
+      type = lib.types.nullOr lib.types.path;
+      default = null;
+      description = ''
+        Versioned host configuration JSON. It contains private SSH routing,
+        wrapper paths, project roots, and power addresses, so it is passed as a
+        systemd credential rather than made world-readable.
+      '';
+    };
+
     power = {
       hostId = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
         description = ''
-          Host id that `wake_host` and `shutdown_host` are allowed to act on.
-          Both operations are refused unless this and
+          Legacy preset-mode host id for `wake_host` and `shutdown_host`.
+          Host-file deployments declare power capabilities per host instead.
+          Both legacy operations are refused unless this and
           {option}`services.herdr-relay.power.hostMac` are set.
         '';
       };
@@ -217,19 +233,18 @@ in
         '';
       }
       {
-        assertion = usesRemotes -> (cfg.ssh.identityFile != null && cfg.ssh.knownHostsFile != null);
-        message = ''
-          services.herdr-relay.remotes is set, so both ssh.identityFile and
-          ssh.knownHostsFile are required: the relay polls remotes with
-          BatchMode=yes and no fallback to an interactive prompt.
+         assertion = usesSsh -> (cfg.ssh.identityFile != null && cfg.ssh.knownHostsFile != null);
+         message = ''
+           services.herdr-relay uses SSH targets, so both ssh.identityFile and
+           ssh.knownHostsFile are required: the relay polls hosts with
+           BatchMode=yes and no fallback to an interactive prompt.
         '';
       }
       {
         assertion = (cfg.power.hostId == null) == (cfg.power.hostMac == null);
         message = ''
           services.herdr-relay.power.hostId and power.hostMac must be set
-          together; the relay refuses wake_host and shutdown_host unless both
-          are present.
+          together when using legacy preset-mode power controls.
         '';
       }
     ];
@@ -246,10 +261,12 @@ in
         {
           HERDR_RELAY_PORT = toString cfg.port;
           HERDR_LOG_DIR = logDir;
+          HERDR_PROJECTS_DB = "${stateDir}/projects.sqlite3";
           HOME = stateDir;
           HERDR_BIN = cfg.herdrBin;
           HERDR_REMOTES = if usesRemotes then lib.concatStringsSep "," cfg.remotes else null;
           HERDR_PRESETS_FILE = if cfg.presetsFile != null then "%d/presets" else null;
+          HERDR_HOSTS_FILE = if cfg.hostsFile != null then "%d/hosts" else null;
           HERDR_POWER_HOST_ID = cfg.power.hostId;
           HERDR_POWER_HOST_MAC = cfg.power.hostMac;
           HERDR_WAKE_BIN = cfg.power.wakeBin;
@@ -259,18 +276,19 @@ in
 
       serviceConfig = {
         ExecStart = startScript;
-        ExecStartPre = lib.optional usesRemotes sshSetup;
+         ExecStartPre = lib.optional usesSsh sshSetup;
         Restart = "on-failure";
         RestartSec = "5s";
 
         LoadCredential = [
           "token:${cfg.tokenFile}"
         ]
-        ++ lib.optionals usesRemotes [
+         ++ lib.optionals usesSsh [
           "ssh-key:${cfg.ssh.identityFile}"
           "ssh-known-hosts:${cfg.ssh.knownHostsFile}"
         ]
-        ++ lib.optional (cfg.presetsFile != null) "presets:${cfg.presetsFile}";
+        ++ lib.optional (cfg.presetsFile != null) "presets:${cfg.presetsFile}"
+        ++ lib.optional (cfg.hostsFile != null) "hosts:${cfg.hostsFile}";
 
         EnvironmentFile = cfg.environmentFile;
 
