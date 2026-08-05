@@ -58,9 +58,10 @@ class RelayLifecycleTests(unittest.TestCase):
 
 
 class HostStatusTests(unittest.TestCase):
-    @patch.object(herdr_relay.presets, "HOST_TARGETS", {"mba13": "mba", "mz": "mz"})
+    @patch.object(herdr_relay.presets, "HOST_TARGETS", {"workstation-a": "target-a", "workstation-b": "target-b"})
+    @patch.object(herdr_relay.herdr, "run_ssh_checked", return_value=True)
     @patch.object(herdr_relay.herdr, "run_herdr_checked")
-    def test_host_status_reflects_poll_success(self, run_herdr_checked):
+    def test_host_status_reflects_ssh_and_herdr_readiness(self, run_herdr_checked, run_ssh_checked):
         empty_result = json.dumps({"result": {"panes": []}})
         run_herdr_checked.side_effect = [
             (False, ""),
@@ -73,8 +74,29 @@ class HostStatusTests(unittest.TestCase):
         self.assertEqual(
             hosts,
             [
-                {"host_id": "mba13", "online": False},
-                {"host_id": "mz", "online": True},
+                {
+                    "host_id": "workstation-a",
+                    "display_name": "workstation-a",
+                    "online": False,
+                    "status": "herdr_unavailable",
+                    "ssh_reachable": True,
+                    "herdr_ready": False,
+                    "active_agent_count": None,
+                    "capabilities": {"wake": False, "shutdown": False},
+                    "harnesses": [],
+                    "message": "Herdr unavailable",
+                },
+                {
+                    "host_id": "workstation-b",
+                    "display_name": "workstation-b",
+                    "online": True,
+                    "status": "ready",
+                    "ssh_reachable": True,
+                    "herdr_ready": True,
+                    "active_agent_count": 0,
+                    "capabilities": {"wake": False, "shutdown": False},
+                    "harnesses": [],
+                },
             ],
         )
 
@@ -83,7 +105,7 @@ class HostStatusTests(unittest.TestCase):
     def test_hosts_are_polled_concurrently(self, get_agents_from_host):
         barrier = threading.Barrier(2, timeout=1)
 
-        def poll_host(*, remote, host_id):
+        def poll_host(*, remote, host_id, host):
             barrier.wait()
             return ([{"pane_id": remote}], True)
 
@@ -95,8 +117,18 @@ class HostStatusTests(unittest.TestCase):
         self.assertEqual(
             hosts,
             [
-                {"host_id": "host-a", "online": True},
-                {"host_id": "host-b", "online": True},
+                {
+                    "host_id": "host-a", "display_name": "host-a", "online": True,
+                    "status": "ready", "ssh_reachable": True, "herdr_ready": True,
+                    "active_agent_count": 1, "capabilities": {"wake": False, "shutdown": False},
+                    "harnesses": [],
+                },
+                {
+                    "host_id": "host-b", "display_name": "host-b", "online": True,
+                    "status": "ready", "ssh_reachable": True, "herdr_ready": True,
+                    "active_agent_count": 1, "capabilities": {"wake": False, "shutdown": False},
+                    "harnesses": [],
+                },
             ],
         )
 
@@ -134,7 +166,7 @@ class HostStatusTests(unittest.TestCase):
 
         self.assertEqual(result, (False, ""))
         print_message.assert_called_once()
-        self.assertIn("workstation", print_message.call_args.args[0])
+        self.assertIn("configured host", print_message.call_args.args[0])
 
 
 class EventLoopBlockingTests(unittest.TestCase):
@@ -433,13 +465,13 @@ class PaneMetadataTests(unittest.TestCase):
 
 
 class HostPowerTests(unittest.TestCase):
-    @patch.object(herdr_relay.config, "POWER_HOST_ID", "mz")
+    @patch.object(herdr_relay.config, "POWER_HOST_ID", "workstation")
     @patch.object(herdr_relay.config, "POWER_HOST_MAC", "34:5a:60:ba:8e:20")
     @patch.object(herdr_relay.lifecycle.subprocess, "run")
     def test_wake_is_a_fixed_magic_packet_command(self, run):
         run.return_value.returncode = 0
 
-        response = herdr_relay.wake_host({"request_id": "request-1", "host_id": "mz"})
+        response = herdr_relay.wake_host({"request_id": "request-1", "host_id": "workstation"})
 
         self.assertEqual(response["type"], "command_ack")
         run.assert_called_once_with(
@@ -449,15 +481,15 @@ class HostPowerTests(unittest.TestCase):
             timeout=10,
         )
 
-    @patch.object(herdr_relay.config, "POWER_HOST_ID", "mz")
-    @patch.object(herdr_relay.presets, "HOST_TARGETS", {"mz": "mz"})
+    @patch.object(herdr_relay.config, "POWER_HOST_ID", "workstation")
+    @patch.object(herdr_relay.presets, "HOST_TARGETS", {"workstation": "ssh-target"})
     @patch.object(herdr_relay.lifecycle.subprocess, "run")
     def test_shutdown_is_a_fixed_non_interactive_ssh_command(self, run):
         run.return_value.returncode = 0
 
         response = herdr_relay.shutdown_host({
             "request_id": "request-2",
-            "host_id": "mz",
+            "host_id": "workstation",
             "confirmation_nonce": "nonce-1",
         })
 
@@ -469,7 +501,7 @@ class HostPowerTests(unittest.TestCase):
                 "-o", "ServerAliveInterval=3",
                 "-o", "ServerAliveCountMax=2",
                 "-o", "BatchMode=yes",
-                "mz",
+                "ssh-target",
                 "sudo", "-n", "systemctl", "poweroff",
             ],
             capture_output=True,
@@ -477,11 +509,11 @@ class HostPowerTests(unittest.TestCase):
             timeout=15,
         )
 
-    @patch.object(herdr_relay.config, "POWER_HOST_ID", "mz")
+    @patch.object(herdr_relay.config, "POWER_HOST_ID", "workstation")
     @patch.object(herdr_relay.lifecycle.subprocess, "run")
     def test_power_commands_reject_other_hosts_and_missing_confirmation(self, run):
         wake = herdr_relay.wake_host({"request_id": "request-1", "host_id": "other"})
-        shutdown = herdr_relay.shutdown_host({"request_id": "request-2", "host_id": "mz"})
+        shutdown = herdr_relay.shutdown_host({"request_id": "request-2", "host_id": "workstation"})
 
         self.assertEqual(wake["code"], "HOST_NOT_ALLOWED")
         self.assertEqual(shutdown["code"], "CONFIRMATION_REQUIRED")
@@ -1045,6 +1077,44 @@ class RelayInputValidationTests(unittest.TestCase):
         run_herdr.assert_called_once_with(
             "pane", "send-keys", "pane-1", "Enter", remote=None
         )
+
+
+class RequestCacheTests(unittest.TestCase):
+    def test_request_replay_cache_is_scoped_to_each_connection(self):
+        class Socket:
+            request_headers = {}
+
+            def __init__(self):
+                self.requests = iter([
+                    json.dumps({"type": "project_list", "request_id": "same-request", "query": ""})
+                ])
+                self.sent = []
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                try:
+                    return next(self.requests)
+                except StopIteration:
+                    raise StopAsyncIteration
+
+            async def send(self, message):
+                self.sent.append(json.loads(message))
+
+        responses = iter([
+            {"type": "command_ack", "request_id": "same-request", "result": {"ordinal": 1}},
+            {"type": "command_ack", "request_id": "same-request", "result": {"ordinal": 2}},
+        ])
+        first = Socket()
+        second = Socket()
+        with patch.object(herdr_relay.projects, "handle_command", side_effect=lambda _msg: next(responses)) as command:
+            asyncio.run(herdr_relay.handle_client(first))
+            asyncio.run(herdr_relay.handle_client(second))
+
+        self.assertEqual(2, command.call_count)
+        self.assertEqual(1, first.sent[-1]["result"]["ordinal"])
+        self.assertEqual(2, second.sent[-1]["result"]["ordinal"])
 
 
 class HandshakeTests(unittest.TestCase):

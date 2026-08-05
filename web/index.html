@@ -54,6 +54,42 @@ body { font-family: -apple-system, system-ui, -webkit-system-font, sans-serif; b
 
 /* Agent list */
 .agents { padding: 12px; }
+.host-summary { padding: 12px 12px 0; }
+.host-summary h2 { font-size: 0.7rem; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); margin: 4px 0 8px; }
+.host-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; margin-bottom: 8px; }
+.host-card .host-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.host-card .host-name { font-size: 0.9rem; font-weight: 600; }
+.host-card .host-id, .host-card .host-detail { color: var(--muted); font-size: 0.7rem; margin-top: 3px; }
+.host-card .host-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 8px; }
+.host-card button, .composer button { min-height: 40px; padding: 8px 14px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-weight: 600; cursor: pointer; }
+.host-card button.primary, .composer button.primary { background: var(--blue); border-color: var(--blue); color: #fff; }
+.host-card button:disabled, .composer button:disabled { cursor: not-allowed; opacity: 0.5; }
+.host-ready { color: var(--green); }
+.host-herdr-unavailable { color: var(--orange); }
+.host-offline { color: var(--red); }
+.composer { padding: 16px; max-width: 720px; margin: 0 auto; }
+.composer h2 { font-size: 1.1rem; margin-bottom: 4px; }
+.composer .intro { color: var(--muted); font-size: 0.8rem; margin-bottom: 16px; }
+.composer-section { margin-bottom: 18px; }
+.composer-section > label { display: block; color: var(--muted); font-size: 0.7rem; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; margin-bottom: 8px; }
+.composer-host { width: 100%; text-align: left; margin-bottom: 8px; display: block; }
+.composer-host.selected { border-color: var(--blue); box-shadow: 0 0 0 1px var(--blue); }
+.composer-host .host-head { display: flex; justify-content: space-between; gap: 8px; }
+.composer-host .host-detail { color: var(--muted); font-size: 0.7rem; margin-top: 4px; }
+.composer select { width: 100%; padding: 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 0.85rem; }
+.composer-footer { position: sticky; bottom: 0; background: color-mix(in srgb, var(--bg) 94%, transparent); padding-top: 10px; }
+.composer-summary { color: var(--muted); font-size: 0.75rem; margin-bottom: 8px; }
+.project-search { width: 100%; padding: 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 0.85rem; }
+.project-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; }
+.project-card.selected { border-color: var(--blue); box-shadow: 0 0 0 1px var(--blue); }
+.project-card.archived, .project-card.unavailable { opacity: 0.7; }
+.project-card .project-path { color: var(--muted); font-family: monospace; font-size: 0.7rem; overflow-wrap: anywhere; margin-top: 4px; }
+.project-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.project-actions button { min-height: 36px; padding: 6px 10px; }
+.folder-entry { display: flex; width: 100%; justify-content: space-between; align-items: center; text-align: left; margin-bottom: 6px; }
+.folder-breadcrumb { color: var(--muted); font-family: monospace; font-size: 0.72rem; overflow-wrap: anywhere; margin: 6px 0 10px; }
+.project-warning { color: var(--orange); font-size: 0.75rem; margin-top: 4px; }
+.new-session-button { width: 100%; margin: 4px 0 12px; }
 .section-header { font-size: 0.7rem; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); margin: 16px 0 8px; display: flex; align-items: center; gap: 5px; }
 .agent { background: var(--surface); border-radius: 12px; padding: 14px 16px; margin-bottom: 8px; display: flex; align-items: center; gap: 8px; cursor: pointer; border: 1px solid var(--border); transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease; }
 .agent:hover { border-color: color-mix(in srgb, var(--text) 20%, transparent); transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
@@ -170,7 +206,15 @@ body { font-family: -apple-system, system-ui, -webkit-system-font, sans-serif; b
 </div>
 
 <div class="view" id="agentListView">
+  <div class="host-summary" id="hostSummary"></div>
   <div class="agents" id="agents"></div>
+</div>
+
+<div class="view composer" id="newSessionView" style="display:none">
+  <h2>New session</h2>
+  <p class="intro">Choose a ready host. Private routing stays on the relay.</p>
+  <div id="composerBody"></div>
+  <button onclick="closeNewSession()">Back to dashboard</button>
 </div>
 
 <div class="view" id="timelineView" style="display:none;padding:12px;">
@@ -267,10 +311,18 @@ body { font-family: -apple-system, system-ui, -webkit-system-font, sans-serif; b
 
 <script>
 
-let ws = null, agents = [], activePane = null, refreshInterval = null, userScrolledUp = false;
+let ws = null, agents = [], hosts = [], presets = [], projects = [], projectRoots = [], activePane = null, refreshInterval = null, userScrolledUp = false;
 let timeline = [], prevStatuses = {};
 let activeWorkspace = null;
 let activeTab = null;
+let newSessionOpen = false;
+let selectedHostId = localStorage.getItem('herdr_last_host') || '';
+let selectedProjectId = localStorage.getItem('herdr_last_project') || '';
+let projectQuery = '';
+let browserRootId = '';
+let browserPath = [];
+let folderListing = null;
+const pendingLaunchRequests = new Set();
 
 // Settings — auto-detect relay when served from same origin
 const autoRelayUrl = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host;
@@ -291,6 +343,8 @@ function toggleSettings() {
   const show = s.style.display !== 'block';
   s.style.display = show ? 'block' : 'none';
   document.getElementById('agentListView').style.display = show ? 'none' : '';
+  document.getElementById('newSessionView').style.display = 'none';
+  newSessionOpen = false;
   document.getElementById('timelineView').style.display = 'none';
   if (show) {
     document.getElementById('settingsStatus').innerHTML = ws && ws.readyState === 1
@@ -305,6 +359,8 @@ function toggleTimeline() {
   t.style.display = show ? 'block' : 'none';
   document.getElementById('agentListView').style.display = show ? 'none' : '';
   document.getElementById('settingsView').style.display = 'none';
+  document.getElementById('newSessionView').style.display = 'none';
+  newSessionOpen = false;
   if (show) renderTimeline();
 }
 
@@ -376,6 +432,10 @@ function tryDemo() {
 
 function handleMessage(msg) {
   if (msg.type === 'agents') {
+    if (Array.isArray(msg.hosts)) hosts = msg.hosts;
+    if (Array.isArray(msg.presets)) presets = msg.presets;
+    if (Array.isArray(msg.projects)) projects = msg.projects;
+    if (Array.isArray(msg.project_roots)) projectRoots = msg.project_roots;
     // Track timeline on status changes; preserve prompt/options across polls
     const prevById = Object.fromEntries(agents.map(a => [a.pane_id, a]));
     for (const a of msg.agents) {
@@ -393,6 +453,28 @@ function handleMessage(msg) {
     }
     agents = msg.agents; render();
     if (activePane) renderQuickActions(agents.find(x => x.pane_id === activePane));
+  } else if (msg.type === 'projects') {
+    if (Array.isArray(msg.projects)) projects = msg.projects;
+    if (Array.isArray(msg.roots)) projectRoots = msg.roots;
+    render();
+  } else if (msg.type === 'folder_entries') {
+    folderListing = msg;
+    browserRootId = msg.root_id || browserRootId;
+    browserPath = Array.isArray(msg.path) ? msg.path : [];
+    if (newSessionOpen) renderComposer();
+  } else if (msg.type === 'command_ack') {
+    const hostId = msg.result && msg.result.host_id;
+    const launchAccepted = Boolean(msg.request_id && pendingLaunchRequests.delete(msg.request_id));
+    if (hostId && launchAccepted) {
+      selectedHostId = hostId;
+      localStorage.setItem('herdr_last_host', hostId);
+      if (newSessionOpen) renderComposer();
+    }
+  } else if (msg.type === 'command_error') {
+    if (msg.request_id) pendingLaunchRequests.delete(msg.request_id);
+    if (newSessionOpen) {
+      document.getElementById('composerBody').insertAdjacentHTML('afterbegin', `<p class="host-offline" style="margin-bottom:12px">${escapeHtml(msg.message || 'Operation failed')}</p>`);
+    }
   }
   else if (msg.type === 'blocked') {
     const a = agents.find(x => x.pane_id === msg.pane_id);
@@ -421,6 +503,8 @@ function handleMessage(msg) {
 
 function render() {
   document.getElementById('agentCount').textContent = agents.length ? `${agents.length}` : '';
+  renderHostSummary();
+  if (newSessionOpen) renderComposer();
   const workspaces = [...new Set(agents.map(a => a.workspace_id).filter(Boolean))];
   if (workspaces.length <= 1) {
     activeWorkspace = null;
@@ -429,6 +513,275 @@ function render() {
     return;
   }
   renderWorkspaces(workspaces);
+}
+
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
+}
+
+function hostStatusLabel(host) {
+  if (host.status === 'offline') return 'Offline';
+  if (host.status === 'herdr_unavailable') return 'Herdr unavailable';
+  if (host.status === 'ready') {
+    const count = host.active_agent_count;
+    if (count === 0) return 'Ready · no agents';
+    if (count === 1) return 'Ready · 1 agent';
+    if (Number.isInteger(count)) return `Ready · ${count} agents`;
+    return 'Ready';
+  }
+  return host.online ? 'Ready' : 'Offline';
+}
+
+function hostStatusClass(host) {
+  if (host.status === 'herdr_unavailable') return 'host-herdr-unavailable';
+  if (host.status === 'ready' || host.online) return 'host-ready';
+  return 'host-offline';
+}
+
+function hostCard(host, selectable = false) {
+  const selected = selectedHostId === host.host_id;
+  const status = hostStatusLabel(host);
+  const capability = host.capabilities || {};
+  const canWake = capability.wake && (host.status === 'offline' || (!host.status && !host.online));
+  const canShutdown = capability.shutdown && (host.status ? host.status !== 'offline' : host.online);
+  const action = selectable
+    ? `<button class="composer-host${selected ? ' selected' : ''}" onclick="selectComposerHost('${escapeHtml(host.host_id)}')" aria-pressed="${selected}">
+        <span class="host-head"><span class="host-name">${escapeHtml(host.display_name || host.host_id)}</span><strong class="${hostStatusClass(host)}">${escapeHtml(status)}</strong></span>
+        <span class="host-detail">${escapeHtml(host.host_id)}${host.message ? ` · ${escapeHtml(host.message)}` : ''}</span>
+      </button>`
+    : `<div class="host-card">
+        <div class="host-head"><span class="host-name">${escapeHtml(host.display_name || host.host_id)}</span><strong class="${hostStatusClass(host)}">${escapeHtml(status)}</strong></div>
+        <div class="host-id">${escapeHtml(host.host_id)}</div>
+        ${host.message ? `<div class="host-detail">${escapeHtml(host.message)}</div>` : ''}
+        <div class="host-actions">
+          ${canWake ? `<button onclick="wakeHost('${escapeHtml(host.host_id)}')">Wake</button>` : ''}
+          ${canShutdown ? `<button onclick="shutdownHost('${escapeHtml(host.host_id)}')">Shut down</button>` : ''}
+        </div>
+      </div>`;
+  return action;
+}
+
+function readyHosts() {
+  return hosts.filter(host => host.status === 'ready' || (!host.status && host.online));
+}
+
+function chooseHost() {
+  const ready = readyHosts();
+  if (ready.some(host => host.host_id === selectedHostId)) return selectedHostId;
+  if (ready.length === 1) return ready[0].host_id;
+  selectedHostId = ready[0]?.host_id || '';
+  return selectedHostId;
+}
+
+function renderHostSummary() {
+  const el = document.getElementById('hostSummary');
+  if (!el) return;
+  const button = `<button class="new-session-button primary" onclick="openNewSession()" ${ws && ws.readyState === 1 ? '' : 'disabled'}>New session</button>`;
+  const cards = hosts.length ? hosts.map(host => hostCard(host)).join('') : '<p class="empty" style="padding:16px 0">Waiting for configured hosts…</p>';
+  el.innerHTML = `<h2>Hosts</h2>${button}${cards}`;
+}
+
+function openNewSession() {
+  newSessionOpen = true;
+  document.getElementById('agentListView').style.display = 'none';
+  document.getElementById('timelineView').style.display = 'none';
+  document.getElementById('settingsView').style.display = 'none';
+  document.getElementById('newSessionView').style.display = '';
+  renderComposer();
+}
+
+function closeNewSession() {
+  newSessionOpen = false;
+  document.getElementById('newSessionView').style.display = 'none';
+  document.getElementById('agentListView').style.display = '';
+}
+
+function selectComposerHost(hostId) {
+  selectedHostId = hostId;
+  renderComposer();
+}
+
+function renderComposer() {
+  if (projectRoots.length || projects.length) {
+    renderProjectComposer();
+    return;
+  }
+  const body = document.getElementById('composerBody');
+  if (!body) return;
+  selectedHostId = chooseHost();
+  let html = `<div class="composer-section"><label>Host</label>`;
+  if (!hosts.length) {
+    html += '<p class="empty" style="padding:16px 0">The relay has not reported any hosts yet.</p>';
+  } else {
+    html += hosts.map(host => hostCard(host, true)).join('');
+  }
+  html += '</div>';
+  const host = hosts.find(item => item.host_id === selectedHostId);
+  const availablePresets = presets.filter(preset => !selectedHostId || preset.hosts?.[selectedHostId]);
+  html += `<div class="composer-section"><label for="composerPreset">Session template</label>`;
+  if (availablePresets.length) {
+    html += `<select id="composerPreset">${availablePresets.map(preset => `<option value="${escapeHtml(preset.id)}">${escapeHtml(preset.label || preset.id)}</option>`).join('')}</select>`;
+  } else {
+    const harnesses = (host?.harnesses || []).map(item => item.display_name || item.id).join(', ');
+    html += `<p class="host-detail">${harnesses ? `Configured harnesses: ${escapeHtml(harnesses)}. ` : ''}Project and model choices will appear when their relay slices are enabled.</p>`;
+  }
+  html += '</div>';
+  const preset = availablePresets[0];
+  const canStart = Boolean(host && (host.status === 'ready' || (!host.status && host.online)) && preset);
+  const summary = preset ? `${preset.label || preset.id} on ${host?.display_name || selectedHostId}` : 'Select a ready host and session template';
+  html += `<div class="composer-footer"><div class="composer-summary">${escapeHtml(summary)}</div><button class="primary" onclick="startSession()" ${canStart ? '' : 'disabled'}>Start session</button></div>`;
+  body.innerHTML = html;
+}
+
+function escapeJs(value) {
+  return escapeHtml(JSON.stringify(value));
+}
+
+function projectReason(project) {
+  if (project.unavailable_reason === 'HOST_NOT_CONFIGURED') return 'Host is no longer configured';
+  if (project.unavailable_reason === 'ROOT_NOT_CONFIGURED') return 'Folder root is no longer configured';
+  return project.unavailable_reason ? project.unavailable_reason.replaceAll('_', ' ').toLowerCase() : 'Unavailable';
+}
+
+function projectRootsForHost(hostId) {
+  return projectRoots.filter(root => root.host_id === hostId);
+}
+
+function renderProjectComposer() {
+  const body = document.getElementById('composerBody');
+  if (!body) return;
+  selectedHostId = chooseHost();
+  const selected = projects.find(project => project.project_id === selectedProjectId);
+  if (selected && hosts.some(host => host.host_id === selected.host_id)) selectedHostId = selected.host_id;
+  const host = hosts.find(item => item.host_id === selectedHostId);
+  const roots = projectRootsForHost(selectedHostId);
+  const harnesses = host?.harnesses || [];
+  const visibleProjects = projects.filter(project => {
+    const query = projectQuery.trim().toLowerCase();
+    return !query || `${project.label} ${project.canonical_path || project.path}`.toLowerCase().includes(query);
+  });
+  let html = `<div class="composer-section"><label>Host</label>`;
+  html += hosts.length ? hosts.map(item => hostCard(item, true)).join('') : '<p class="empty" style="padding:16px 0">Waiting for configured hosts…</p>';
+  html += '</div>';
+  html += `<div class="composer-section"><label for="projectSearch">Saved projects</label><input class="project-search" id="projectSearch" value="${escapeHtml(projectQuery)}" placeholder="Search labels or paths" oninput="setProjectQuery(this.value)" />`;
+  if (!visibleProjects.length) html += '<p class="host-detail" style="margin-top:8px">No saved projects match this search.</p>';
+  html += visibleProjects.map(project => {
+    const selectable = project.available && !project.archived;
+    const selectedClass = selectedProjectId === project.project_id ? ' selected' : '';
+    const stateClass = project.archived ? ' archived' : (!project.available ? ' unavailable' : '');
+    const action = project.archived
+      ? `<button onclick="restoreProject(${escapeJs(project.project_id)})">Restore</button>`
+      : `<button onclick="editProject(${escapeJs(project.project_id)})">Rename</button><button onclick="removeProject(${escapeJs(project.project_id)})">Remove</button>`;
+    return `<div class="project-card${selectedClass}${stateClass}">
+      <button class="composer-host" onclick="selectProject(${escapeJs(project.project_id)})" ${selectable ? '' : 'disabled'}>
+        <span class="host-head"><span class="host-name">${escapeHtml(project.label)}</span><strong class="${selectable ? 'host-ready' : 'host-offline'}">${project.archived ? 'Removed' : (project.available ? 'Available' : 'Unavailable')}</strong></span>
+        <span class="project-path">${escapeHtml(project.canonical_path || project.path || '')}</span>
+        ${!project.available ? `<span class="project-warning">${escapeHtml(projectReason(project))}</span>` : ''}
+      </button>
+      <div class="project-actions">${action}</div>
+    </div>`;
+  }).join('');
+  html += '</div>';
+  if (roots.length) {
+    html += `<div class="composer-section"><label>Folder browser</label><select id="projectRoot" onchange="chooseProjectRoot(this.value)">${roots.map(root => `<option value="${escapeHtml(root.root_id)}" ${root.root_id === browserRootId ? 'selected' : ''}>${escapeHtml(root.label)}</option>`).join('')}</select>`;
+    const root = roots.find(item => item.root_id === browserRootId) || roots[0];
+    if (root.root_id !== browserRootId) browserRootId = root.root_id;
+    const listing = folderListing && folderListing.root_id === browserRootId ? folderListing : null;
+    html += `<div class="folder-breadcrumb">${escapeHtml(listing?.canonical_path || 'Choose a folder root')}</div>`;
+    if (listing) {
+      html += `<div class="project-actions"><button onclick="browseProjectFolder(${escapeJs(browserRootId)}, ${escapeJs(browserPath.slice(0, -1))})" ${browserPath.length ? '' : 'disabled'}>Up</button><button class="primary" onclick="saveCurrentFolder()">Select existing folder</button></div>`;
+      html += listing.entries.length ? listing.entries.map(entry => `<button class="folder-entry" onclick="browseProjectFolder(${escapeJs(browserRootId)}, ${escapeJs(browserPath.concat([entry.name]))})"><span>📁 ${escapeHtml(entry.name)}</span><span aria-hidden="true">›</span></button>`).join('') : '<p class="host-detail">No child folders.</p>';
+    } else {
+      html += `<button class="primary" onclick="browseProjectFolder(${escapeJs(browserRootId)}, [])">Browse root</button>`;
+    }
+    html += '</div>';
+  } else {
+    html += '<p class="host-detail">This host has no configured project roots.</p>';
+  }
+  const chosen = projects.find(project => project.project_id === selectedProjectId);
+  const ready = chosen && !chosen.archived && chosen.available && chosen.host_id === selectedHostId && readyHosts().some(item => item.host_id === selectedHostId);
+  html += `<div class="composer-section"><label>Agent harness</label><select id="projectHarness">${harnesses.length ? harnesses.map(item => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.display_name || item.id)}</option>`).join('') : '<option value="claude">Claude</option>'}</select></div>`;
+  html += `<div class="composer-section"><label for="projectModel">Model</label><input class="project-search" id="projectModel" value="default" placeholder="default" /></div>`;
+  const summary = chosen ? `${chosen.label} · ${chosen.canonical_path || chosen.path} on ${host?.display_name || selectedHostId}` : 'Select an available saved project';
+  html += `<div class="composer-footer"><div class="composer-summary">${escapeHtml(summary)}</div><button class="primary" onclick="startProject()" ${ready ? '' : 'disabled'}>Start session</button></div>`;
+  body.innerHTML = html;
+}
+
+function setProjectQuery(value) { projectQuery = value; renderProjectComposer(); }
+function selectProject(projectId) {
+  const project = projects.find(item => item.project_id === projectId);
+  if (!project || project.archived || !project.available) return;
+  selectedProjectId = projectId;
+  selectedHostId = project.host_id;
+  localStorage.setItem('herdr_last_project', projectId);
+  renderProjectComposer();
+}
+function chooseProjectRoot(rootId) {
+  browserRootId = rootId;
+  browserPath = [];
+  folderListing = null;
+  renderProjectComposer();
+  browseProjectFolder(rootId, []);
+}
+function browseProjectFolder(rootId, path) {
+  if (!ws || ws.readyState !== 1 || !selectedHostId) return;
+  browserRootId = rootId;
+  browserPath = Array.isArray(path) ? path : [];
+  const id = requestId();
+  ws.send(JSON.stringify({type: 'project_browse', request_id: id, host_id: selectedHostId, root_id: rootId, path: browserPath}));
+}
+function saveCurrentFolder() {
+  if (!ws || ws.readyState !== 1 || !selectedHostId || !browserRootId) return;
+  const fallback = folderListing?.canonical_path?.split('/').filter(Boolean).pop() || 'Project';
+  const label = window.prompt('Project label', fallback);
+  if (label === null) return;
+  ws.send(JSON.stringify({type: 'project_save', request_id: requestId(), host_id: selectedHostId, root_id: browserRootId, path: browserPath, label}));
+}
+function editProject(projectId) {
+  const project = projects.find(item => item.project_id === projectId);
+  if (!project || !ws || ws.readyState !== 1) return;
+  const label = window.prompt('Project label', project.label);
+  if (label === null) return;
+  ws.send(JSON.stringify({type: 'project_rename', request_id: requestId(), project_id: projectId, label}));
+}
+function removeProject(projectId) {
+  if (!window.confirm('Remove this saved project? Its folder will not be changed.')) return;
+  if (!ws || ws.readyState !== 1) return;
+  ws.send(JSON.stringify({type: 'project_remove', request_id: requestId(), project_id: projectId}));
+}
+function restoreProject(projectId) {
+  if (!ws || ws.readyState !== 1) return;
+  ws.send(JSON.stringify({type: 'project_restore', request_id: requestId(), project_id: projectId}));
+}
+function startProject() {
+  const project = projects.find(item => item.project_id === selectedProjectId);
+  if (!project || !project.available || project.archived || !ws || ws.readyState !== 1) return;
+  const id = requestId();
+  pendingLaunchRequests.add(id);
+  ws.send(JSON.stringify({type: 'launch_session', request_id: id, project_id: project.project_id, host_id: selectedHostId, harness: document.getElementById('projectHarness')?.value || 'claude', model: document.getElementById('projectModel')?.value.trim() || 'default'}));
+}
+
+function requestId() {
+  return crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function startSession() {
+  const preset = document.getElementById('composerPreset')?.value;
+  if (!preset || !selectedHostId || !ws || ws.readyState !== 1) return;
+  const id = requestId();
+  pendingLaunchRequests.add(id);
+  ws.send(JSON.stringify({type: 'launch_session', request_id: id, preset_id: preset, host_id: selectedHostId}));
+}
+
+function wakeHost(hostId) {
+  if (!ws || ws.readyState !== 1) return;
+  ws.send(JSON.stringify({type: 'wake_host', request_id: requestId(), host_id: hostId}));
+}
+
+function shutdownHost(hostId) {
+  if (!window.confirm('Shut down this host? Active sessions will stop.')) return;
+  if (!ws || ws.readyState !== 1) return;
+  ws.send(JSON.stringify({type: 'shutdown_host', request_id: requestId(), host_id: hostId, confirmation_nonce: requestId()}));
 }
 
 function renderWorkspaces(workspaces) {

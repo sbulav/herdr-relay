@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "hosts": [
+    {
+      "id": "buildbox",
+      "display_name": "Build box",
+      "ssh": {"target": "herdr@buildbox"},
+      "project_roots": ["/srv/projects"],
+      "herdr": {"wrapper": [], "binary": "/usr/local/bin/herdr"},
+      "harnesses": [
+        {"id": "claude", "display_name": "Claude Code"},
+        {"id": "opencode", "display_name": "OpenCode"}
+      ],
+      "power": {"wake": null, "shutdown": false},
+      "readiness_timeout_seconds": 15
+    }
+  ]
+}

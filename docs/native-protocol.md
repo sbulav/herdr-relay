@@ -106,6 +106,21 @@ Raising `min_client` is a release decision, in this order: ship the client that
 declares the new revision, then raise `MIN_CLIENT`. Reversing the order locks out
 every installed build, including the one that would tell the user why.
 
+## Host Configuration
+
+Host topology is loaded from the operator-owned JSON file named by
+`HERDR_HOSTS_FILE`. The file has `schema_version: 1`; the complete schema and a
+placeholder example live in `contract/host-config-v1.schema.json` and
+`contract/host-config-v1.example.json`. It owns host IDs and display names,
+private SSH routing, allowlisted project roots, fixed Herdr wrappers, configured
+harnesses, power capabilities, and per-host readiness timeouts.
+
+The relay validates this file at startup. A wrapper is an argv prefix, not a
+shell string, and client frames can never replace it or add commands. SSH
+targets, MAC addresses, wrapper paths, project roots, and power implementation
+details are server-side and are never logged or broadcast. The old preset file
+remains a launch compatibility fallback until the coordinated composer cutover.
+
 ### `agents`
 
 Reports agent and host state. `_poll_once` broadcasts a complete snapshot every
@@ -118,8 +133,8 @@ from a partial event update by the presence of `presets` and `hosts`.
 | --- | --- | --- | --- |
 | `type` | string | Required | Always `"agents"`. |
 | `agents` | array of agent objects | Required | Complete current list for a poll, or one partial agent for an event update. |
-| `presets` | array of preset objects | Poll snapshots only | Public launch presets. |
-| `hosts` | array of host objects | Poll snapshots only | Configured preset host availability; empty when preset host targets are not configured. |
+| `presets` | array of preset objects | Poll snapshots only | Public launch compatibility data. |
+| `hosts` | array of host objects | Poll snapshots only | Public configured host state and capabilities. |
 
 A complete poll agent contains all of these fields. A partial event agent
 contains `pane_id`, `agent`, `status`, `cwd`, `project`, and `host` only.
@@ -132,7 +147,7 @@ contains `pane_id`, `agent`, `status`, `cwd`, `project`, and `host` only.
 | `status` | string | Required | `agent_status` reported by `herdr`, defaulting to `"unknown"`, or the event's `status`, defaulting to an empty string. |
 | `cwd` | string | Required | Pane working directory; defaults to an empty string. |
 | `project` | string | Required | Basename of `cwd` in a poll, or the event's `project`; may be empty. |
-| `host` | string | Required | Configured host ID, remote SSH target, or `"local"`; event updates default to `"local"`. |
+| `host` | string | Required | Configured host ID or `"local"`; event updates default to `"local"`. |
 | `workspace_id` | string | Poll agents only | Workspace identifier reported by `herdr`; defaults to an empty string. |
 | `tab_id` | string | Poll agents only | Tab identifier reported by `herdr`; defaults to an empty string. |
 | `attention_state` | string | Optional | Additive explicit attention state: `"working"`, `"waiting"`, `"done"`, or `"idle"`. `"waiting"` means the agent is waiting on the user. Unknown statuses are omitted rather than guessed. |
@@ -160,7 +175,15 @@ The relay removes each preset host's private `target` field before broadcast.
 | Host field | Type | Presence | Meaning |
 | --- | --- | --- | --- |
 | `host_id` | string | Required | Configured host identifier. |
-| `online` | boolean | Required | Whether `herdr pane list` succeeded for that host. |
+| `display_name` | string | Required | Operator-provided name safe to show in the UI. |
+| `online` | boolean | Required | Compatibility projection; true only when the host is ready. |
+| `status` | string | Required | `offline`, `herdr_unavailable`, or `ready`. |
+| `ssh_reachable` | boolean | Required | Whether the relay reached the host's SSH endpoint. |
+| `herdr_ready` | boolean | Required | Whether the configured Herdr command returned a valid pane snapshot. |
+| `active_agent_count` | integer or null | Required | Number of active agents when Herdr is ready; null when the count is unknown. |
+| `capabilities` | object | Required | Public booleans for `wake` and `shutdown`; private implementation values are omitted. |
+| `harnesses` | array | Required | Public configured harness IDs and display names. |
+| `message` | string | Optional | Safe readiness text such as `SSH unreachable` or `Herdr unavailable`. |
 
 ```json
 {
@@ -174,7 +197,6 @@ The relay removes each preset host's private `target` field before broadcast.
       "cwd": "/srv/herdr-remote",
       "project": "herdr-remote",
       "host": "buildbox",
-      "remote": "deploy@buildbox",
       "workspace_id": "workspace-2",
       "tab_id": "tab-4"
     }
@@ -191,13 +213,82 @@ The relay removes each preset host's private `target` field before broadcast.
       }
     }
   ],
-  "hosts": [
-    {"host_id": "buildbox", "online": true}
-  ]
+  "hosts": [{
+    "host_id": "buildbox",
+    "display_name": "Build box",
+    "online": true,
+    "status": "ready",
+    "ssh_reachable": true,
+    "herdr_ready": true,
+    "active_agent_count": 1,
+    "capabilities": {"wake": false, "shutdown": false},
+    "harnesses": []
+  }]
 }
 ```
 
 This frame is fan-out: it is broadcast to every connected WebSocket.
+
+### `projects`
+
+The relay owns saved project metadata in a versioned SQLite database. A project is
+identified by the host ID plus its canonical path; `project_id` is an opaque relay
+identifier so clients never construct identities. `label` is editable, `archived`
+is a non-destructive removal flag, and `last_launch_at` is epoch milliseconds or
+`null`. Configuration changes set `available` to false and preserve the row with a
+safe `unavailable_reason`; reconciliation never removes a row or its directory.
+
+The `agents` frame carries these same two arrays when available:
+
+```json
+{
+  "projects": [{
+    "project_id": "0123456789abcdef0123456789abcdef",
+    "host_id": "buildbox",
+    "root_id": "root_95e8a4520dc48f2eacf6583c",
+    "label": "Herdr relay",
+    "path": "/srv/projects/herdr-relay",
+    "canonical_path": "/srv/projects/herdr-relay",
+    "archived": false,
+    "available": true,
+    "unavailable_reason": null,
+    "last_launch_at": 1700000000000
+  }],
+  "project_roots": [{"host_id": "buildbox", "root_id": "root_95e8a4520dc48f2eacf6583c", "label": "projects"}]
+}
+```
+
+`projects` is also sent after a project mutation and as the point-to-point result
+of `project_list`. Root labels and opaque IDs are public; configured absolute root
+paths, SSH targets, wrappers, and power data are not included in `project_roots`.
+
+### `folder_entries`
+
+`project_browse` accepts only a configured `host_id`, opaque `root_id`, and an
+array of individual relative `path` components. An absolute path, slash-bearing
+component, dot component, NUL, symlink, or traversal escape is rejected. The relay
+opens each component relative to a directory descriptor with no-follow semantics,
+checks containment after the open, and lists one level only. Remote hosts run the
+same fixed helper over SSH; client text is JSON input, never shell text.
+
+```json
+{
+  "type": "folder_entries",
+  "request_id": "req-browse-1",
+  "host_id": "buildbox",
+  "root_id": "root_95e8a4520dc48f2eacf6583c",
+  "path": ["herdr-relay"],
+  "canonical_path": "/srv/projects/herdr-relay",
+  "entries": [{"name": "app", "kind": "directory"}]
+}
+```
+
+`project_save` takes the same path components and an optional label. It records
+metadata only after the host helper verifies the directory. `project_rename`,
+`project_remove`, and `project_restore` take an opaque `project_id`; remove only
+archives metadata and never deletes, moves, or empties the directory. All six
+operations require a request ID and return a typed `command_ack`, `command_error`,
+`projects`, or `folder_entries` frame.
 
 ### `blocked`
 
@@ -280,7 +371,8 @@ subscribed to that `pane_id`, and only when the transcript signature changes.
 ### `command_ack`
 
 Acknowledges a successful `launch_session`, `terminate_session`, `wake_host`,
-or `shutdown_host` request. The frame is point-to-point. Responses are cached
+`shutdown_host`, `project_save`, `project_rename`, `project_remove`, or
+`project_restore` request. The frame is point-to-point. Responses are cached
 by non-empty `request_id`; repeating a cached ID returns the cached frame before
 the new frame's `type` is considered.
 
@@ -334,7 +426,7 @@ Shutdown acknowledgement:
 
 ### `command_error`
 
-Rejects one of the four session or host commands. It is point-to-point and is
+Rejects one of the session, host, or project commands. It is point-to-point and is
 cached under a truthy incoming `request_id` in the same way as `command_ack`.
 For `INVALID_REQUEST`, the response's `request_id` is `null`. A missing or empty
 incoming ID is not cached; a truthy non-string incoming ID can still cause this
@@ -450,6 +542,78 @@ rejected.
 }
 ```
 
+The same command may launch a saved project instead of a preset. In that form
+`project_id` is required, `host_id` must match the saved project, and `harness`
+and `model` are bounded configured selections. The relay re-opens the stored
+folder through the host helper immediately before starting the agent and updates
+`last_launch_at` only after Herdr accepts the launch.
+
+```json
+{
+  "type": "launch_session",
+  "request_id": "req-project-launch-1",
+  "project_id": "0123456789abcdef0123456789abcdef",
+  "host_id": "buildbox",
+  "harness": "claude",
+  "model": "default"
+}
+```
+
+### `project_list`
+
+Returns a searchable `projects` frame. `query` is optional, literal, and bounded
+to 128 characters; matching is against the editable label and canonical path.
+
+```json
+{"type":"project_list","request_id":"req-project-list-1","query":"relay"}
+```
+
+### `project_browse`
+
+Lists one directory level below an opaque configured root. `path` is an array of
+individual names, not a path string. The request is rejected if any component is
+absolute, empty, dot-like, contains a separator or NUL, is a symlink, or leaves
+the root under a concurrent filesystem change.
+
+```json
+{
+  "type": "project_browse",
+  "request_id": "req-browse-1",
+  "host_id": "buildbox",
+  "root_id": "root_95e8a4520dc48f2eacf6583c",
+  "path": ["herdr-relay"]
+}
+```
+
+### `project_save`
+
+Verifies a directory with `project_browse` semantics and saves its canonical
+host-scoped identity. An omitted label defaults to the selected folder name.
+
+```json
+{
+  "type": "project_save",
+  "request_id": "req-save-1",
+  "host_id": "buildbox",
+  "root_id": "root_95e8a4520dc48f2eacf6583c",
+  "path": ["herdr-relay"],
+  "label": "Herdr relay"
+}
+```
+
+### `project_rename`, `project_remove`, and `project_restore`
+
+Each takes `request_id` and an opaque `project_id`; rename also takes a bounded,
+non-empty `label`. Remove archives metadata only. Restore clears that archive
+flag even when the project is currently unavailable because configuration changed.
+The next `projects` frame carries the resulting state.
+
+```json
+{"type":"project_rename","request_id":"req-rename-1","project_id":"0123456789abcdef0123456789abcdef","label":"Relay"}
+{"type":"project_remove","request_id":"req-remove-1","project_id":"0123456789abcdef0123456789abcdef"}
+{"type":"project_restore","request_id":"req-restore-1","project_id":"0123456789abcdef0123456789abcdef"}
+```
+
 ### `terminate_session`
 
 Closes the pane mapped to an active native session key. The relay derives that
@@ -478,13 +642,14 @@ clients for nothing.
 
 ### `wake_host`
 
-Runs the relay's fixed Wake-on-LAN command for the one configured power host.
+Runs the relay's fixed Wake-on-LAN command for a configured host whose public
+`capabilities.wake` value is true.
 
 | Name | Type | Presence | Meaning |
 | --- | --- | --- | --- |
 | `type` | string | Required | Always `"wake_host"`. |
 | `request_id` | string | Required | Non-empty idempotency and response-correlation key. |
-| `host_id` | string | Required | Must equal `HERDR_POWER_HOST_ID`; `HERDR_POWER_HOST_MAC` must also be configured. |
+| `host_id` | string | Required | Must name a configured host with wake capability. |
 
 ```json
 {
@@ -496,14 +661,14 @@ Runs the relay's fixed Wake-on-LAN command for the one configured power host.
 
 ### `shutdown_host`
 
-Runs the fixed remote command `sudo -n systemctl poweroff` for the configured
-power host. The host must also have a non-empty preset SSH target.
+Runs the fixed remote command `sudo -n systemctl poweroff` for a configured host
+with shutdown capability. The host must have a private SSH target.
 
 | Name | Type | Presence | Meaning |
 | --- | --- | --- | --- |
 | `type` | string | Required | Always `"shutdown_host"`. |
 | `request_id` | string | Required | Non-empty idempotency and response-correlation key. |
-| `host_id` | string | Required | Must equal `HERDR_POWER_HOST_ID`. |
+| `host_id` | string | Required | Must name a configured host with shutdown capability. |
 | `confirmation_nonce` | string | Required | Any non-empty string; the relay checks presence but does not otherwise interpret it. |
 
 ```json
@@ -736,9 +901,19 @@ These are all code and message pairs produced through `command_error`.
 
 | Code | Exact message | Trigger |
 | --- | --- | --- |
-| `INVALID_REQUEST` | `request_id is required` | Any session or host command has a `request_id` that is not a non-empty string. The response's `request_id` is `null`. |
+| `INVALID_REQUEST` | `request_id is required` | Any session, host, or project command has a `request_id` that is not a non-empty string. The response's `request_id` is `null`. |
+| `INVALID_PATH` | `Invalid folder path` | A project browse or save path is not a bounded list of individual relative names. |
+| `INVALID_LABEL` | `Project label must be 1-128 characters` | A project save or rename label is empty or too long. |
+| `UNKNOWN_HOST` | `Unknown host` | A project operation names a host absent from the configured host file. |
+| `ROOT_NOT_ALLOWED` | `Folder root is not configured for this host` | A project operation names a root handle absent from the host configuration. |
+| `FOLDER_NOT_FOUND` | `Folder is unavailable` | The requested directory disappeared before the descriptor-relative open. |
+| `PATH_NOT_ALLOWED` | `Folder left the configured root` | A path or symlink failed descriptor-relative containment validation. |
+| `PROJECT_NOT_FOUND` | `Project not found` | A project mutation or project launch names an unknown opaque ID. |
+| `PROJECT_ARCHIVED` | `Project is removed` | A launch names an archived project. |
+| `PROJECT_UNAVAILABLE` | `Project configuration is unavailable` | A project launch is orphaned by host/root configuration or its folder changed. |
 | `UNKNOWN_PRESET` | `Unknown preset` | `launch_session.preset_id` is not configured. |
 | `HOST_NOT_ALLOWED` | `Preset is not allowed on this host` | `launch_session.host_id` is not in the selected preset. |
+| `PROJECT_NOT_ALLOWED` | `Preset cwd is outside the configured project roots` | `launch_session` selects a configured host but its preset cwd is outside that host's private project-root allowlist. |
 | `LAUNCH_FAILED` | `Herdr did not start the client` | The `herdr agent start` process fails or exits unsuccessfully. |
 | `CONFIRMATION_REQUIRED` | `confirmation_nonce is required` | `terminate_session` or `shutdown_host` lacks a non-empty string nonce. |
 | `STALE_SESSION` | `Session is no longer active` | `terminate_session.session_id` is absent from the latest active session map. |
@@ -754,5 +929,6 @@ This reference was derived from `relay/herdr_relay/`, especially
 `handle_client`, `_poll_once`, `event_push`, `broadcast`, `process_request`,
 `public_presets`, `get_agents_from_host`, `get_all_agents`, `pane_blocks`,
 `transcript_to_blocks`, `opencode_to_blocks`, `command_error`,
-`launch_session`, `terminate_session`, `wake_host`, and `shutdown_host`. Re-read
+`launch_session`, `terminate_session`, `wake_host`, `shutdown_host`, and the
+project store/filesystem handlers. Re-read
 those functions when changing or re-verifying the native contract.

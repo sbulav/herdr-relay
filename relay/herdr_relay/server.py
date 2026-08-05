@@ -12,7 +12,7 @@ except ImportError:
     from websockets.server import serve
 from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
 
-from . import config, herdr, lifecycle, panes, protocol, push, state, transcripts, transport
+from . import config, herdr, lifecycle, panes, projects, protocol, push, state, transcripts, transport
 from .audit import audit
 from .config import log
 
@@ -174,6 +174,7 @@ async def handle_client(ws):
 
     log.info("Client connected: ip=%s device=%s origin=%s", ip, device, origin or "-")
     connected_at = time.monotonic()
+    request_results = {}
     try:
         # Handshake before registering, so the ordering this frame exists to
         # guarantee is a property of this function rather than of the library.
@@ -193,37 +194,37 @@ async def handle_client(ws):
                 msg = json.loads(raw)
             except json.JSONDecodeError:
                 continue
+            if not isinstance(msg, dict):
+                await ws.send(json.dumps(protocol.command_error(None, "INVALID_REQUEST", "Request must be an object")))
+                continue
             msg_type = msg.get("type")
             request_id = msg.get("request_id")
-            if request_id and request_id in state.request_results:
-                await ws.send(json.dumps(state.request_results[request_id]))
+            if request_id and request_id in request_results:
+                await ws.send(json.dumps(request_results[request_id]))
+            elif msg_type in projects.COMMANDS:
+                response = await asyncio.to_thread(projects.handle_command, msg)
+                if response is None:
+                    continue
+                _remember_response(request_results, request_id, response)
+                await ws.send(json.dumps(response))
+                if msg_type in {"project_save", "project_rename", "project_remove", "project_restore"} and response.get("type") == "command_ack":
+                    audit(msg_type, ip, device, "", f"project_id={msg.get('project_id', '')}")
+                    await transport.broadcast(projects.public_snapshot())
             elif msg_type == "launch_session":
                 response = await asyncio.to_thread(lifecycle.launch_session, msg)
-                if request_id:
-                    state.request_results[request_id] = response
-                    if len(state.request_results) > 512:
-                        state.request_results.pop(next(iter(state.request_results)))
+                _remember_response(request_results, request_id, response)
                 await ws.send(json.dumps(response))
             elif msg_type == "terminate_session":
                 response = await asyncio.to_thread(lifecycle.terminate_session, msg)
-                if request_id:
-                    state.request_results[request_id] = response
-                    if len(state.request_results) > 512:
-                        state.request_results.pop(next(iter(state.request_results)))
+                _remember_response(request_results, request_id, response)
                 await ws.send(json.dumps(response))
             elif msg_type == "wake_host":
                 response = await asyncio.to_thread(lifecycle.wake_host, msg)
-                if request_id:
-                    state.request_results[request_id] = response
-                    if len(state.request_results) > 512:
-                        state.request_results.pop(next(iter(state.request_results)))
+                _remember_response(request_results, request_id, response)
                 await ws.send(json.dumps(response))
             elif msg_type == "shutdown_host":
                 response = await asyncio.to_thread(lifecycle.shutdown_host, msg)
-                if request_id:
-                    state.request_results[request_id] = response
-                    if len(state.request_results) > 512:
-                        state.request_results.pop(next(iter(state.request_results)))
+                _remember_response(request_results, request_id, response)
                 await ws.send(json.dumps(response))
             elif msg_type == "respond":
                 pane_id = msg["pane_id"]
@@ -357,17 +358,28 @@ def require_auth_token():
         raise SystemExit("HERDR_RELAY_TOKEN is required; set it before starting the relay")
 
 
+def _remember_response(request_results, request_id, response):
+    if not request_id:
+        return
+    request_results[request_id] = response
+    if len(request_results) > 512:
+        request_results.pop(next(iter(request_results)))
+
+
 async def main():
     require_auth_token()
+    # Reconcile before accepting clients so an orphaned bookmark is never briefly
+    # presented as available after a host configuration change.
+    await asyncio.to_thread(projects.public_snapshot)
     loop = asyncio.get_running_loop()
     server = await serve(handle_client, "0.0.0.0", config.WS_PORT, process_request=process_request)
     background_tasks = [
         asyncio.create_task(transport.poll_loop(), name="poll-loop"),
         asyncio.create_task(transport.event_push(), name="event-push"),
     ]
-    hosts = ["local"] + config.REMOTES
+    host_ids = [host["id"] for host in herdr.configured_host_records()]
     log.info("herdr-remote relay on :%d (WebSocket + HTTP)", config.WS_PORT)
-    log.info("Polling: %s", ", ".join(hosts))
+    log.info("Polling configured hosts: %s", ", ".join(host_ids))
     stop = loop.create_future()
     for task in background_tasks:
         task.add_done_callback(lambda completed: fail_on_background_exit(completed, stop))

@@ -1,0 +1,24 @@
+{
+  "projects": [
+    {
+      "archived": false,
+      "available": true,
+      "canonical_path": "/srv/projects/herdr-relay",
+      "host_id": "buildbox",
+      "label": "Herdr relay",
+      "last_launch_at": 1700000000000,
+      "path": "/srv/projects/herdr-relay",
+      "project_id": "0123456789abcdef0123456789abcdef",
+      "root_id": "root_95e8a4520dc48f2eacf6583c",
+      "unavailable_reason": null
+    }
+  ],
+  "roots": [
+    {
+      "host_id": "buildbox",
+      "label": "projects",
+      "root_id": "root_95e8a4520dc48f2eacf6583c"
+    }
+  ],
+  "type": "projects"
+}

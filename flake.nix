@@ -84,9 +84,10 @@
                 # Importing the relay creates its log directory, and the default
                 # falls back to $HOME — which in the sandbox is an unwritable
                 # /homeless-shelter. The same trap catches a hardened unit; see
-                # HERDR_LOG_DIR in docs/deployment.md.
-                export HERDR_LOG_DIR="$TMPDIR/herdr-log"
-                make check
+                 # HERDR_LOG_DIR in docs/deployment.md.
+                 export HERDR_LOG_DIR="$TMPDIR/herdr-log"
+                 export HERDR_PROJECTS_DB="$TMPDIR/projects.sqlite3"
+                 make check
                 touch $out
               '';
         }
@@ -112,7 +113,7 @@
                     services.herdr-relay = {
                       enable = true;
                       tokenFile = "/run/secrets/herdr-relay-token";
-                      remotes = [ "herdr@example" ];
+                      hostsFile = "${self}/contract/host-config-v1.example.json";
                       ssh.identityFile = "/run/secrets/herdr-relay-ssh-key";
                       ssh.knownHostsFile = "/run/secrets/herdr-relay-known-hosts";
                     };

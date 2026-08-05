@@ -1,0 +1,16 @@
+{
+  "canonical_path": "/srv/projects/herdr-relay",
+  "entries": [
+    {
+      "kind": "directory",
+      "name": "app"
+    }
+  ],
+  "host_id": "buildbox",
+  "path": [
+    "herdr-relay"
+  ],
+  "request_id": "req-browse-1",
+  "root_id": "root_95e8a4520dc48f2eacf6583c",
+  "type": "folder_entries"
+}

@@ -17,8 +17,18 @@
   ],
   "hosts": [
     {
+      "active_agent_count": 1,
+      "capabilities": {
+        "shutdown": false,
+        "wake": false
+      },
+      "display_name": "Build box",
+      "harnesses": [],
+      "herdr_ready": true,
       "host_id": "buildbox",
-      "online": true
+      "online": true,
+      "ssh_reachable": true,
+      "status": "ready"
     }
   ],
   "presets": [
@@ -35,5 +45,7 @@
       "repository": "dcolinmorgan/herdr-remote"
     }
   ],
+  "project_roots": [],
+  "projects": [],
   "type": "agents"
 }
