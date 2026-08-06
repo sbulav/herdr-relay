@@ -1,0 +1,6 @@
+{
+  "code": "REQUEST_IN_FLIGHT",
+  "message": "This folder is already being created",
+  "request_id": "req-create-1",
+  "type": "command_error"
+}

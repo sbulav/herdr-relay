@@ -13,6 +13,49 @@ REQUEST_ID_RE = re.compile(r"[A-Za-z0-9._:-]{1,128}\Z")
 HOST_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
 MAX_QUERY_LENGTH = 128
 MAX_LABEL_LENGTH = 128
+CREATE_LEASE_MS = 600_000
+
+# Statements, rather than scripts: sqlite3.executescript() force-commits and
+# therefore cannot safely run inside the exclusive migration lock.
+MIGRATIONS = {
+    1: (
+        """
+        CREATE TABLE projects (
+            project_id TEXT PRIMARY KEY,
+            host_id TEXT NOT NULL,
+            root_id TEXT NOT NULL,
+            canonical_path TEXT NOT NULL,
+            label TEXT NOT NULL,
+            archived INTEGER NOT NULL DEFAULT 0,
+            available INTEGER NOT NULL DEFAULT 1,
+            unavailable_reason TEXT,
+            last_launch_at INTEGER,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            UNIQUE(host_id, canonical_path)
+        )
+        """,
+        """
+        CREATE INDEX projects_recent_idx
+            ON projects(archived, last_launch_at DESC, updated_at DESC)
+        """,
+    ),
+    2: (
+        """
+        CREATE TABLE project_requests (
+            request_id TEXT PRIMARY KEY,
+            status TEXT NOT NULL CHECK(status IN ('in_flight', 'completed')),
+            project_id TEXT REFERENCES projects(project_id),
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )
+        """,
+        """
+        CREATE INDEX project_requests_updated_idx
+            ON project_requests(status, updated_at)
+        """,
+    ),
+}
 
 
 class ProjectError(Exception):
@@ -84,39 +127,20 @@ class ProjectStore:
 
     def _migrate(self):
         os.makedirs(os.path.dirname(os.path.abspath(self.path)), exist_ok=True)
-        connection = sqlite3.connect(self.path, timeout=5)
+        connection = sqlite3.connect(self.path, timeout=5, isolation_level=None)
         try:
+            connection.execute("BEGIN EXCLUSIVE")
             version = connection.execute("PRAGMA user_version").fetchone()[0]
-            migrations = {
-                1: """
-                    CREATE TABLE projects (
-                        project_id TEXT PRIMARY KEY,
-                        host_id TEXT NOT NULL,
-                        root_id TEXT NOT NULL,
-                        canonical_path TEXT NOT NULL,
-                        label TEXT NOT NULL,
-                        archived INTEGER NOT NULL DEFAULT 0,
-                        available INTEGER NOT NULL DEFAULT 1,
-                        unavailable_reason TEXT,
-                        last_launch_at INTEGER,
-                        created_at INTEGER NOT NULL,
-                        updated_at INTEGER NOT NULL,
-                        UNIQUE(host_id, canonical_path)
-                    );
-                    CREATE INDEX projects_recent_idx
-                        ON projects(archived, last_launch_at DESC, updated_at DESC);
-                    """,
-            }
-            if version > max(migrations):
+            if version > max(MIGRATIONS):
                 raise RuntimeError("unsupported project database schema version")
-            for target in range(version + 1, max(migrations) + 1):
-                try:
-                    connection.executescript(
-                        f"BEGIN;\n{migrations[target]}\nPRAGMA user_version = {target};\nCOMMIT;"
-                    )
-                except Exception:
-                    connection.rollback()
-                    raise
+            for target in range(version + 1, max(MIGRATIONS) + 1):
+                for statement in MIGRATIONS[target]:
+                    connection.execute(statement)
+                connection.execute(f"PRAGMA user_version = {target}")
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
         finally:
             connection.close()
 
@@ -159,43 +183,126 @@ class ProjectStore:
         finally:
             connection.close()
 
+    def _save(self, connection, host_id, root_id, canonical_path, label, now):
+        row = connection.execute(
+            "SELECT project_id FROM projects WHERE host_id = ? AND canonical_path = ?",
+            (host_id, canonical_path),
+        ).fetchone()
+        if row:
+            project_id = row[0]
+            connection.execute(
+                """
+                UPDATE projects
+                SET root_id = ?, label = ?, archived = 0, available = 1,
+                    unavailable_reason = NULL, updated_at = ?
+                WHERE project_id = ?
+                """,
+                (root_id, label, now, project_id),
+            )
+        else:
+            project_id = uuid.uuid4().hex
+            connection.execute(
+                """
+                INSERT INTO projects(
+                    project_id, host_id, root_id, canonical_path, label,
+                    archived, available, unavailable_reason, last_launch_at,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, 0, 1, NULL, NULL, ?, ?)
+                """,
+                (project_id, host_id, root_id, canonical_path, label, now, now),
+            )
+        return self._row(
+            connection.execute("SELECT * FROM projects WHERE project_id = ?", (project_id,)).fetchone()
+        )
+
     def save(self, host_id, root_id, canonical_path, label):
         label = _label(label)
         now = _now_ms()
         connection = self._connect()
         try:
             connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute(
-                "SELECT project_id FROM projects WHERE host_id = ? AND canonical_path = ?",
-                (host_id, canonical_path),
-            ).fetchone()
-            if row:
-                project_id = row[0]
-                connection.execute(
-                    """
-                    UPDATE projects
-                    SET root_id = ?, label = ?, archived = 0, available = 1,
-                        unavailable_reason = NULL, updated_at = ?
-                    WHERE project_id = ?
-                    """,
-                    (root_id, label, now, project_id),
-                )
-            else:
-                project_id = uuid.uuid4().hex
-                connection.execute(
-                    """
-                    INSERT INTO projects(
-                        project_id, host_id, root_id, canonical_path, label,
-                        archived, available, unavailable_reason, last_launch_at,
-                        created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, 0, 1, NULL, NULL, ?, ?)
-                    """,
-                    (project_id, host_id, root_id, canonical_path, label, now, now),
-                )
+            result = self._save(connection, host_id, root_id, canonical_path, label, now)
             connection.commit()
-            return self._row(
-                connection.execute("SELECT * FROM projects WHERE project_id = ?", (project_id,)).fetchone()
+            return result
+        finally:
+            connection.close()
+
+    def begin_create(self, request_id):
+        """Claim a durable create request, or return its completed project."""
+        now = _now_ms()
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT status, project_id, updated_at FROM project_requests WHERE request_id = ?",
+                (request_id,),
+            ).fetchone()
+            if row and row[0] == "completed":
+                project = connection.execute(
+                    "SELECT * FROM projects WHERE project_id = ?", (row[1],)
+                ).fetchone()
+                connection.commit()
+                if project is None:
+                    raise ProjectError("CREATE_FAILED", "Completed project request is inconsistent")
+                return self._row(project)
+            if row and now - row[2] <= CREATE_LEASE_MS:
+                connection.commit()
+                raise ProjectError("REQUEST_IN_FLIGHT", "This folder is already being created")
+            if row:
+                connection.execute("DELETE FROM project_requests WHERE request_id = ?", (request_id,))
+            connection.execute(
+                """
+                INSERT INTO project_requests(request_id, status, project_id, created_at, updated_at)
+                VALUES (?, 'in_flight', NULL, ?, ?)
+                """,
+                (request_id, now, now),
             )
+            connection.commit()
+            return None
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def complete_create(self, request_id, host_id, root_id, canonical_path, label):
+        """Register the directory and complete its request in one transaction."""
+        label = _label(label)
+        now = _now_ms()
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            request = connection.execute(
+                "SELECT status, project_id FROM project_requests WHERE request_id = ?",
+                (request_id,),
+            ).fetchone()
+            if request is None or request[0] != "in_flight":
+                raise ProjectError("CREATE_FAILED", "Create request lost its durable claim")
+            project = self._save(connection, host_id, root_id, canonical_path, label, now)
+            connection.execute(
+                """
+                UPDATE project_requests
+                SET status = 'completed', project_id = ?, updated_at = ?
+                WHERE request_id = ?
+                """,
+                (project["project_id"], now, request_id),
+            )
+            connection.commit()
+            return project
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def cancel_create(self, request_id):
+        connection = self._connect()
+        try:
+            connection.execute(
+                "DELETE FROM project_requests WHERE request_id = ? AND status = 'in_flight'",
+                (request_id,),
+            )
+            connection.commit()
         finally:
             connection.close()
 
@@ -370,6 +477,50 @@ def save(msg):
     }
 
 
+def create(msg):
+    request_id = _request_id(msg)
+    host = _host(msg.get("host_id"))
+    root = _root(host, msg.get("root_id"))
+    components = _path(msg)
+    try:
+        name = project_fs.validate_name(msg.get("name"))
+    except project_fs.FilesystemError as error:
+        raise ProjectError(error.code, str(error)) from error
+    label = _label(msg.get("label") if msg.get("label") is not None else name)
+    saved = store()
+    replay = saved.begin_create(request_id)
+    if replay is not None:
+        return {
+            "type": "command_ack",
+            "request_id": request_id,
+            "result": {"created": False, "project": public_project(replay)},
+        }
+
+    try:
+        result = project_fs.create(host, root["path"], components, name)
+    except project_fs.FilesystemError as error:
+        saved.cancel_create(request_id)
+        raise ProjectError(error.code, str(error)) from error
+
+    try:
+        row = saved.complete_create(
+            request_id, host["id"], root["id"], result["canonical_path"], label
+        )
+    except Exception as error:
+        try:
+            project_fs.remove_empty(host, root["path"], components, name)
+        finally:
+            saved.cancel_create(request_id)
+        if isinstance(error, ProjectError):
+            raise
+        raise ProjectError("CREATE_FAILED", "Folder could not be registered") from error
+    return {
+        "type": "command_ack",
+        "request_id": request_id,
+        "result": {"created": True, "project": public_project(row)},
+    }
+
+
 def rename(msg):
     request_id = _request_id(msg)
     project_id = msg.get("project_id")
@@ -394,6 +545,7 @@ def restore(msg):
 
 COMMANDS = {
     "project_browse": browse,
+    "project_create": create,
     "project_list": list_projects,
     "project_save": save,
     "project_rename": rename,

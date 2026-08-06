@@ -1,0 +1,19 @@
+{
+  "request_id": "req-create-1",
+  "result": {
+    "created": true,
+    "project": {
+      "archived": false,
+      "available": true,
+      "canonical_path": "/srv/projects/new-service",
+      "host_id": "buildbox",
+      "label": "New service",
+      "last_launch_at": null,
+      "path": "/srv/projects/new-service",
+      "project_id": "0123456789abcdef0123456789abcdef",
+      "root_id": "root_95e8a4520dc48f2eacf6583c",
+      "unavailable_reason": null
+    }
+  },
+  "type": "command_ack"
+}

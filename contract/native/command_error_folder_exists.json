@@ -1,0 +1,6 @@
+{
+  "code": "FOLDER_EXISTS",
+  "message": "A folder with that name already exists",
+  "request_id": "req-create-1",
+  "type": "command_error"
+}

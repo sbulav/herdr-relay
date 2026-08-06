@@ -165,6 +165,97 @@ class NativeContractTests(unittest.TestCase):
                 }),
             )
 
+    def test_project_create_ack(self):
+        host = {"id": "buildbox", "ssh": {}, "project_roots": ["/srv/projects"]}
+        row = {
+            "project_id": "0123456789abcdef0123456789abcdef",
+            "host_id": "buildbox",
+            "root_id": "root_95e8a4520dc48f2eacf6583c",
+            "label": "New service",
+            "canonical_path": "/srv/projects/new-service",
+            "archived": 0,
+            "available": 1,
+            "unavailable_reason": None,
+            "last_launch_at": None,
+        }
+
+        class Store:
+            def begin_create(self, _request_id):
+                return None
+
+            def complete_create(self, *_args):
+                return row
+
+        with (
+            patch.object(herdr_relay.hosts, "HOSTS_BY_ID", {"buildbox": host}),
+            patch.object(herdr_relay.projects, "store", return_value=Store()),
+            patch.object(
+                herdr_relay.project_fs,
+                "create",
+                return_value={"canonical_path": "/srv/projects/new-service"},
+            ),
+        ):
+            self.assert_contract(
+                "command_ack_project_create",
+                herdr_relay.projects.create({
+                    "type": "project_create",
+                    "request_id": "req-create-1",
+                    "host_id": "buildbox",
+                    "root_id": "root_95e8a4520dc48f2eacf6583c",
+                    "path": [],
+                    "name": "new-service",
+                    "label": "New service",
+                }),
+            )
+
+    def test_project_create_errors(self):
+        host = {"id": "buildbox", "ssh": {}, "project_roots": ["/srv/projects"]}
+
+        class Store:
+            def begin_create(self, _request_id):
+                return None
+
+            def cancel_create(self, _request_id):
+                pass
+
+        class BusyStore:
+            def begin_create(self, _request_id):
+                raise herdr_relay.projects.ProjectError(
+                    "REQUEST_IN_FLIGHT", "This folder is already being created"
+                )
+
+        base = {
+            "type": "project_create",
+            "request_id": "req-create-1",
+            "host_id": "buildbox",
+            "root_id": "root_95e8a4520dc48f2eacf6583c",
+            "path": [],
+        }
+        with patch.object(herdr_relay.hosts, "HOSTS_BY_ID", {"buildbox": host}):
+            self.assert_contract(
+                "command_error_invalid_name",
+                herdr_relay.projects.handle_command({**base, "name": "CON"}),
+            )
+            with (
+                patch.object(herdr_relay.projects, "store", return_value=Store()),
+                patch.object(
+                    herdr_relay.project_fs,
+                    "create",
+                    side_effect=herdr_relay.project_fs.FilesystemError(
+                        "FOLDER_EXISTS", "A folder with that name already exists"
+                    ),
+                ),
+            ):
+                self.assert_contract(
+                    "command_error_folder_exists",
+                    herdr_relay.projects.handle_command({**base, "name": "new-service"}),
+                )
+            with patch.object(herdr_relay.projects, "store", return_value=BusyStore()):
+                self.assert_contract(
+                    "command_error_request_in_flight",
+                    herdr_relay.projects.handle_command({**base, "name": "new-service"}),
+                )
+
     def test_blocked_transition(self):
         agents = [{
             "pane_id": "pane-7",

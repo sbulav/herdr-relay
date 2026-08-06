@@ -207,7 +207,7 @@ async def handle_client(ws):
                     continue
                 _remember_response(request_results, request_id, response)
                 await ws.send(json.dumps(response))
-                if msg_type in {"project_save", "project_rename", "project_remove", "project_restore"} and response.get("type") == "command_ack":
+                if msg_type in {"project_create", "project_save", "project_rename", "project_remove", "project_restore"} and response.get("type") == "command_ack":
                     audit(msg_type, ip, device, "", f"project_id={msg.get('project_id', '')}")
                     await transport.broadcast(projects.public_snapshot())
             elif msg_type == "launch_session":

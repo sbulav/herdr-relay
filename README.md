@@ -117,10 +117,11 @@ See `contract/host-config-v1.schema.json` for the versioned configuration shape.
 
 Project operations are also typed. `project_browse` accepts only an opaque root
 handle and relative path components; the fixed host helper uses descriptor-relative
-no-follow traversal. `project_save`, `project_rename`, `project_remove`, and
-`project_restore` write only relay metadata. Removing a bookmark never touches its
-directory, and configuration changes mark old rows unavailable instead of deleting
-them.
+no-follow traversal. `project_create` atomically creates exactly one validated
+empty child and registers it with durable request replay. `project_save`,
+`project_rename`, `project_remove`, and `project_restore` write only relay metadata.
+Removing a bookmark never touches its directory, and configuration changes mark old
+rows unavailable instead of deleting them.
 
 ## Develop
 

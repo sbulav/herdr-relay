@@ -88,6 +88,11 @@ body { font-family: -apple-system, system-ui, -webkit-system-font, sans-serif; b
 .project-actions button { min-height: 36px; padding: 6px 10px; }
 .folder-entry { display: flex; width: 100%; justify-content: space-between; align-items: center; text-align: left; margin-bottom: 6px; }
 .folder-breadcrumb { color: var(--muted); font-family: monospace; font-size: 0.72rem; overflow-wrap: anywhere; margin: 6px 0 10px; }
+.create-folder { margin-top: 10px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
+.create-folder label { display: block; font-size: 0.75rem; font-weight: 600; margin-bottom: 6px; }
+.create-folder input { width: 100%; padding: 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 0.85rem; }
+.create-folder input[aria-invalid="true"] { border-color: var(--red); }
+.create-folder-status { min-height: 1.2em; margin-top: 6px; color: var(--red); font-size: 0.75rem; }
 .project-warning { color: var(--orange); font-size: 0.75rem; margin-top: 4px; }
 .new-session-button { width: 100%; margin: 4px 0 12px; }
 .section-header { font-size: 0.7rem; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); margin: 16px 0 8px; display: flex; align-items: center; gap: 5px; }
@@ -322,6 +327,13 @@ let projectQuery = '';
 let browserRootId = '';
 let browserPath = [];
 let folderListing = null;
+let createFolderOpen = false;
+let createFolderName = '';
+let createRequestId = null;
+let createPending = false;
+let createOutcomeUnknown = false;
+let createError = '';
+let createParent = null;
 const pendingLaunchRequests = new Set();
 
 // Settings — auto-detect relay when served from same origin
@@ -397,7 +409,16 @@ function connect() {
   if (token) wsUrl += (url.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(token);
   ws = new WebSocket(wsUrl);
   ws.onopen = () => { setStatus('connected'); if(window.cue) cue('ready'); };
-  ws.onclose = () => { setStatus('disconnected'); setTimeout(connect, 3000); };
+  ws.onclose = () => {
+    setStatus('disconnected');
+    if (createPending) {
+      createPending = false;
+      createOutcomeUnknown = true;
+      createError = 'Connection closed before acknowledgement. Refresh this folder before trying again.';
+      if (newSessionOpen) renderComposer();
+    }
+    setTimeout(connect, 3000);
+  };
   ws.onerror = () => setStatus('disconnected');
   ws.onmessage = (e) => handleMessage(JSON.parse(e.data));
 }
@@ -463,6 +484,29 @@ function handleMessage(msg) {
     browserPath = Array.isArray(msg.path) ? msg.path : [];
     if (newSessionOpen) renderComposer();
   } else if (msg.type === 'command_ack') {
+    if (msg.request_id && msg.request_id === createRequestId) {
+      const project = msg.result && msg.result.project;
+      createPending = false;
+      if (project && project.project_id) {
+        projects = projects.filter(item => item.project_id !== project.project_id).concat([project]);
+        selectedProjectId = project.project_id;
+        selectedHostId = project.host_id;
+        localStorage.setItem('herdr_last_project', project.project_id);
+        localStorage.setItem('herdr_last_host', project.host_id);
+        const parent = createParent;
+        resetCreateFolder();
+        if (parent) {
+          browserRootId = parent.rootId;
+          browserPath = parent.path;
+          browseProjectFolder(parent.rootId, parent.path);
+        }
+        if (newSessionOpen) renderComposer();
+      } else {
+        createError = 'The relay acknowledged creation without returning the new project.';
+        if (newSessionOpen) renderComposer();
+      }
+      return;
+    }
     const hostId = msg.result && msg.result.host_id;
     const launchAccepted = Boolean(msg.request_id && pendingLaunchRequests.delete(msg.request_id));
     if (hostId && launchAccepted) {
@@ -471,6 +515,12 @@ function handleMessage(msg) {
       if (newSessionOpen) renderComposer();
     }
   } else if (msg.type === 'command_error') {
+    if (msg.request_id && msg.request_id === createRequestId) {
+      createPending = false;
+      createError = msg.message || 'Folder could not be created.';
+      if (newSessionOpen) renderComposer();
+      return;
+    }
     if (msg.request_id) pendingLaunchRequests.delete(msg.request_id);
     if (newSessionOpen) {
       document.getElementById('composerBody').insertAdjacentHTML('afterbegin', `<p class="host-offline" style="margin-bottom:12px">${escapeHtml(msg.message || 'Operation failed')}</p>`);
@@ -689,7 +739,23 @@ function renderProjectComposer() {
     const listing = folderListing && folderListing.root_id === browserRootId ? folderListing : null;
     html += `<div class="folder-breadcrumb">${escapeHtml(listing?.canonical_path || 'Choose a folder root')}</div>`;
     if (listing) {
-      html += `<div class="project-actions"><button onclick="browseProjectFolder(${escapeJs(browserRootId)}, ${escapeJs(browserPath.slice(0, -1))})" ${browserPath.length ? '' : 'disabled'}>Up</button><button class="primary" onclick="saveCurrentFolder()">Select existing folder</button></div>`;
+      const canMutate = Boolean(ws && ws.readyState === 1 && readyHosts().some(item => item.host_id === selectedHostId));
+      html += `<div class="project-actions"><button onclick="browseProjectFolder(${escapeJs(browserRootId)}, ${escapeJs(browserPath.slice(0, -1))})" ${browserPath.length ? '' : 'disabled'}>Up</button><button class="primary" onclick="saveCurrentFolder()" ${canMutate ? '' : 'disabled'}>Select existing folder</button><button onclick="openCreateFolder()" ${canMutate ? '' : 'disabled'}>New folder…</button></div>`;
+      if (createFolderOpen) {
+        const problem = folderNameProblem(createFolderName, listing.entries.map(entry => entry.name));
+        const status = createError || problem || '';
+        const disableCreate = Boolean(problem || createPending || createOutcomeUnknown || !canMutate);
+        html += `<div class="create-folder" role="group" aria-labelledby="createFolderLabel">
+          <label id="createFolderLabel" for="createFolderName">Create one empty folder in ${escapeHtml(listing.canonical_path || '')}</label>
+          <input id="createFolderName" value="${escapeHtml(createFolderName)}" autocomplete="off" autocapitalize="none" aria-invalid="${problem ? 'true' : 'false'}" oninput="updateCreateFolderName(this.value)" ${createPending ? 'disabled' : ''} />
+          <p id="createFolderStatus" class="create-folder-status" role="status">${escapeHtml(status)}</p>
+          <div class="project-actions">
+            ${createOutcomeUnknown
+              ? '<button class="primary" onclick="refreshCreateParent()">Refresh and re-browse</button>'
+              : `<button id="createFolderSubmit" class="primary" onclick="submitCreateFolder()" ${disableCreate ? 'disabled' : ''}>${createPending ? 'Creating…' : 'Create'}</button><button onclick="cancelCreateFolder()" ${createPending ? 'disabled' : ''}>Cancel</button>`}
+          </div>
+        </div>`;
+      }
       html += listing.entries.length ? listing.entries.map(entry => `<button class="folder-entry" onclick="browseProjectFolder(${escapeJs(browserRootId)}, ${escapeJs(browserPath.concat([entry.name]))})"><span>📁 ${escapeHtml(entry.name)}</span><span aria-hidden="true">›</span></button>`).join('') : '<p class="host-detail">No child folders.</p>';
     } else {
       html += `<button class="primary" onclick="browseProjectFolder(${escapeJs(browserRootId)}, [])">Browse root</button>`;
@@ -729,6 +795,80 @@ function browseProjectFolder(rootId, path) {
   browserPath = Array.isArray(path) ? path : [];
   const id = requestId();
   ws.send(JSON.stringify({type: 'project_browse', request_id: id, host_id: selectedHostId, root_id: rootId, path: browserPath}));
+}
+const RESERVED_FOLDER_NAMES = new Set(['CON', 'PRN', 'AUX', 'NUL', ...Array.from({length: 9}, (_, index) => `COM${index + 1}`), ...Array.from({length: 9}, (_, index) => `LPT${index + 1}`)]);
+function folderNameProblem(name, siblings = []) {
+  if (!name) return 'Enter a folder name.';
+  if (name === '.' || name === '..') return `"${name}" is not a folder name.`;
+  if (name.includes('/') || name.includes('\\')) return 'A folder name cannot contain / or \\ — this creates one folder, not a path.';
+  if (new TextEncoder().encode(name).length > 255) return 'Too long — a folder name is at most 255 bytes.';
+  if (name !== name.trim()) return 'A folder name cannot start or end with a space.';
+  if (name.endsWith('.')) return 'A folder name cannot end with a dot.';
+  for (const character of name) {
+    const code = character.codePointAt(0);
+    if ('<>:"|?*'.includes(character)) return 'A folder name cannot contain < > : " | ? *';
+    if (code < 32 || code === 127) return 'A folder name cannot contain control characters.';
+  }
+  if (RESERVED_FOLDER_NAMES.has(name.split('.', 1)[0].toUpperCase())) return `"${name}" is reserved on some systems. Pick another name.`;
+  if (siblings.includes(name)) return `"${name}" already exists here.`;
+  return '';
+}
+function openCreateFolder() {
+  createFolderOpen = true;
+  createFolderName = '';
+  createRequestId = null;
+  createPending = false;
+  createOutcomeUnknown = false;
+  createError = '';
+  createParent = null;
+  renderProjectComposer();
+  setTimeout(() => document.getElementById('createFolderName')?.focus(), 0);
+}
+function updateCreateFolderName(value) {
+  createFolderName = value;
+  createError = '';
+  const siblings = folderListing?.entries?.map(entry => entry.name) || [];
+  const problem = folderNameProblem(value, siblings);
+  const status = document.getElementById('createFolderStatus');
+  const input = document.getElementById('createFolderName');
+  const submit = document.getElementById('createFolderSubmit');
+  if (status) status.textContent = problem;
+  if (input) input.setAttribute('aria-invalid', problem ? 'true' : 'false');
+  if (submit) submit.disabled = Boolean(problem || !ws || ws.readyState !== 1);
+}
+function submitCreateFolder() {
+  if (!ws || ws.readyState !== 1 || !selectedHostId || !browserRootId || createPending) return;
+  const siblings = folderListing?.entries?.map(entry => entry.name) || [];
+  const problem = folderNameProblem(createFolderName, siblings);
+  if (problem) { createError = problem; renderProjectComposer(); return; }
+  createRequestId = requestId();
+  createPending = true;
+  createOutcomeUnknown = false;
+  createError = '';
+  createParent = {hostId: selectedHostId, rootId: browserRootId, path: [...browserPath]};
+  ws.send(JSON.stringify({type: 'project_create', request_id: createRequestId, host_id: selectedHostId, root_id: browserRootId, path: browserPath, name: createFolderName}));
+  renderProjectComposer();
+}
+function resetCreateFolder() {
+  createFolderOpen = false;
+  createFolderName = '';
+  createRequestId = null;
+  createPending = false;
+  createOutcomeUnknown = false;
+  createError = '';
+  createParent = null;
+}
+function cancelCreateFolder() {
+  if (createPending) return;
+  resetCreateFolder();
+  renderProjectComposer();
+}
+function refreshCreateParent() {
+  const parent = createParent || {hostId: selectedHostId, rootId: browserRootId, path: [...browserPath]};
+  selectedHostId = parent.hostId;
+  resetCreateFolder();
+  browseProjectFolder(parent.rootId, parent.path);
+  renderProjectComposer();
 }
 function saveCurrentFolder() {
   if (!ws || ws.readyState !== 1 || !selectedHostId || !browserRootId) return;

@@ -1,0 +1,6 @@
+{
+  "code": "INVALID_NAME",
+  "message": "Folder name is reserved on some platforms",
+  "request_id": "req-create-1",
+  "type": "command_error"
+}

@@ -283,10 +283,12 @@ same fixed helper over SSH; client text is JSON input, never shell text.
 }
 ```
 
-`project_save` takes the same path components and an optional label. It records
-metadata only after the host helper verifies the directory. `project_rename`,
+`project_create` takes the same parent descriptor plus one child `name`; the name
+is never appended to `path`. It creates one empty directory and registers it only
+after re-verifying descriptor containment. `project_save` records metadata only
+after the host helper verifies an existing directory. `project_rename`,
 `project_remove`, and `project_restore` take an opaque `project_id`; remove only
-archives metadata and never deletes, moves, or empties the directory. All six
+archives metadata and never deletes, moves, or empties the directory. All seven
 operations require a request ID and return a typed `command_ack`, `command_error`,
 `projects`, or `folder_entries` frame.
 
@@ -371,7 +373,7 @@ subscribed to that `pane_id`, and only when the transcript signature changes.
 ### `command_ack`
 
 Acknowledges a successful `launch_session`, `terminate_session`, `wake_host`,
-`shutdown_host`, `project_save`, `project_rename`, `project_remove`, or
+`shutdown_host`, `project_create`, `project_save`, `project_rename`, `project_remove`, or
 `project_restore` request. The frame is point-to-point. Responses are cached
 by non-empty `request_id`; repeating a cached ID returns the cached frame before
 the new frame's `type` is considered.
@@ -383,6 +385,8 @@ the new frame's `type` is considered.
 | `result` | object | Required | Command-specific result. |
 | `result.host_id` | string | Launch, wake, and shutdown acknowledgements | Host ID from the command. |
 | `result.output` | string | Terminate acknowledgement | Standard output from `herdr pane close`, stripped. |
+| `result.created` | boolean | Create acknowledgement | `true` for the first completion; `false` for durable replay after reconnect. |
+| `result.project` | object | Project acknowledgements | Relay-owned saved-project record, including its opaque ID. |
 
 Launch acknowledgement:
 
@@ -598,6 +602,31 @@ host-scoped identity. An omitted label defaults to the selected folder name.
   "root_id": "root_95e8a4520dc48f2eacf6583c",
   "path": ["herdr-relay"],
   "label": "Herdr relay"
+}
+```
+
+### `project_create`
+
+Creates exactly one empty child below the selected allowlisted parent and saves
+it as a project. `name` is a single field and is never joined into `path` by the
+client. Empty or dot names, separators, controls, surrounding whitespace,
+trailing dots, `<>:"|?*`, Windows-reserved stems, and names over 255 UTF-8 bytes
+are rejected. `mkdir` is descriptor-relative and atomic; the helper re-opens the
+new child with no-follow semantics and re-checks containment after creation.
+
+The request ID is also stored in SQLite. Replaying a completed request after a
+reconnect returns the same project with `created: false`; a concurrent duplicate
+returns `REQUEST_IN_FLIGHT`.
+
+```json
+{
+  "type": "project_create",
+  "request_id": "req-create-1",
+  "host_id": "buildbox",
+  "root_id": "root_95e8a4520dc48f2eacf6583c",
+  "path": [],
+  "name": "new-service",
+  "label": "New service"
 }
 ```
 
@@ -903,10 +932,14 @@ These are all code and message pairs produced through `command_error`.
 | --- | --- | --- |
 | `INVALID_REQUEST` | `request_id is required` | Any session, host, or project command has a `request_id` that is not a non-empty string. The response's `request_id` is `null`. |
 | `INVALID_PATH` | `Invalid folder path` | A project browse or save path is not a bounded list of individual relative names. |
+| `INVALID_NAME` | `Folder name is reserved on some platforms` | A create name violates the portable platform rules. Other invalid-name messages describe the same code more specifically. |
 | `INVALID_LABEL` | `Project label must be 1-128 characters` | A project save or rename label is empty or too long. |
 | `UNKNOWN_HOST` | `Unknown host` | A project operation names a host absent from the configured host file. |
 | `ROOT_NOT_ALLOWED` | `Folder root is not configured for this host` | A project operation names a root handle absent from the host configuration. |
 | `FOLDER_NOT_FOUND` | `Folder is unavailable` | The requested directory disappeared before the descriptor-relative open. |
+| `FOLDER_EXISTS` | `A folder with that name already exists` | Atomic create found any existing entry with the requested name. |
+| `REQUEST_IN_FLIGHT` | `This folder is already being created` | Another worker owns the same durable create request. |
+| `CREATE_FAILED` | `Folder could not be registered` | Filesystem creation succeeded but durable catalog registration did not. The relay attempts descriptor-relative rollback. |
 | `PATH_NOT_ALLOWED` | `Folder left the configured root` | A path or symlink failed descriptor-relative containment validation. |
 | `PROJECT_NOT_FOUND` | `Project not found` | A project mutation or project launch names an unknown opaque ID. |
 | `PROJECT_ARCHIVED` | `Project is removed` | A launch names an archived project. |
