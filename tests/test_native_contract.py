@@ -105,6 +105,27 @@ class NativeContractTests(unittest.TestCase):
         # Routing still works internally; only the wire is cleaned.
         self.assertEqual(routed_target, "deploy@buildbox")
 
+    def test_start_operation_transition(self):
+        row = {
+            "operation_id": "op-1",
+            "request_id": "req-start-1",
+            "host_id": "buildbox",
+            "project_id": "0123456789abcdef0123456789abcdef",
+            "harness": "claude",
+            "model": "default",
+            "agent_name": "herdr-mobile-op-1",
+            "stage": "starting",
+            "session_id": None,
+            "error_code": None,
+            "error_message": None,
+            "created_at": 1700000000000,
+            "updated_at": 1700000000100,
+        }
+        self.assert_contract(
+            "operation",
+            {"type": "operation", "operation": herdr_relay.operations.public_operation(row)},
+        )
+
     def test_projects_snapshot(self):
         row = {
             "project_id": "0123456789abcdef0123456789abcdef",

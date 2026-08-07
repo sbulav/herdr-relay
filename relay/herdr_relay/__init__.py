@@ -19,9 +19,11 @@ it, singletons no test replaces. This module re-exports the entry points so
 they always did; it holds no logic of its own.
 """
 from . import (  # noqa: F401
+    catalogs,
     config,
     herdr,
     lifecycle,
+    operations,
     hosts,
     panes,
     project_fs,
@@ -38,10 +40,13 @@ from .audit import audit  # noqa: F401
 from .config import log  # noqa: F401
 from .lifecycle import (  # noqa: F401
     launch_session,
+    recover_start_operations,
     shutdown_host,
+    start_session,
     terminate_session,
     wake_host,
 )
+from .operations import begin_start, deterministic_agent_name, recover_active  # noqa: F401
 from .server import (  # noqa: F401
     fail_on_background_exit,
     handle_client,
@@ -52,6 +57,7 @@ from .server import (  # noqa: F401
 from .transport import (  # noqa: F401
     _poll_once,
     broadcast,
+    catalog_loop,
     event_push,
     poll_loop,
 )

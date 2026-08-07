@@ -10,7 +10,7 @@ import json
 
 from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
 
-from . import config, herdr, panes, presets, projects, protocol, push, state, transcripts
+from . import catalogs, config, herdr, operations, panes, presets, projects, protocol, push, state, transcripts
 from .config import log
 
 
@@ -37,6 +37,18 @@ async def poll_loop():
         except Exception:
             log.exception("poll cycle failed; retrying")
         await asyncio.sleep(config.POLL_INTERVAL)
+
+
+async def catalog_loop():
+    """Refresh model catalogs at most once per day and fan out the result."""
+    while True:
+        try:
+            if catalogs.needs_refresh():
+                frame = await asyncio.to_thread(catalogs.refresh_all)
+                await broadcast({"type": "catalogs", **frame})
+        except Exception:
+            log.exception("catalog refresh failed; retaining last-successful catalogs")
+        await asyncio.sleep(60)
 
 
 async def _poll_once():
@@ -90,6 +102,8 @@ async def _poll_once():
         "hosts": hosts,
         "projects": project_frame["projects"],
         "project_roots": project_frame["roots"],
+        "operations": operations.public_active(),
+        **catalogs.public_frame(),
     })
     # Read every newly blocked pane off the event loop, and all of them at once:
     # `herdr pane read` shells out (over ssh for remote hosts) with a 15s timeout,
@@ -168,39 +182,61 @@ async def _poll_once():
                 pass
 
 
-async def event_push():
-    while True:
-        event = await state.event_queue.get()
-        pane_id = event.get("pane_id", "")
-        status = event.get("status", "")
-        host = event.get("host", "local")
+async def _handle_pushed_event(event):
+    pane_id = event.get("pane_id", "")
+    status = event.get("status", "")
+    host = event.get("host", "local")
 
-        if status == "blocked" and pane_id:
-            remote = state.pane_remote_map.get(pane_id)
-            if remote or host == "local":
-                # Same 15s ssh-backed call the poll loop offloads (#26); inline
-                # here it would stall every client on a pushed blocked event.
-                content = await asyncio.to_thread(herdr.read_pane, pane_id, remote=remote)
-            else:
-                content = event.get("prompt", "Agent is blocked")
-            options = panes.detect_options(content)
-            await broadcast({
-                "type": "blocked", "pane_id": pane_id,
+    if status == "blocked" and pane_id:
+        remote = state.pane_remote_map.get(pane_id)
+        if remote or host == "local":
+            # Same 15s ssh-backed call the poll loop offloads (#26). Handle it
+            # in a child task so it cannot delay operation transitions behind it.
+            content = await asyncio.to_thread(herdr.read_pane, pane_id, remote=remote)
+        else:
+            content = event.get("prompt", "Agent is blocked")
+        options = panes.detect_options(content)
+        await broadcast({
+            "type": "blocked", "pane_id": pane_id,
+            "agent": event.get("agent", ""),
+            "project": event.get("project", ""),
+            "host": host,
+            "prompt": content[:500],
+            "options": options or panes.TOOL_OPTIONS
+        })
+
+    if pane_id and event.get("type") == "agent_event":
+        await broadcast({
+            "type": "agents", "agents": [{
+                "pane_id": pane_id,
                 "agent": event.get("agent", ""),
+                "status": status,
+                "cwd": event.get("cwd", ""),
                 "project": event.get("project", ""),
                 "host": host,
-                "prompt": content[:500],
-                "options": options or panes.TOOL_OPTIONS
-            })
+            }]
+        })
 
-        if pane_id and event.get("type") == "agent_event":
-            await broadcast({
-                "type": "agents", "agents": [{
-                    "pane_id": pane_id,
-                    "agent": event.get("agent", ""),
-                    "status": status,
-                    "cwd": event.get("cwd", ""),
-                    "project": event.get("project", ""),
-                    "host": host,
-                }]
-            })
+
+async def event_push():
+    tasks = set()
+
+    def finished(task):
+        tasks.discard(task)
+        if not task.cancelled():
+            task.exception()
+
+    try:
+        while True:
+            event = await state.event_queue.get()
+            if event.get("type") == "operation_event":
+                await broadcast({"type": "operation", "operation": event.get("operation")})
+                continue
+            task = asyncio.create_task(_handle_pushed_event(event))
+            tasks.add(task)
+            task.add_done_callback(finished)
+    finally:
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)

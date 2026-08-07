@@ -22,7 +22,7 @@ def public_agents(agents):
     every connected phone, and every proxy log, a login string for the host.
     """
     return [
-        {key: value for key, value in agent.items() if key != "remote"}
+        {key: value for key, value in agent.items() if key not in {"remote", "agent_name"}}
         for agent in agents
     ]
 

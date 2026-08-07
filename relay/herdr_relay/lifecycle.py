@@ -11,7 +11,16 @@ import subprocess
 import uuid
 import os
 
-from . import config, herdr, hosts, presets, project_fs, projects, protocol, state
+from . import catalogs, config, herdr, hosts, operations, presets, project_fs, projects, protocol, state
+
+
+def start_session(msg):
+    """Queue a durable project start and return before host work completes."""
+    return operations.begin_start(msg)
+
+
+def recover_start_operations():
+    operations.recover_active()
 
 
 def launch_session(msg):
@@ -92,12 +101,21 @@ def _launch_project(msg):
         or not all(char.isalnum() or char in "._-" for char in harness)
         or not isinstance(model, str)
         or not model
-        or len(model) > 128
+        or len(model) > 256
+        or any(ord(char) < 32 or ord(char) == 127 for char in model)
     ):
         return protocol.command_error(request_id, "INVALID_REQUEST", "Invalid harness or model")
     configured_harnesses = {item["id"] for item in configured_host.get("harnesses", [])}
     if configured_harnesses and harness not in configured_harnesses:
         return protocol.command_error(request_id, "HARNESS_NOT_ALLOWED", "Harness is not configured on this host")
+    if configured_harnesses:
+        catalog = catalogs.CatalogStore().get(host_id, harness)
+        if not catalog or catalog.get("disabled") or not catalog.get("available"):
+            return protocol.command_error(request_id, "HARNESS_UNAVAILABLE", "Harness is not available on this host")
+        if model != "default" and model not in {
+            item.get("id") for item in catalog.get("models", []) if isinstance(item, dict)
+        }:
+            return protocol.command_error(request_id, "MODEL_NOT_AVAILABLE", "Model is not available on this host")
     remote = hosts.ssh_target(configured_host)
     command = hosts.herdr_command(configured_host)
     argv = [harness]

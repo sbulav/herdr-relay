@@ -8,8 +8,16 @@
       "project_roots": ["/srv/projects"],
       "herdr": {"wrapper": [], "binary": "/usr/local/bin/herdr"},
       "harnesses": [
-        {"id": "claude", "display_name": "Claude Code"},
-        {"id": "opencode", "display_name": "OpenCode"}
+        {
+          "id": "claude",
+          "display_name": "Claude Code",
+          "model_aliases": [
+            {"id": "default", "display_name": "Default"},
+            {"id": "sonnet", "display_name": "Sonnet"}
+          ]
+        },
+        {"id": "opencode", "display_name": "OpenCode"},
+        {"id": "codex", "display_name": "Codex"}
       ],
       "power": {"wake": null, "shutdown": false},
       "readiness_timeout_seconds": 15

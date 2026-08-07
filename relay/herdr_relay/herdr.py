@@ -45,7 +45,10 @@ def run_herdr_checked(*args, remote=None, host_id=None, command=None, timeout=15
         else:
             cmd = [*command, *args]
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-        return r.returncode == 0, r.stdout.strip()
+        output = r.stdout.strip()
+        if r.returncode != 0 and not output:
+            output = r.stderr.strip()
+        return r.returncode == 0, output
     except Exception:
         if remote:
             print(f"herdr poll failed for host {host_id or 'configured host'}", flush=True)
@@ -114,6 +117,12 @@ def get_agents_from_host(remote=None, host_id=None, host=None):
                 "workspace_id": p.get("workspace_id", ""),
                 "tab_id": p.get("tab_id", ""),
             }
+            # Newer Herdr builds expose the user-facing start name explicitly.
+            # Keep it internal: the relay uses it to reconcile durable starts,
+            # while public frames continue to expose only the harness label.
+            agent_name = p.get("agent_name") or p.get("name")
+            if isinstance(agent_name, str) and agent_name:
+                agent["agent_name"] = agent_name
             revision = p.get("revision")
             if isinstance(revision, int) and not isinstance(revision, bool):
                 agent["output_revision"] = revision
