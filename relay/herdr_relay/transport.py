@@ -182,42 +182,61 @@ async def _poll_once():
                 pass
 
 
-async def event_push():
-    while True:
-        event = await state.event_queue.get()
-        if event.get("type") == "operation_event":
-            await broadcast({"type": "operation", "operation": event.get("operation")})
-            continue
-        pane_id = event.get("pane_id", "")
-        status = event.get("status", "")
-        host = event.get("host", "local")
+async def _handle_pushed_event(event):
+    pane_id = event.get("pane_id", "")
+    status = event.get("status", "")
+    host = event.get("host", "local")
 
-        if status == "blocked" and pane_id:
-            remote = state.pane_remote_map.get(pane_id)
-            if remote or host == "local":
-                # Same 15s ssh-backed call the poll loop offloads (#26); inline
-                # here it would stall every client on a pushed blocked event.
-                content = await asyncio.to_thread(herdr.read_pane, pane_id, remote=remote)
-            else:
-                content = event.get("prompt", "Agent is blocked")
-            options = panes.detect_options(content)
-            await broadcast({
-                "type": "blocked", "pane_id": pane_id,
+    if status == "blocked" and pane_id:
+        remote = state.pane_remote_map.get(pane_id)
+        if remote or host == "local":
+            # Same 15s ssh-backed call the poll loop offloads (#26). Handle it
+            # in a child task so it cannot delay operation transitions behind it.
+            content = await asyncio.to_thread(herdr.read_pane, pane_id, remote=remote)
+        else:
+            content = event.get("prompt", "Agent is blocked")
+        options = panes.detect_options(content)
+        await broadcast({
+            "type": "blocked", "pane_id": pane_id,
+            "agent": event.get("agent", ""),
+            "project": event.get("project", ""),
+            "host": host,
+            "prompt": content[:500],
+            "options": options or panes.TOOL_OPTIONS
+        })
+
+    if pane_id and event.get("type") == "agent_event":
+        await broadcast({
+            "type": "agents", "agents": [{
+                "pane_id": pane_id,
                 "agent": event.get("agent", ""),
+                "status": status,
+                "cwd": event.get("cwd", ""),
                 "project": event.get("project", ""),
                 "host": host,
-                "prompt": content[:500],
-                "options": options or panes.TOOL_OPTIONS
-            })
+            }]
+        })
 
-        if pane_id and event.get("type") == "agent_event":
-            await broadcast({
-                "type": "agents", "agents": [{
-                    "pane_id": pane_id,
-                    "agent": event.get("agent", ""),
-                    "status": status,
-                    "cwd": event.get("cwd", ""),
-                    "project": event.get("project", ""),
-                    "host": host,
-                }]
-            })
+
+async def event_push():
+    tasks = set()
+
+    def finished(task):
+        tasks.discard(task)
+        if not task.cancelled():
+            task.exception()
+
+    try:
+        while True:
+            event = await state.event_queue.get()
+            if event.get("type") == "operation_event":
+                await broadcast({"type": "operation", "operation": event.get("operation")})
+                continue
+            task = asyncio.create_task(_handle_pushed_event(event))
+            tasks.add(task)
+            task.add_done_callback(finished)
+    finally:
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)

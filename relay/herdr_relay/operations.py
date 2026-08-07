@@ -18,6 +18,7 @@ ACTIVE_STAGES = {"queued", "checking", "starting"}
 TERMINAL_STAGES = {"started", "failed", "cancelled"}
 MAX_HARNESS_LENGTH = 64
 MAX_MODEL_LENGTH = 256
+POST_START_PROBE_INTERVAL_SECONDS = 0.5
 _worker_lock = threading.Lock()
 _running = set()
 
@@ -318,7 +319,9 @@ def _start_operation(operation_id):
             projects.store().mark_launch(operation["project_id"])
             _transition(store, operation_id, "started", session_id=session_id)
             return
-        time.sleep(0.1)
+        # Each probe may open SSH and invoke `herdr pane list`; keep the
+        # readiness check responsive without hammering sshd on a remote host.
+        time.sleep(POST_START_PROBE_INTERVAL_SECONDS)
     _error(store, operation_id, "AGENT_NOT_OBSERVABLE")
 
 

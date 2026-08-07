@@ -1,10 +1,12 @@
+import asyncio
 import queue
 import os
 import json
+import threading
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from relay import herdr_relay
 
@@ -172,3 +174,41 @@ class StartOperationTests(unittest.TestCase):
         self.assertTrue(probe["herdr_ready"])
         self.assertEqual("herdr-mobile-op-1", agents[0]["agent_name"])
         self.assertNotIn("agent_name", herdr_relay.protocol.public_agents(agents)[0])
+
+    def test_operation_transition_is_not_held_behind_a_blocked_pane_read(self):
+        release = threading.Event()
+        operation = {"operation_id": "op-1", "stage": "starting"}
+        frames = []
+
+        def blocking_read(_pane_id, remote=None):
+            release.wait(timeout=1)
+            return "Approve?"
+
+        async def run():
+            event_queue = herdr_relay.state.event_queue
+            event_queue.put_nowait({"type": "agent_event", "pane_id": "pane-1", "status": "blocked", "host": "local"})
+            event_queue.put_nowait({"type": "operation_event", "operation": operation})
+            pusher = asyncio.create_task(herdr_relay.event_push())
+            try:
+                for _ in range(20):
+                    if frames:
+                        break
+                    await asyncio.sleep(0.01)
+                self.assertEqual("operation", frames[0]["type"])
+            finally:
+                release.set()
+                pusher.cancel()
+                await asyncio.gather(pusher, return_exceptions=True)
+
+        original_queue = herdr_relay.state.event_queue
+        try:
+            with (
+                patch.object(herdr_relay.state, "event_queue", asyncio.Queue()),
+                patch.object(herdr_relay.herdr, "read_pane", blocking_read),
+                patch.object(herdr_relay.transport, "broadcast", AsyncMock(side_effect=lambda frame: frames.append(frame))),
+                patch.dict(herdr_relay.state.pane_remote_map, {}, clear=True),
+            ):
+                # The test coroutine uses the patched queue through state.
+                asyncio.run(run())
+        finally:
+            herdr_relay.state.event_queue = original_queue
