@@ -15,6 +15,10 @@ pane_activity = {}      # pane_id -> epoch milliseconds of the last status/outpu
 pane_revisions = {}     # pane_id -> output revision, or None when unavailable
 pane_attention_states = {}  # pane_id -> last emitted attention state
 event_queue = asyncio.Queue()
+# Set by the asyncio server before any durable-operation worker can emit. A
+# worker thread must schedule queue writes onto the loop; asyncio queues are
+# intentionally not thread-safe.
+event_loop = None
 pane_remote_map = {}
 session_target_map = {}
 pane_session_refs = {}  # (remote, pane_id) -> {kind, value}; never sent to clients

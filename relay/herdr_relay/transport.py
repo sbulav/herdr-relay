@@ -10,7 +10,7 @@ import json
 
 from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
 
-from . import config, herdr, panes, presets, projects, protocol, push, state, transcripts
+from . import catalogs, config, herdr, operations, panes, presets, projects, protocol, push, state, transcripts
 from .config import log
 
 
@@ -37,6 +37,18 @@ async def poll_loop():
         except Exception:
             log.exception("poll cycle failed; retrying")
         await asyncio.sleep(config.POLL_INTERVAL)
+
+
+async def catalog_loop():
+    """Refresh model catalogs at most once per day and fan out the result."""
+    while True:
+        try:
+            if catalogs.needs_refresh():
+                frame = await asyncio.to_thread(catalogs.refresh_all)
+                await broadcast({"type": "catalogs", **frame})
+        except Exception:
+            log.exception("catalog refresh failed; retaining last-successful catalogs")
+        await asyncio.sleep(60)
 
 
 async def _poll_once():
@@ -90,6 +102,8 @@ async def _poll_once():
         "hosts": hosts,
         "projects": project_frame["projects"],
         "project_roots": project_frame["roots"],
+        "operations": operations.public_active(),
+        **catalogs.public_frame(),
     })
     # Read every newly blocked pane off the event loop, and all of them at once:
     # `herdr pane read` shells out (over ssh for remote hosts) with a 15s timeout,
@@ -171,6 +185,9 @@ async def _poll_once():
 async def event_push():
     while True:
         event = await state.event_queue.get()
+        if event.get("type") == "operation_event":
+            await broadcast({"type": "operation", "operation": event.get("operation")})
+            continue
         pane_id = event.get("pane_id", "")
         status = event.get("status", "")
         host = event.get("host", "local")

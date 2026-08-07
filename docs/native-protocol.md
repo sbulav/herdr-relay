@@ -223,11 +223,45 @@ The relay removes each preset host's private `target` field before broadcast.
     "active_agent_count": 1,
     "capabilities": {"wake": false, "shutdown": false},
     "harnesses": []
-  }]
+  }],
+  "operations": []
 }
 ```
 
 This frame is fan-out: it is broadcast to every connected WebSocket.
+
+### `catalogs`
+
+The relay discovers configured harnesses independently of host polling. A
+complete `agents` frame includes `catalogs` and `catalog_status`; a manual
+`catalog_refresh` also produces this point-in-time frame. Catalog rows are
+keyed by `host_id` plus `harness_id`, and contain only public display data,
+exact model IDs, and friendly labels.
+
+Each catalog includes `available`, `disabled`, `version`, `models`, `stale`,
+`last_success_at`, `age_ms`, and a safe `error`. The `models` list always
+contains the no-argument `default` choice for a healthy harness. OpenCode and
+Codex use fixed machine-readable model adapters; Claude uses configured aliases
+until it exposes stable discovery. Catalogs are refreshed at relay startup, at
+most once every 24 hours, and by the typed `catalog_refresh` command. A
+transient failure retains the last-successful models and marks the row stale;
+removed, disabled, or permanently missing harnesses have no selectable models.
+
+```json
+{
+  "type": "catalogs",
+  "catalog_status": {"state": "success", "last_refresh_at": 1700000000000, "next_refresh_at": 1700086400000, "error": null},
+  "catalogs": [{
+    "host_id": "buildbox", "harness_id": "opencode", "display_name": "OpenCode",
+    "available": true, "disabled": false, "version": "1.2.3",
+    "models": [{"id": "default", "label": "Default", "available": true}, {"id": "openai/gpt-5", "label": "GPT-5", "available": true}],
+    "stale": false, "last_success_at": 1700000000000, "age_ms": 0, "error": null
+  }]
+}
+```
+
+The manual request is `{"type":"catalog_refresh","request_id":"req-catalog-1","host_id":"buildbox"}`;
+`host_id` is optional and scopes discovery to one configured host.
 
 ### `projects`
 
@@ -261,6 +295,42 @@ The `agents` frame carries these same two arrays when available:
 `projects` is also sent after a project mutation and as the point-to-point result
 of `project_list`. Root labels and opaque IDs are public; configured absolute root
 paths, SSH targets, wrappers, and power data are not included in `project_roots`.
+
+### `operations` and `operation`
+
+`start_session` is owned by the relay after acknowledgement. The `operations`
+array in each `agents` snapshot contains every non-terminal start operation, so a
+new client or a client reconnecting after a relay restart can restore queued,
+checking, and starting work. The relay also broadcasts an `operation` frame for
+each transition, including the terminal `started`, `failed`, or `cancelled`
+state. A terminal operation is retained in SQLite for request-id replay but is
+omitted from later active snapshots.
+
+Operation records contain only public IDs, the bounded harness/model selection,
+the deterministic Herdr agent name, a stage, an optional session ID, and a
+sanitized error. They never contain SSH targets, command output, or filesystem
+paths.
+
+```json
+{
+  "type": "operation",
+  "operation": {
+    "operation_id": "op-1",
+    "request_id": "req-start-1",
+    "host_id": "buildbox",
+    "project_id": "0123456789abcdef0123456789abcdef",
+    "harness": "claude",
+    "model": "default",
+    "agent_name": "herdr-mobile-op-1",
+    "stage": "starting",
+    "session_id": null,
+    "error_code": null,
+    "error_message": null,
+    "created_at": 1700000000000,
+    "updated_at": 1700000000100
+  }
+}
+```
 
 ### `folder_entries`
 
@@ -372,7 +442,7 @@ subscribed to that `pane_id`, and only when the transcript signature changes.
 
 ### `command_ack`
 
-Acknowledges a successful `launch_session`, `terminate_session`, `wake_host`,
+Acknowledges a successful `launch_session`, `start_session`, `terminate_session`, `wake_host`,
 `shutdown_host`, `project_create`, `project_save`, `project_rename`, `project_remove`, or
 `project_restore` request. The frame is point-to-point. Responses are cached
 by non-empty `request_id`; repeating a cached ID returns the cached frame before
@@ -395,6 +465,30 @@ Launch acknowledgement:
   "type": "command_ack",
   "request_id": "req-launch-17",
   "result": {"host_id": "buildbox"}
+}
+```
+
+Start acknowledgement:
+
+```json
+{
+  "type": "command_ack",
+  "request_id": "req-start-1",
+  "result": {"operation": {
+    "operation_id": "op-1",
+    "request_id": "req-start-1",
+    "host_id": "buildbox",
+    "project_id": "0123456789abcdef0123456789abcdef",
+    "harness": "claude",
+    "model": "default",
+    "agent_name": "herdr-mobile-op-1",
+    "stage": "queued",
+    "session_id": null,
+    "error_code": null,
+    "error_message": null,
+    "created_at": 1700000000000,
+    "updated_at": 1700000000000
+  }}
 }
 ```
 
@@ -556,6 +650,31 @@ folder through the host helper immediately before starting the agent and updates
 {
   "type": "launch_session",
   "request_id": "req-project-launch-1",
+  "project_id": "0123456789abcdef0123456789abcdef",
+  "host_id": "buildbox",
+  "harness": "claude",
+  "model": "default"
+}
+```
+
+### `start_session`
+
+Starts a saved project as a durable, idempotent operation. Unlike the legacy
+project form of `launch_session`, this command accepts the typed host, project,
+harness, and model selection directly. `model` is optional and defaults to
+`default`; clients send model IDs, never preset IDs or command text.
+
+The request is acknowledged as soon as the operation is persisted. The relay
+then checks for the operation's deterministic Herdr name before starting a
+client. A repeated `request_id` returns the same operation. On relay restart,
+non-terminal rows are resumed and the same name is checked before another start
+is attempted. The operation becomes `started` only after the named pane is
+observable.
+
+```json
+{
+  "type": "start_session",
+  "request_id": "req-start-1",
   "project_id": "0123456789abcdef0123456789abcdef",
   "host_id": "buildbox",
   "harness": "claude",
@@ -948,6 +1067,11 @@ These are all code and message pairs produced through `command_error`.
 | `HOST_NOT_ALLOWED` | `Preset is not allowed on this host` | `launch_session.host_id` is not in the selected preset. |
 | `PROJECT_NOT_ALLOWED` | `Preset cwd is outside the configured project roots` | `launch_session` selects a configured host but its preset cwd is outside that host's private project-root allowlist. |
 | `LAUNCH_FAILED` | `Herdr did not start the client` | The `herdr agent start` process fails or exits unsuccessfully. |
+| `CONFIGURATION_CHANGED` | `The selected project configuration is no longer available` | A durable start no longer has its saved host, root, folder, harness, or model configuration. |
+| `HOST_OFFLINE` | `The selected host is offline` | A durable start cannot reach its configured host. |
+| `HERDR_UNAVAILABLE` | `Herdr is unavailable on the selected host` | SSH responds but the configured Herdr command does not return a usable pane snapshot. |
+| `AGENT_NOT_OBSERVABLE` | `Herdr did not expose a recoverable agent identity` | The start command returned, but the deterministic agent name was not visible before readiness timed out. |
+| `DUPLICATE_AGENT` | `The host reported more than one matching agent` | More than one pane exposed the operation's deterministic name. |
 | `CONFIRMATION_REQUIRED` | `confirmation_nonce is required` | `terminate_session` or `shutdown_host` lacks a non-empty string nonce. |
 | `STALE_SESSION` | `Session is no longer active` | `terminate_session.session_id` is absent from the latest active session map. |
 | `TERMINATE_FAILED` | `Herdr did not terminate the client` | The `herdr pane close` process fails or exits unsuccessfully. |

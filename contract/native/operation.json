@@ -1,0 +1,18 @@
+{
+  "operation": {
+    "agent_name": "herdr-mobile-op-1",
+    "created_at": 1700000000000,
+    "error_code": null,
+    "error_message": null,
+    "harness": "claude",
+    "host_id": "buildbox",
+    "model": "default",
+    "operation_id": "op-1",
+    "project_id": "0123456789abcdef0123456789abcdef",
+    "request_id": "req-start-1",
+    "session_id": null,
+    "stage": "starting",
+    "updated_at": 1700000000100
+  },
+  "type": "operation"
+}

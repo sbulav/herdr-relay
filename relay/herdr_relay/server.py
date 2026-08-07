@@ -12,7 +12,7 @@ except ImportError:
     from websockets.server import serve
 from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
 
-from . import config, herdr, lifecycle, panes, projects, protocol, push, state, transcripts, transport
+from . import catalogs, config, herdr, lifecycle, panes, projects, protocol, push, state, transcripts, transport
 from .audit import audit
 from .config import log
 
@@ -210,8 +210,33 @@ async def handle_client(ws):
                 if msg_type in {"project_create", "project_save", "project_rename", "project_remove", "project_restore"} and response.get("type") == "command_ack":
                     audit(msg_type, ip, device, "", f"project_id={msg.get('project_id', '')}")
                     await transport.broadcast(projects.public_snapshot())
+            elif msg_type == "catalog_refresh":
+                if not isinstance(request_id, str) or not projects.REQUEST_ID_RE.fullmatch(request_id):
+                    response = protocol.command_error(request_id, "INVALID_REQUEST", "request_id is required")
+                else:
+                    requested_host = msg.get("host_id")
+                    if requested_host is not None and (
+                        not isinstance(requested_host, str)
+                        or not projects.HOST_ID_RE.fullmatch(requested_host)
+                        or requested_host not in {host["id"] for host in herdr.configured_host_records()}
+                    ):
+                        response = protocol.command_error(request_id, "UNKNOWN_HOST", "Unknown host")
+                    else:
+                        response = {
+                            "type": "command_ack",
+                            "request_id": request_id,
+                            "result": {"catalog_status": (await asyncio.to_thread(catalogs.refresh_all, host_id=requested_host))["catalog_status"]},
+                        }
+                _remember_response(request_results, request_id, response)
+                await ws.send(json.dumps(response))
+                if response.get("type") == "command_ack":
+                    await transport.broadcast({"type": "catalogs", **catalogs.public_frame()})
             elif msg_type == "launch_session":
                 response = await asyncio.to_thread(lifecycle.launch_session, msg)
+                _remember_response(request_results, request_id, response)
+                await ws.send(json.dumps(response))
+            elif msg_type == "start_session":
+                response = await asyncio.to_thread(lifecycle.start_session, msg)
                 _remember_response(request_results, request_id, response)
                 await ws.send(json.dumps(response))
             elif msg_type == "terminate_session":
@@ -368,14 +393,18 @@ def _remember_response(request_results, request_id, response):
 
 async def main():
     require_auth_token()
+    loop = asyncio.get_running_loop()
+    state.event_loop = loop
     # Reconcile before accepting clients so an orphaned bookmark is never briefly
     # presented as available after a host configuration change.
     await asyncio.to_thread(projects.public_snapshot)
-    loop = asyncio.get_running_loop()
+    await asyncio.to_thread(catalogs.refresh_all)
+    await asyncio.to_thread(lifecycle.recover_start_operations)
     server = await serve(handle_client, "0.0.0.0", config.WS_PORT, process_request=process_request)
     background_tasks = [
         asyncio.create_task(transport.poll_loop(), name="poll-loop"),
         asyncio.create_task(transport.event_push(), name="event-push"),
+        asyncio.create_task(transport.catalog_loop(), name="catalog-loop"),
     ]
     host_ids = [host["id"] for host in herdr.configured_host_records()]
     log.info("herdr-remote relay on :%d (WebSocket + HTTP)", config.WS_PORT)

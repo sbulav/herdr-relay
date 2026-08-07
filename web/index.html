@@ -93,6 +93,10 @@ body { font-family: -apple-system, system-ui, -webkit-system-font, sans-serif; b
 .create-folder input { width: 100%; padding: 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 0.85rem; }
 .create-folder input[aria-invalid="true"] { border-color: var(--red); }
 .create-folder-status { min-height: 1.2em; margin-top: 6px; color: var(--red); font-size: 0.75rem; }
+.operation-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; }
+.operation-card.failed { border-color: var(--red); }
+.operation-card .operation-stage { color: var(--muted); font-size: 0.75rem; margin-top: 4px; }
+.operation-card .operation-error { color: var(--red); font-size: 0.75rem; margin-top: 4px; }
 .project-warning { color: var(--orange); font-size: 0.75rem; margin-top: 4px; }
 .new-session-button { width: 100%; margin: 4px 0 12px; }
 .section-header { font-size: 0.7rem; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); margin: 16px 0 8px; display: flex; align-items: center; gap: 5px; }
@@ -208,6 +212,11 @@ body { font-family: -apple-system, system-ui, -webkit-system-font, sans-serif; b
     <label>Status</label>
     <div id="settingsStatus" style="font-size:0.75rem"></div>
   </div>
+  <div class="setting-group">
+    <label>Model catalogs</label>
+    <div id="catalogStatus" style="font-size:0.75rem"></div>
+    <button onclick="refreshCatalogs()">Refresh model catalogs</button>
+  </div>
 </div>
 
 <div class="view" id="agentListView">
@@ -316,7 +325,7 @@ body { font-family: -apple-system, system-ui, -webkit-system-font, sans-serif; b
 
 <script>
 
-let ws = null, agents = [], hosts = [], presets = [], projects = [], projectRoots = [], activePane = null, refreshInterval = null, userScrolledUp = false;
+let ws = null, agents = [], hosts = [], presets = [], projects = [], projectRoots = [], catalogs = [], catalogStatus = {}, operations = [], activePane = null, refreshInterval = null, userScrolledUp = false;
 let timeline = [], prevStatuses = {};
 let activeWorkspace = null;
 let activeTab = null;
@@ -324,6 +333,9 @@ let newSessionOpen = false;
 let selectedHostId = localStorage.getItem('herdr_last_host') || '';
 let selectedProjectId = localStorage.getItem('herdr_last_project') || '';
 let projectQuery = '';
+let modelQuery = '';
+let selectedHarnessId = '';
+let selectedModelId = 'default';
 let browserRootId = '';
 let browserPath = [];
 let folderListing = null;
@@ -362,6 +374,7 @@ function toggleSettings() {
     document.getElementById('settingsStatus').innerHTML = ws && ws.readyState === 1
       ? `<span style="color:var(--green)">● Connected</span> · ${agents.length} agents`
       : `<span style="color:var(--red)">● Disconnected</span>`;
+    renderCatalogStatus();
   }
 }
 
@@ -457,6 +470,9 @@ function handleMessage(msg) {
     if (Array.isArray(msg.presets)) presets = msg.presets;
     if (Array.isArray(msg.projects)) projects = msg.projects;
     if (Array.isArray(msg.project_roots)) projectRoots = msg.project_roots;
+    if (Array.isArray(msg.catalogs)) catalogs = msg.catalogs;
+    if (msg.catalog_status) catalogStatus = msg.catalog_status;
+    if (Array.isArray(msg.operations)) operations = msg.operations;
     // Track timeline on status changes; preserve prompt/options across polls
     const prevById = Object.fromEntries(agents.map(a => [a.pane_id, a]));
     for (const a of msg.agents) {
@@ -478,10 +494,26 @@ function handleMessage(msg) {
     if (Array.isArray(msg.projects)) projects = msg.projects;
     if (Array.isArray(msg.roots)) projectRoots = msg.roots;
     render();
+  } else if (msg.type === 'catalogs') {
+    if (Array.isArray(msg.catalogs)) catalogs = msg.catalogs;
+    if (msg.catalog_status) catalogStatus = msg.catalog_status;
+    renderCatalogStatus();
+    if (newSessionOpen) renderComposer();
   } else if (msg.type === 'folder_entries') {
     folderListing = msg;
     browserRootId = msg.root_id || browserRootId;
     browserPath = Array.isArray(msg.path) ? msg.path : [];
+    if (newSessionOpen) renderComposer();
+  } else if (msg.type === 'operation' || msg.type === 'start_operation') {
+    const operation = msg.operation || msg;
+    if (operation.operation_id) {
+      operations = operations.filter(item => item.operation_id !== operation.operation_id).concat([operation]);
+      render();
+      if (newSessionOpen) renderComposer();
+    }
+  } else if (msg.type === 'operations') {
+    if (Array.isArray(msg.operations)) operations = msg.operations;
+    render();
     if (newSessionOpen) renderComposer();
   } else if (msg.type === 'command_ack') {
     if (msg.request_id && msg.request_id === createRequestId) {
@@ -509,6 +541,11 @@ function handleMessage(msg) {
     }
     const hostId = msg.result && msg.result.host_id;
     const launchAccepted = Boolean(msg.request_id && pendingLaunchRequests.delete(msg.request_id));
+    const operation = msg.result && msg.result.operation;
+    if (operation && operation.operation_id) {
+      operations = operations.filter(item => item.operation_id !== operation.operation_id).concat([operation]);
+      render();
+    }
     if (hostId && launchAccepted) {
       selectedHostId = hostId;
       localStorage.setItem('herdr_last_host', hostId);
@@ -549,6 +586,24 @@ function handleMessage(msg) {
       el.scrollTop = el.scrollHeight;
     }
   }
+}
+
+function renderCatalogStatus() {
+  const el = document.getElementById('catalogStatus');
+  if (!el) return;
+  if (catalogStatus.state === 'error') {
+    el.innerHTML = `<span style="color:var(--orange)">${escapeHtml(catalogStatus.error || 'Refresh failed; cached models may be stale')}</span>`;
+  } else if (catalogStatus.last_refresh_at) {
+    const age = Math.max(0, Math.floor((Date.now() - catalogStatus.last_refresh_at) / 3600000));
+    el.innerHTML = `<span style="color:var(--green)">Ready</span> · ${age ? `${age}h ago` : 'just now'} · ${catalogs.length} harness catalogs`;
+  } else {
+    el.textContent = 'Waiting for relay discovery…';
+  }
+}
+
+function refreshCatalogs() {
+  if (!ws || ws.readyState !== 1) return;
+  ws.send(JSON.stringify({type: 'catalog_refresh', request_id: requestId()}));
 }
 
 function render() {
@@ -628,7 +683,26 @@ function renderHostSummary() {
   if (!el) return;
   const button = `<button class="new-session-button primary" onclick="openNewSession()" ${ws && ws.readyState === 1 ? '' : 'disabled'}>New session</button>`;
   const cards = hosts.length ? hosts.map(host => hostCard(host)).join('') : '<p class="empty" style="padding:16px 0">Waiting for configured hosts…</p>';
-  el.innerHTML = `<h2>Hosts</h2>${button}${cards}`;
+  el.innerHTML = `<h2>Hosts</h2>${renderOperationCards()}${button}${cards}`;
+}
+
+function operationStageLabel(stage) {
+  return ({queued:'Queued', checking:'Checking host', starting:'Starting agent', started:'Started', failed:'Failed', cancelled:'Cancelled'})[stage] || String(stage || 'Unknown').replaceAll('_', ' ');
+}
+
+function renderOperationCards() {
+  if (!operations.length) return '';
+  return `<div class="section-header">Start operations</div>` + operations.map(operation => {
+    const project = projects.find(item => item.project_id === operation.project_id);
+    const failed = operation.stage === 'failed' || operation.stage === 'cancelled';
+    const recovery = operation.stage !== 'started' && (!ws || ws.readyState !== 1);
+    return `<div class="operation-card${failed ? ' failed' : ''}" role="status">
+      <strong>${escapeHtml(project?.label || `Project ${String(operation.project_id || '').slice(0, 8)}`)}</strong>
+      <div class="operation-stage">${escapeHtml(operationStageLabel(operation.stage))} · ${escapeHtml(operation.harness || '')} · ${escapeHtml(operation.model || 'default')}</div>
+      ${recovery ? '<div class="operation-stage">Recovering after relay reconnect…</div>' : ''}
+      ${operation.error_message ? `<div class="operation-error">${escapeHtml(operation.error_message)}</div>` : ''}
+    </div>`;
+  }).join('');
 }
 
 function openNewSession() {
@@ -648,6 +722,9 @@ function closeNewSession() {
 
 function selectComposerHost(hostId) {
   selectedHostId = hostId;
+  selectedHarnessId = '';
+  selectedModelId = 'default';
+  modelQuery = '';
   renderComposer();
 }
 
@@ -659,7 +736,7 @@ function renderComposer() {
   const body = document.getElementById('composerBody');
   if (!body) return;
   selectedHostId = chooseHost();
-  let html = `<div class="composer-section"><label>Host</label>`;
+  let html = renderOperationCards() + `<div class="composer-section"><label>Host</label>`;
   if (!hosts.length) {
     html += '<p class="empty" style="padding:16px 0">The relay has not reported any hosts yet.</p>';
   } else {
@@ -705,12 +782,13 @@ function renderProjectComposer() {
   if (selected && hosts.some(host => host.host_id === selected.host_id)) selectedHostId = selected.host_id;
   const host = hosts.find(item => item.host_id === selectedHostId);
   const roots = projectRootsForHost(selectedHostId);
-  const harnesses = host?.harnesses || [];
+  const harnesses = catalogs.filter(item => item.host_id === selectedHostId);
+  const fallbackHarnesses = host?.harnesses || [];
   const visibleProjects = projects.filter(project => {
     const query = projectQuery.trim().toLowerCase();
     return !query || `${project.label} ${project.canonical_path || project.path}`.toLowerCase().includes(query);
   });
-  let html = `<div class="composer-section"><label>Host</label>`;
+  let html = renderOperationCards() + `<div class="composer-section"><label>Host</label>`;
   html += hosts.length ? hosts.map(item => hostCard(item, true)).join('') : '<p class="empty" style="padding:16px 0">Waiting for configured hosts…</p>';
   html += '</div>';
   html += `<div class="composer-section"><label for="projectSearch">Saved projects</label><input class="project-search" id="projectSearch" value="${escapeHtml(projectQuery)}" placeholder="Search labels or paths" oninput="setProjectQuery(this.value)" />`;
@@ -765,13 +843,27 @@ function renderProjectComposer() {
     html += '<p class="host-detail">This host has no configured project roots.</p>';
   }
   const chosen = projects.find(project => project.project_id === selectedProjectId);
-  const ready = chosen && !chosen.archived && chosen.available && chosen.host_id === selectedHostId && readyHosts().some(item => item.host_id === selectedHostId);
-  html += `<div class="composer-section"><label>Agent harness</label><select id="projectHarness">${harnesses.length ? harnesses.map(item => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.display_name || item.id)}</option>`).join('') : '<option value="claude">Claude</option>'}</select></div>`;
-  html += `<div class="composer-section"><label for="projectModel">Model</label><input class="project-search" id="projectModel" value="default" placeholder="default" /></div>`;
+  const selectedCatalog = harnesses.find(item => item.harness_id === selectedHarnessId) || harnesses[0];
+  selectedHarnessId = selectedCatalog?.harness_id || selectedHarnessId || fallbackHarnesses[0]?.id || 'claude';
+  const models = (selectedCatalog?.models || [{id: 'default', label: 'Default', available: true}]).filter(model => model.available && (!modelQuery || `${model.id} ${model.label}`.toLowerCase().includes(modelQuery.toLowerCase())));
+  if (!models.some(model => model.id === selectedModelId)) selectedModelId = selectedCatalog?.models?.find(model => model.available)?.id || 'default';
+  const catalogReady = !fallbackHarnesses.length || Boolean(selectedCatalog?.available && !selectedCatalog.disabled);
+  const ready = chosen && !chosen.archived && chosen.available && chosen.host_id === selectedHostId && readyHosts().some(item => item.host_id === selectedHostId) && catalogReady;
+  html += `<div class="composer-section"><label>Agent harness</label><select id="projectHarness" onchange="selectHarness(this.value)">${harnesses.length ? harnesses.map(item => `<option value="${escapeHtml(item.harness_id)}" ${item.harness_id === selectedHarnessId ? 'selected' : ''} ${item.disabled || !item.available ? 'disabled' : ''}>${escapeHtml(item.display_name || item.harness_id)}${item.version ? ` · ${escapeHtml(item.version)}` : ''}${item.disabled ? ' · unavailable' : ''}</option>`).join('') : fallbackHarnesses.map(item => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.display_name || item.id)}</option>`).join('') || '<option value="claude">Claude</option>'}</select>`;
+  if (selectedCatalog?.stale) html += `<div class="host-detail">Cached model list${selectedCatalog.age_ms ? ` · ${Math.floor(selectedCatalog.age_ms / 3600000)}h old` : ''}${selectedCatalog.error ? ` · ${escapeHtml(selectedCatalog.error)}` : ''}</div>`;
+  html += `</div><div class="composer-section"><label for="modelSearch">Model</label><input class="project-search" id="modelSearch" value="${escapeHtml(modelQuery)}" placeholder="Search model IDs or names" oninput="setModelQuery(this.value)" /><select id="projectModel" onchange="selectedModelId=this.value">${models.map(model => `<option value="${escapeHtml(model.id)}" ${model.id === selectedModelId ? 'selected' : ''}>${escapeHtml(model.label)}${model.label === model.id ? '' : ` · ${escapeHtml(model.id)}`}</option>`).join('')}</select></div>`;
   const summary = chosen ? `${chosen.label} · ${chosen.canonical_path || chosen.path} on ${host?.display_name || selectedHostId}` : 'Select an available saved project';
   html += `<div class="composer-footer"><div class="composer-summary">${escapeHtml(summary)}</div><button class="primary" onclick="startProject()" ${ready ? '' : 'disabled'}>Start session</button></div>`;
   body.innerHTML = html;
 }
+
+function selectHarness(harnessId) {
+  selectedHarnessId = harnessId;
+  selectedModelId = 'default';
+  modelQuery = '';
+  renderProjectComposer();
+}
+function setModelQuery(value) { modelQuery = value; renderProjectComposer(); setTimeout(() => document.getElementById('modelSearch')?.focus(), 0); }
 
 function setProjectQuery(value) { projectQuery = value; renderProjectComposer(); }
 function selectProject(projectId) {
@@ -898,7 +990,10 @@ function startProject() {
   if (!project || !project.available || project.archived || !ws || ws.readyState !== 1) return;
   const id = requestId();
   pendingLaunchRequests.add(id);
-  ws.send(JSON.stringify({type: 'launch_session', request_id: id, project_id: project.project_id, host_id: selectedHostId, harness: document.getElementById('projectHarness')?.value || 'claude', model: document.getElementById('projectModel')?.value.trim() || 'default'}));
+  const model = document.getElementById('projectModel')?.value || 'default';
+  const payload = {type: 'start_session', request_id: id, project_id: project.project_id, host_id: selectedHostId, harness: document.getElementById('projectHarness')?.value || 'claude'};
+  if (model !== 'default') payload.model = model;
+  ws.send(JSON.stringify(payload));
 }
 
 function requestId() {

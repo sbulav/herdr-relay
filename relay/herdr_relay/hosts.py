@@ -93,7 +93,43 @@ def load_hosts(path=None):
             label = harness.get("display_name", harness_id)
             if not isinstance(label, str) or not label.strip():
                 raise ValueError(f"invalid harness display name for host {host_id}")
-            normalized_harnesses.append({"id": harness_id, "display_name": label})
+            enabled = harness.get("enabled", True)
+            if not isinstance(enabled, bool):
+                raise ValueError(f"harness enabled must be boolean for host {host_id}")
+            command = harness.get("command", [harness_id])
+            if isinstance(command, str):
+                command = [command]
+            if not isinstance(command, list) or any(not isinstance(part, str) or not part for part in command):
+                raise ValueError(f"invalid harness command for host {host_id}")
+            aliases = harness.get("model_aliases", harness.get("aliases", []))
+            if not isinstance(aliases, list):
+                raise ValueError(f"model_aliases must be a list for host {host_id}")
+            normalized_aliases = []
+            alias_ids = set()
+            for alias in aliases:
+                if isinstance(alias, str):
+                    alias = {"id": alias, "display_name": alias}
+                if not isinstance(alias, dict):
+                    raise ValueError(f"invalid model alias for host {host_id}")
+                alias_id = alias.get("id")
+                alias_label = alias.get("display_name", alias_id)
+                if (
+                    not isinstance(alias_id, str)
+                    or not HOST_ID_RE.fullmatch(alias_id)
+                    or alias_id in alias_ids
+                    or not isinstance(alias_label, str)
+                    or not alias_label.strip()
+                ):
+                    raise ValueError(f"invalid model alias for host {host_id}")
+                alias_ids.add(alias_id)
+                normalized_aliases.append({"id": alias_id, "display_name": alias_label.strip()})
+            normalized_harnesses.append({
+                "id": harness_id,
+                "display_name": label.strip(),
+                "enabled": enabled,
+                "command": list(command),
+                "model_aliases": normalized_aliases,
+            })
 
         power = raw.get("power", {})
         if not isinstance(power, dict):
@@ -208,7 +244,13 @@ def public_host(host, probe):
         "herdr_ready": herdr_ready,
         "active_agent_count": count,
         "capabilities": power_capabilities(host),
-        "harnesses": list(host.get("harnesses", [])),
+        # Harness commands and configured aliases are server-side inputs.  The
+        # catalog frame carries only the public display identity and discovery
+        # result for each harness.
+        "harnesses": [
+            {"id": harness["id"], "display_name": harness["display_name"]}
+            for harness in host.get("harnesses", [])
+        ],
         **({"message": message} if message else {}),
     }
 

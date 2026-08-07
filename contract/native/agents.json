@@ -15,6 +15,14 @@
       "workspace_id": "workspace-2"
     }
   ],
+  "catalog_status": {
+    "age_ms": null,
+    "error": null,
+    "last_refresh_at": null,
+    "next_refresh_at": null,
+    "state": "idle"
+  },
+  "catalogs": [],
   "hosts": [
     {
       "active_agent_count": 1,
@@ -31,6 +39,7 @@
       "status": "ready"
     }
   ],
+  "operations": [],
   "presets": [
     {
       "agent": "claude",

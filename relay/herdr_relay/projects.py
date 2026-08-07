@@ -55,6 +55,53 @@ MIGRATIONS = {
             ON project_requests(status, updated_at)
         """,
     ),
+    3: (
+        """
+        CREATE TABLE IF NOT EXISTS model_catalogs (
+            host_id TEXT NOT NULL,
+            harness_id TEXT NOT NULL,
+            display_name TEXT NOT NULL,
+            version TEXT,
+            models_json TEXT NOT NULL DEFAULT '[]',
+            available INTEGER NOT NULL DEFAULT 0,
+            stale INTEGER NOT NULL DEFAULT 1,
+            disabled INTEGER NOT NULL DEFAULT 0,
+            error TEXT,
+            last_success_at INTEGER,
+            updated_at INTEGER NOT NULL,
+            PRIMARY KEY(host_id, harness_id)
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS catalog_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+        """,
+    ),
+    4: (
+        """
+        CREATE TABLE start_operations (
+            operation_id TEXT PRIMARY KEY,
+            request_id TEXT NOT NULL UNIQUE,
+            host_id TEXT NOT NULL,
+            project_id TEXT NOT NULL REFERENCES projects(project_id),
+            harness TEXT NOT NULL,
+            model TEXT NOT NULL,
+            agent_name TEXT NOT NULL UNIQUE,
+            stage TEXT NOT NULL CHECK(stage IN ('queued', 'checking', 'starting', 'started', 'failed', 'cancelled')),
+            session_id TEXT,
+            error_code TEXT,
+            error_message TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )
+        """,
+        """
+        CREATE INDEX start_operations_active_idx
+            ON start_operations(stage, updated_at)
+        """,
+    ),
 }
 
 
