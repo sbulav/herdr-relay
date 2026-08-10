@@ -7,7 +7,9 @@ stated once.
 import asyncio
 import json
 import os
+import signal
 import subprocess
+import time
 
 from . import config, hosts, panes, presets, state
 
@@ -20,16 +22,71 @@ SSH_OPTIONS = [
 ]
 
 
-def run_ssh_checked(remote, *args, host_id=None, timeout=5):
+def _terminate_process(process):
+    """Stop a process group so cancelling SSH also stops its remote helper."""
+    try:
+        os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+    except (OSError, ProcessLookupError):
+        try:
+            process.terminate()
+        except OSError:
+            pass
+    try:
+        process.wait(timeout=1)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+        except (OSError, ProcessLookupError):
+            try:
+                process.kill()
+            except OSError:
+                pass
+        process.wait()
+
+
+def run_process_checked(command, timeout=5, cancel_event=None):
+    """Run a fixed command, optionally watching a durable-operation cancel event."""
+    if cancel_event is None:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
+        output = result.stdout.strip()
+        if result.returncode != 0 and not output:
+            output = result.stderr.strip()
+        return result.returncode == 0, output
+
+    try:
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+    except Exception:
+        return False, ""
+
+    deadline = time.monotonic() + timeout
+    while process.poll() is None:
+        if cancel_event.is_set() or time.monotonic() >= deadline:
+            _terminate_process(process)
+            return False, ""
+        cancel_event.wait(0.05)
+
+    stdout, stderr = process.communicate()
+    output = (stdout or "").strip()
+    if process.returncode != 0 and not output:
+        output = (stderr or "").strip()
+    return process.returncode == 0, output
+
+
+def run_ssh_checked(remote, *args, host_id=None, timeout=5, cancel_event=None):
     """Probe or invoke a fixed SSH command without logging the login target."""
     try:
-        result = subprocess.run(
+        success, _output = run_process_checked(
             ["ssh", *SSH_OPTIONS, remote, *args],
-            capture_output=True,
-            text=True,
             timeout=timeout,
+            cancel_event=cancel_event,
         )
-        return result.returncode == 0
+        return success
     except Exception:
         # The target is private routing state.  Logs identify the configured host
         # only, so an operator can diagnose a failure without leaking a login.
@@ -37,18 +94,14 @@ def run_ssh_checked(remote, *args, host_id=None, timeout=5):
         return False
 
 
-def run_herdr_checked(*args, remote=None, host_id=None, command=None, timeout=15):
+def run_herdr_checked(*args, remote=None, host_id=None, command=None, timeout=15, cancel_event=None):
     try:
         command = list(command or [config.HERDR])
         if remote:
             cmd = ["ssh", *SSH_OPTIONS, remote, *command, *args]
         else:
             cmd = [*command, *args]
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-        output = r.stdout.strip()
-        if r.returncode != 0 and not output:
-            output = r.stderr.strip()
-        return r.returncode == 0, output
+        return run_process_checked(cmd, timeout=timeout, cancel_event=cancel_event)
     except Exception:
         if remote:
             print(f"herdr poll failed for host {host_id or 'configured host'}", flush=True)
@@ -59,24 +112,44 @@ def run_herdr(*args, remote=None):
     return run_herdr_checked(*args, remote=remote)[1]
 
 
-def get_agents_from_host(remote=None, host_id=None, host=None):
+def get_agents_from_host(remote=None, host_id=None, host=None, cancel_event=None, timeout=None):
     host = host or {
         "id": host_id or remote or "local",
         "ssh": {"target": remote} if remote else {},
         "herdr": {},
-        "readiness_timeout_seconds": 15,
+        "readiness_timeout_seconds": 180,
     }
     host_id = host["id"]
     remote = hosts.ssh_target(host)
-    if remote and not run_ssh_checked(remote, "true", host_id=host_id, timeout=host["readiness_timeout_seconds"]):
-        return [], {"ssh_reachable": False, "herdr_ready": False, "active_agent_count": None}
+    budget = host["readiness_timeout_seconds"] if timeout is None else timeout
+    deadline = time.monotonic() + max(float(budget), 0.0)
+
+    def remaining():
+        return deadline - time.monotonic()
+
+    if remote:
+        if remaining() <= 0:
+            return [], {"ssh_reachable": False, "herdr_ready": False, "active_agent_count": None}
+        if not run_ssh_checked(
+            remote,
+            "true",
+            host_id=host_id,
+            timeout=max(remaining(), 0.01),
+            cancel_event=cancel_event,
+        ):
+            return [], {"ssh_reachable": False, "herdr_ready": False, "active_agent_count": None}
+
+    command_timeout = remaining()
+    if command_timeout <= 0:
+        return [], {"ssh_reachable": True, "herdr_ready": False, "active_agent_count": None}
 
     ready, raw = run_herdr_checked(
         "pane", "list",
         remote=remote,
         host_id=host_id,
         command=hosts.herdr_command(host),
-        timeout=host["readiness_timeout_seconds"],
+        timeout=command_timeout,
+        cancel_event=cancel_event,
     )
     host_label = host_id
     probe = {
@@ -161,7 +234,7 @@ def configured_host_records():
                         else None,
                         "shutdown": host_id == config.POWER_HOST_ID,
                     },
-                    "readiness_timeout_seconds": 15,
+                    "readiness_timeout_seconds": 180,
                 }
             )
         return records
@@ -174,7 +247,7 @@ def configured_host_records():
             "herdr": {},
             "harnesses": [],
             "power": {"wake": None, "shutdown": False},
-            "readiness_timeout_seconds": 15,
+            "readiness_timeout_seconds": 180,
         },
         *[
             {
@@ -185,7 +258,7 @@ def configured_host_records():
                 "herdr": {},
                 "harnesses": [],
                 "power": {"wake": None, "shutdown": False},
-                "readiness_timeout_seconds": 15,
+                "readiness_timeout_seconds": 180,
             }
             for remote in config.REMOTES
         ],

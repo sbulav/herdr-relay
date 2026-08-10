@@ -301,10 +301,11 @@ paths, SSH targets, wrappers, and power data are not included in `project_roots`
 `start_session` is owned by the relay after acknowledgement. The `operations`
 array in each `agents` snapshot contains every non-terminal start operation, so a
 new client or a client reconnecting after a relay restart can restore queued,
-checking, and starting work. The relay also broadcasts an `operation` frame for
-each transition, including the terminal `started`, `failed`, or `cancelled`
-state. A terminal operation is retained in SQLite for request-id replay but is
-omitted from later active snapshots.
+`sending_wake`, `waiting_for_host`, `checking_herdr`, and `starting_agent` work.
+The relay also broadcasts an `operation` frame for each transition, including the
+terminal `started`, `failed`, or `cancelled` state. A terminal operation is
+retained in SQLite for request-id replay but is omitted from later active
+snapshots.
 
 Operation records contain only public IDs, the bounded harness/model selection,
 the deterministic Herdr agent name, a stage, an optional session ID, and a
@@ -322,7 +323,7 @@ paths.
     "harness": "claude",
     "model": "default",
     "agent_name": "herdr-mobile-op-1",
-    "stage": "starting",
+    "stage": "starting_agent",
     "session_id": null,
     "error_code": null,
     "error_message": null,
@@ -679,6 +680,22 @@ observable.
   "host_id": "buildbox",
   "harness": "claude",
   "model": "default"
+}
+```
+
+### `cancel_start`
+
+Cancels an active durable start operation. The request is idempotent: cancelling
+an already terminal operation returns its terminal record, while a worker that is
+currently probing or launching observes the cancellation and terminates its
+active local SSH subprocess. Cancellation never powers the host off, so a host
+that was woken remains on.
+
+```json
+{
+  "type": "cancel_start",
+  "request_id": "req-cancel-2",
+  "operation_id": "op-1"
 }
 ```
 
@@ -1070,8 +1087,11 @@ These are all code and message pairs produced through `command_error`.
 | `CONFIGURATION_CHANGED` | `The selected project configuration is no longer available` | A durable start no longer has its saved host, root, folder, harness, or model configuration. |
 | `HOST_OFFLINE` | `The selected host is offline` | A durable start cannot reach its configured host. |
 | `HERDR_UNAVAILABLE` | `Herdr is unavailable on the selected host` | SSH responds but the configured Herdr command does not return a usable pane snapshot. |
-| `AGENT_NOT_OBSERVABLE` | `Herdr did not expose a recoverable agent identity` | The start command returned, but the deterministic agent name was not visible before readiness timed out. |
+| `AGENT_NOT_OBSERVABLE` | `Herdr did not expose a recoverable agent identity` | Legacy terminal error retained for operations created by older relay versions; new readiness failures use `READY_TIMEOUT`. |
 | `DUPLICATE_AGENT` | `The host reported more than one matching agent` | More than one pane exposed the operation's deterministic name. |
+| `READY_TIMEOUT` | `Host did not become ready before the timeout` | A waking host did not expose SSH, Herdr, or the named pane before its configured readiness timeout. |
+| `WAKE_FAILED` | `Wake-on-LAN command failed` | The durable operation's configured Wake-on-LAN process raises or exits unsuccessfully. |
+| `OPERATION_NOT_FOUND` | `Start operation is no longer available` | `cancel_start.operation_id` does not identify a persisted start operation. |
 | `CONFIRMATION_REQUIRED` | `confirmation_nonce is required` | `terminate_session` or `shutdown_host` lacks a non-empty string nonce. |
 | `STALE_SESSION` | `Session is no longer active` | `terminate_session.session_id` is absent from the latest active session map. |
 | `TERMINATE_FAILED` | `Herdr did not terminate the client` | The `herdr pane close` process fails or exits unsuccessfully. |

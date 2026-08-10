@@ -40,6 +40,7 @@ from .audit import audit  # noqa: F401
 from .config import log  # noqa: F401
 from .lifecycle import (  # noqa: F401
     launch_session,
+    cancel_start,
     recover_start_operations,
     shutdown_host,
     start_session,

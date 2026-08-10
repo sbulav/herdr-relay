@@ -96,7 +96,7 @@ class StartOperationTests(unittest.TestCase):
         self.assertEqual("started", result["stage"])
         self.assertEqual("legacy:workstation:pane-7", result["session_id"])
         run.assert_not_called()
-        self.assertEqual("checking", events.get_nowait()["operation"]["stage"])
+        self.assertEqual("checking_herdr", events.get_nowait()["operation"]["stage"])
         self.assertEqual("started", events.get_nowait()["operation"]["stage"])
 
     def test_start_waits_for_the_same_named_pane_before_started(self):
@@ -120,6 +120,121 @@ class StartOperationTests(unittest.TestCase):
         self.assertEqual(operation["agent_name"], run.call_args.args[2])
         self.assertIn("--cwd", run.call_args.args)
         self.assertNotIn("--model", run.call_args.args)
+
+    def test_offline_wol_start_reports_wake_and_readiness_stages(self):
+        self.host["power"] = {"wake": {"mac": "00:11:22:33:44:55"}, "shutdown": False}
+        ready = {"ssh_reachable": True, "herdr_ready": True}
+        operation = self.begin_operation()
+        observed = [
+            ([], {"ssh_reachable": False, "herdr_ready": False}),
+            ([], ready),
+            ([{"agent_name": operation["agent_name"], "pane_id": "pane-wol"}], ready),
+        ]
+        events = queue.Queue()
+        with (
+            patch.object(herdr_relay.state, "event_queue", events),
+            patch.object(herdr_relay.operations, "_wake_host", return_value=True) as wake,
+            patch.object(herdr_relay.operations, "_probe_existing", side_effect=observed),
+            patch.object(herdr_relay.herdr, "run_herdr_checked", return_value=(True, "")) as run,
+        ):
+            herdr_relay.operations._start_operation(operation["operation_id"])
+            result = herdr_relay.operations.OperationStore(str(self.db)).get(operation["operation_id"])
+
+            self.assertEqual("started", result["stage"])
+            wake.assert_called_once()
+            run.assert_called_once()
+
+        stages = []
+        while not events.empty():
+            stages.append(events.get_nowait()["operation"]["stage"])
+        self.assertEqual(
+            ["checking_herdr", "sending_wake", "waiting_for_host", "checking_herdr", "starting_agent", "started"],
+            stages,
+        )
+
+    def test_offline_wol_does_not_validate_remote_folder_before_wake(self):
+        self.host["ssh"] = {"target": "deploy@workstation"}
+        self.host["power"] = {"wake": {"mac": "00:11:22:33:44:55"}, "shutdown": False}
+        operation = self.begin_operation()
+        observed = [
+            ([], {"ssh_reachable": False, "herdr_ready": False}),
+            ([], {"ssh_reachable": True, "herdr_ready": True}),
+            ([{"agent_name": operation["agent_name"], "pane_id": "pane-wol"}], {"ssh_reachable": True, "herdr_ready": True}),
+        ]
+        browses = []
+
+        def browse(*_args, **_kwargs):
+            browses.append(True)
+            return {"canonical_path": os.path.realpath(self.root), "entries": []}
+
+        def wake(*_args, **_kwargs):
+            self.assertEqual([], browses)
+            return True
+
+        with (
+            patch.object(herdr_relay.state, "event_queue", queue.Queue()),
+            patch.object(herdr_relay.operations, "_probe_existing", side_effect=observed),
+            patch.object(herdr_relay.operations, "_wake_host", side_effect=wake),
+            patch.object(herdr_relay.project_fs, "browse", side_effect=browse),
+            patch.object(herdr_relay.herdr, "run_herdr_checked", return_value=(True, "")),
+        ):
+            herdr_relay.operations._start_operation(operation["operation_id"])
+
+        result = herdr_relay.operations.OperationStore(str(self.db)).get(operation["operation_id"])
+        self.assertEqual("started", result["stage"])
+        self.assertEqual([True], browses)
+
+    def test_wol_readiness_timeout_is_terminal_and_does_not_launch(self):
+        self.host["power"] = {"wake": {"mac": "00:11:22:33:44:55"}, "shutdown": False}
+        self.host["readiness_timeout_seconds"] = 1
+        operation = self.begin_operation()
+        with (
+            patch.object(herdr_relay.state, "event_queue", queue.Queue()),
+            patch.object(herdr_relay.operations, "_wake_host", return_value=True),
+            patch.object(
+                herdr_relay.operations,
+                "_probe_existing",
+                return_value=([], {"ssh_reachable": False, "herdr_ready": False}),
+            ),
+            patch.object(herdr_relay.operations.time, "monotonic", side_effect=[0, 2]),
+            patch.object(herdr_relay.herdr, "run_herdr_checked") as run,
+        ):
+            herdr_relay.operations._start_operation(operation["operation_id"])
+
+        result = herdr_relay.operations.OperationStore(str(self.db)).get(operation["operation_id"])
+        self.assertEqual("failed", result["stage"])
+        self.assertEqual("READY_TIMEOUT", result["error_code"])
+        run.assert_not_called()
+
+    def test_cancelled_operation_never_wakes_or_launches(self):
+        operation = self.begin_operation()
+        events = queue.Queue()
+        with patch.object(herdr_relay.state, "event_queue", events):
+            cancelled = herdr_relay.operations.cancel_start(operation["operation_id"])
+            self.assertEqual("cancelled", cancelled["stage"])
+            with (
+                patch.object(herdr_relay.operations, "_wake_host") as wake,
+                patch.object(herdr_relay.operations, "_probe_existing") as probe,
+                patch.object(herdr_relay.herdr, "run_herdr_checked") as run,
+            ):
+                herdr_relay.operations._start_operation(operation["operation_id"])
+
+        wake.assert_not_called()
+        probe.assert_not_called()
+        run.assert_not_called()
+
+    def test_cancel_start_command_returns_the_cancelled_operation(self):
+        operation = self.begin_operation()
+        with patch.object(herdr_relay.state, "event_queue", queue.Queue()):
+            response = herdr_relay.cancel_start({
+                "type": "cancel_start",
+                "request_id": "cancel-1",
+                "operation_id": operation["operation_id"],
+            })
+
+        self.assertEqual("command_ack", response["type"])
+        self.assertEqual("cancel-1", response["request_id"])
+        self.assertEqual("cancelled", response["result"]["operation"]["stage"])
 
     def test_duplicate_matching_panes_fail_without_a_second_launch(self):
         operation = self.begin_operation()

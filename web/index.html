@@ -652,7 +652,7 @@ function hostCard(host, selectable = false) {
   const action = selectable
     ? `<button class="composer-host${selected ? ' selected' : ''}" onclick="selectComposerHost('${escapeHtml(host.host_id)}')" aria-pressed="${selected}">
         <span class="host-head"><span class="host-name">${escapeHtml(host.display_name || host.host_id)}</span><strong class="${hostStatusClass(host)}">${escapeHtml(status)}</strong></span>
-        <span class="host-detail">${escapeHtml(host.host_id)}${host.message ? ` · ${escapeHtml(host.message)}` : ''}</span>
+        <span class="host-detail">${escapeHtml(host.host_id)}${canWake ? ' · Wake-on-LAN available' : ''}${host.message ? ` · ${escapeHtml(host.message)}` : ''}</span>
       </button>`
     : `<div class="host-card">
         <div class="host-head"><span class="host-name">${escapeHtml(host.display_name || host.host_id)}</span><strong class="${hostStatusClass(host)}">${escapeHtml(status)}</strong></div>
@@ -687,7 +687,7 @@ function renderHostSummary() {
 }
 
 function operationStageLabel(stage) {
-  return ({queued:'Queued', checking:'Checking host', starting:'Starting agent', started:'Started', failed:'Failed', cancelled:'Cancelled'})[stage] || String(stage || 'Unknown').replaceAll('_', ' ');
+  return ({queued:'Queued', sending_wake:'Sending wake', waiting_for_host:'Waiting for host', checking:'Checking Herdr', checking_herdr:'Checking Herdr', starting:'Starting agent', starting_agent:'Starting agent', started:'Started', failed:'Failed', cancelled:'Cancelled'})[stage] || String(stage || 'Unknown').replaceAll('_', ' ');
 }
 
 function renderOperationCards() {
@@ -695,12 +695,17 @@ function renderOperationCards() {
   return `<div class="section-header">Start operations</div>` + operations.map(operation => {
     const project = projects.find(item => item.project_id === operation.project_id);
     const failed = operation.stage === 'failed' || operation.stage === 'cancelled';
+    const active = !failed && operation.stage !== 'started';
     const recovery = operation.stage !== 'started' && (!ws || ws.readyState !== 1);
     return `<div class="operation-card${failed ? ' failed' : ''}" role="status">
       <strong>${escapeHtml(project?.label || `Project ${String(operation.project_id || '').slice(0, 8)}`)}</strong>
       <div class="operation-stage">${escapeHtml(operationStageLabel(operation.stage))} · ${escapeHtml(operation.harness || '')} · ${escapeHtml(operation.model || 'default')}</div>
       ${recovery ? '<div class="operation-stage">Recovering after relay reconnect…</div>' : ''}
       ${operation.error_message ? `<div class="operation-error">${escapeHtml(operation.error_message)}</div>` : ''}
+      <div class="operation-actions">
+        ${active ? `<button onclick="cancelStart(${escapeJs(operation.operation_id)})" ${ws && ws.readyState === 1 ? '' : 'disabled'}>Cancel</button>` : ''}
+        ${failed ? `<button onclick="retryStart(${escapeJs(operation.operation_id)})" ${ws && ws.readyState === 1 ? '' : 'disabled'}>Retry</button>` : ''}
+      </div>
     </div>`;
   }).join('');
 }
@@ -848,12 +853,14 @@ function renderProjectComposer() {
   const models = (selectedCatalog?.models || [{id: 'default', label: 'Default', available: true}]).filter(model => model.available && (!modelQuery || `${model.id} ${model.label}`.toLowerCase().includes(modelQuery.toLowerCase())));
   if (!models.some(model => model.id === selectedModelId)) selectedModelId = selectedCatalog?.models?.find(model => model.available)?.id || 'default';
   const catalogReady = !fallbackHarnesses.length || Boolean(selectedCatalog?.available && !selectedCatalog.disabled);
-  const ready = chosen && !chosen.archived && chosen.available && chosen.host_id === selectedHostId && readyHosts().some(item => item.host_id === selectedHostId) && catalogReady;
+  const wakeRequired = host?.status === 'offline' && host?.capabilities?.wake === true;
+  const startableHost = host && ((host.status === 'ready' || (!host.status && host.online)) || wakeRequired);
+  const ready = chosen && !chosen.archived && chosen.available && chosen.host_id === selectedHostId && startableHost && catalogReady && ws && ws.readyState === 1;
   html += `<div class="composer-section"><label>Agent harness</label><select id="projectHarness" onchange="selectHarness(this.value)">${harnesses.length ? harnesses.map(item => `<option value="${escapeHtml(item.harness_id)}" ${item.harness_id === selectedHarnessId ? 'selected' : ''} ${item.disabled || !item.available ? 'disabled' : ''}>${escapeHtml(item.display_name || item.harness_id)}${item.version ? ` · ${escapeHtml(item.version)}` : ''}${item.disabled ? ' · unavailable' : ''}</option>`).join('') : fallbackHarnesses.map(item => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.display_name || item.id)}</option>`).join('') || '<option value="claude">Claude</option>'}</select>`;
   if (selectedCatalog?.stale) html += `<div class="host-detail">Cached model list${selectedCatalog.age_ms ? ` · ${Math.floor(selectedCatalog.age_ms / 3600000)}h old` : ''}${selectedCatalog.error ? ` · ${escapeHtml(selectedCatalog.error)}` : ''}</div>`;
   html += `</div><div class="composer-section"><label for="modelSearch">Model</label><input class="project-search" id="modelSearch" value="${escapeHtml(modelQuery)}" placeholder="Search model IDs or names" oninput="setModelQuery(this.value)" /><select id="projectModel" onchange="selectedModelId=this.value">${models.map(model => `<option value="${escapeHtml(model.id)}" ${model.id === selectedModelId ? 'selected' : ''}>${escapeHtml(model.label)}${model.label === model.id ? '' : ` · ${escapeHtml(model.id)}`}</option>`).join('')}</select></div>`;
-  const summary = chosen ? `${chosen.label} · ${chosen.canonical_path || chosen.path} on ${host?.display_name || selectedHostId}` : 'Select an available saved project';
-  html += `<div class="composer-footer"><div class="composer-summary">${escapeHtml(summary)}</div><button class="primary" onclick="startProject()" ${ready ? '' : 'disabled'}>Start session</button></div>`;
+  const summary = chosen ? (wakeRequired ? `Wake ${host?.display_name || selectedHostId}, then start ${chosen.label} · ${chosen.canonical_path || chosen.path}` : `${chosen.label} · ${chosen.canonical_path || chosen.path} on ${host?.display_name || selectedHostId}`) : 'Select an available saved project';
+  html += `<div class="composer-footer"><div class="composer-summary">${escapeHtml(summary)}</div><button class="primary" onclick="startProject()" ${ready ? '' : 'disabled'}>${wakeRequired ? 'Wake & start' : 'Start session'}</button></div>`;
   body.innerHTML = html;
 }
 
@@ -993,6 +1000,27 @@ function startProject() {
   const model = document.getElementById('projectModel')?.value || 'default';
   const payload = {type: 'start_session', request_id: id, project_id: project.project_id, host_id: selectedHostId, harness: document.getElementById('projectHarness')?.value || 'claude'};
   if (model !== 'default') payload.model = model;
+  ws.send(JSON.stringify(payload));
+}
+
+function cancelStart(operationId) {
+  if (!ws || ws.readyState !== 1) return;
+  ws.send(JSON.stringify({type: 'cancel_start', request_id: requestId(), operation_id: operationId}));
+}
+
+function retryStart(operationId) {
+  const operation = operations.find(item => item.operation_id === operationId);
+  if (!operation || !ws || ws.readyState !== 1) return;
+  const id = requestId();
+  pendingLaunchRequests.add(id);
+  const payload = {
+    type: 'start_session',
+    request_id: id,
+    project_id: operation.project_id,
+    host_id: operation.host_id,
+    harness: operation.harness,
+  };
+  if (operation.model && operation.model !== 'default') payload.model = operation.model;
   ws.send(JSON.stringify(payload));
 }
 

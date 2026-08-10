@@ -239,6 +239,10 @@ async def handle_client(ws):
                 response = await asyncio.to_thread(lifecycle.start_session, msg)
                 _remember_response(request_results, request_id, response)
                 await ws.send(json.dumps(response))
+            elif msg_type == "cancel_start":
+                response = await asyncio.to_thread(lifecycle.cancel_start, msg)
+                _remember_response(request_results, request_id, response)
+                await ws.send(json.dumps(response))
             elif msg_type == "terminate_session":
                 response = await asyncio.to_thread(lifecycle.terminate_session, msg)
                 _remember_response(request_results, request_id, response)

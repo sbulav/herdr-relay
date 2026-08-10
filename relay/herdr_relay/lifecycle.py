@@ -19,6 +19,23 @@ def start_session(msg):
     return operations.begin_start(msg)
 
 
+def cancel_start(msg):
+    request_id = msg.get("request_id")
+    if not isinstance(request_id, str) or not projects.REQUEST_ID_RE.fullmatch(request_id):
+        return protocol.command_error(None, "INVALID_REQUEST", "request_id is required")
+    operation_id = msg.get("operation_id")
+    if not isinstance(operation_id, str) or not operation_id or len(operation_id) > 128:
+        return protocol.command_error(request_id, "INVALID_REQUEST", "operation_id is invalid")
+    operation = operations.cancel_start(operation_id)
+    if operation is None:
+        return protocol.command_error(request_id, "OPERATION_NOT_FOUND", "Start operation is no longer available")
+    return {
+        "type": "command_ack",
+        "request_id": request_id,
+        "result": {"operation": operations.public_operation(operation)},
+    }
+
+
 def recover_start_operations():
     operations.recover_active()
 

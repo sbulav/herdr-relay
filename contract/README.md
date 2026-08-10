@@ -5,7 +5,7 @@ native dialect described by [`../docs/native-protocol.md`](../docs/native-protoc
 
 The files are **generated, not hand-written**. `tests/test_native_contract.py`
 drives the real emitters (`_poll_once`, project snapshot/folder/create handlers,
-`launch_session`, `terminate_session`, `wake_host`, `shutdown_host`) against
+`start_session`, `cancel_start`, `launch_session`, `terminate_session`, `wake_host`, `shutdown_host`) against
 fakes and compares their output to these files. Editing a frame in
 `relay/herdr_relay/` fails the suite here, before
 the change reaches a phone.

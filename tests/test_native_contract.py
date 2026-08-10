@@ -114,7 +114,7 @@ class NativeContractTests(unittest.TestCase):
             "harness": "claude",
             "model": "default",
             "agent_name": "herdr-mobile-op-1",
-            "stage": "starting",
+            "stage": "starting_agent",
             "session_id": None,
             "error_code": None,
             "error_message": None,
@@ -123,6 +123,69 @@ class NativeContractTests(unittest.TestCase):
         }
         self.assert_contract(
             "operation",
+            {"type": "operation", "operation": herdr_relay.operations.public_operation(row)},
+        )
+
+    def test_waking_operation_transition(self):
+        row = {
+            "operation_id": "op-1",
+            "request_id": "req-start-1",
+            "host_id": "buildbox",
+            "project_id": "0123456789abcdef0123456789abcdef",
+            "harness": "claude",
+            "model": "default",
+            "agent_name": "herdr-mobile-op-1",
+            "stage": "sending_wake",
+            "session_id": None,
+            "error_code": None,
+            "error_message": None,
+            "created_at": 1700000000000,
+            "updated_at": 1700000000050,
+        }
+        self.assert_contract(
+            "operation_waking",
+            {"type": "operation", "operation": herdr_relay.operations.public_operation(row)},
+        )
+
+    def test_cancelled_operation_transition(self):
+        row = {
+            "operation_id": "op-1",
+            "request_id": "req-start-1",
+            "host_id": "buildbox",
+            "project_id": "0123456789abcdef0123456789abcdef",
+            "harness": "claude",
+            "model": "default",
+            "agent_name": "herdr-mobile-op-1",
+            "stage": "cancelled",
+            "session_id": None,
+            "error_code": None,
+            "error_message": None,
+            "created_at": 1700000000000,
+            "updated_at": 1700000000200,
+        }
+        self.assert_contract(
+            "operation_cancelled",
+            {"type": "operation", "operation": herdr_relay.operations.public_operation(row)},
+        )
+
+    def test_readiness_timeout_operation_transition(self):
+        row = {
+            "operation_id": "op-1",
+            "request_id": "req-start-1",
+            "host_id": "buildbox",
+            "project_id": "0123456789abcdef0123456789abcdef",
+            "harness": "claude",
+            "model": "default",
+            "agent_name": "herdr-mobile-op-1",
+            "stage": "failed",
+            "session_id": None,
+            "error_code": "READY_TIMEOUT",
+            "error_message": "Host did not become ready before the timeout",
+            "created_at": 1700000000000,
+            "updated_at": 1700000000200,
+        }
+        self.assert_contract(
+            "operation_timeout",
             {"type": "operation", "operation": herdr_relay.operations.public_operation(row)},
         )
 

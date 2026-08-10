@@ -144,7 +144,7 @@ def load_hosts(path=None):
         if shutdown and not target:
             raise ValueError(f"shutdown capability requires an SSH target for host {host_id}")
 
-        timeout = raw.get("readiness_timeout_seconds", 15)
+        timeout = raw.get("readiness_timeout_seconds", 180)
         if isinstance(timeout, bool) or not isinstance(timeout, int) or not 1 <= timeout <= MAX_TIMEOUT_SECONDS:
             raise ValueError(f"invalid readiness timeout for host {host_id}")
 
