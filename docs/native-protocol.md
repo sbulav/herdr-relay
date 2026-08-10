@@ -82,12 +82,14 @@ to one poll interval for the first `agents` broadcast.
 | `type` | string | Required | Always `"server_info"`. |
 | `relay_version` | string | Required | The relay's own version, for display in a client's update prompt. |
 | `min_client` | integer | Required | Oldest client protocol revision this relay works with. |
+| `durable_start` | boolean | Required | Whether durable project starts, cancellation, recovery, and retry lineage are supported. |
 
 ```json
 {
   "type": "server_info",
   "relay_version": "0.7.0",
-  "min_client": 1
+  "min_client": 2,
+  "durable_start": true
 }
 ```
 
@@ -96,15 +98,18 @@ only when the wire changes, so a routine client release never touches it, and a
 breaking change bumps it in exactly two places: `MIN_CLIENT` here and the
 client's own declared revision. A client whose revision is below `min_client`
 must tell the user to update and must not attempt to interpret later frames.
+Clients must also keep durable-start controls disabled when `durable_start` is
+absent or false, which protects a newer client connecting to an older relay.
 
 The relay advertises and does not enforce. It never learns the client's revision
 and never refuses a connection over one: a rejected socket parks a client's
 reconnect loop, which presents as an outage rather than as an instruction to
 update. Blocking is the client's job.
 
-Raising `min_client` is a release decision, in this order: ship the client that
-declares the new revision, then raise `MIN_CLIENT`. Reversing the order locks out
-every installed build, including the one that would tell the user why.
+Raising `min_client` is a release decision. For a breaking start-operation
+change, deploy the relay that advertises the new minimum first, then release the
+client that declares that revision. Older clients will show the update screen;
+the new client will not send new frames to an older relay.
 
 ## Host Configuration
 
@@ -299,17 +304,20 @@ paths, SSH targets, wrappers, and power data are not included in `project_roots`
 ### `operations` and `operation`
 
 `start_session` is owned by the relay after acknowledgement. The `operations`
-array in each `agents` snapshot contains every non-terminal start operation, so a
-new client or a client reconnecting after a relay restart can restore queued,
-checking, and starting work. The relay also broadcasts an `operation` frame for
-each transition, including the terminal `started`, `failed`, or `cancelled`
-state. A terminal operation is retained in SQLite for request-id replay but is
-omitted from later active snapshots.
+array in each `agents` snapshot contains every non-terminal start operation plus
+the 32 most recently updated terminal operations. This bounded recovery history
+lets a client reconnecting after completion render the terminal result without
+retaining an unbounded UI list. The relay also broadcasts an `operation` frame for
+each transition, including the terminal `started`, `failed`, or `cancelled` state.
+Terminal rows remain in SQLite for request-id replay and retry lineage.
 
 Operation records contain only public IDs, the bounded harness/model selection,
 the deterministic Herdr agent name, a stage, an optional session ID, and a
-sanitized error. They never contain SSH targets, command output, or filesystem
-paths.
+sanitized error. `revision` starts at zero when the row is queued and increments
+for every state transition; clients must use it as the operation ordering key.
+`attempt` starts at one, and `retry_of_operation_id` links later attempts to the
+failed or cancelled source. They never contain SSH targets, command output, or
+filesystem paths.
 
 ```json
 {
@@ -322,12 +330,15 @@ paths.
     "harness": "claude",
     "model": "default",
     "agent_name": "herdr-mobile-op-1",
-    "stage": "starting",
+    "stage": "starting_agent",
     "session_id": null,
     "error_code": null,
     "error_message": null,
     "created_at": 1700000000000,
-    "updated_at": 1700000000100
+    "updated_at": 1700000000100,
+    "revision": 4,
+    "retry_of_operation_id": null,
+    "attempt": 1
   }
 }
 ```
@@ -666,10 +677,12 @@ harness, and model selection directly. `model` is optional and defaults to
 
 The request is acknowledged as soon as the operation is persisted. The relay
 then checks for the operation's deterministic Herdr name before starting a
-client. A repeated `request_id` returns the same operation. On relay restart,
-non-terminal rows are resumed and the same name is checked before another start
-is attempted. The operation becomes `started` only after the named pane is
-observable.
+client. A repeated `request_id` returns the same operation. A retry sends only
+`retry_of_operation_id` and the next `attempt`; the relay derives the original
+selection, deduplicates the source/attempt pair, and records the lineage. On
+relay restart, non-terminal rows are resumed and the same name is checked before
+another start is attempted. The operation becomes `started` only after the named
+pane is observable.
 
 ```json
 {
@@ -679,6 +692,33 @@ observable.
   "host_id": "buildbox",
   "harness": "claude",
   "model": "default"
+}
+```
+
+Retry example:
+
+```json
+{
+  "type": "start_session",
+  "request_id": "req-retry-2",
+  "retry_of_operation_id": "op-1",
+  "attempt": 2
+}
+```
+
+### `cancel_start`
+
+Cancels an active durable start operation. The request is idempotent: cancelling
+an already terminal operation returns its terminal record, while a worker that is
+currently probing or launching observes the cancellation and terminates its
+active local SSH subprocess. Cancellation never powers the host off, so a host
+that was woken remains on.
+
+```json
+{
+  "type": "cancel_start",
+  "request_id": "req-cancel-2",
+  "operation_id": "op-1"
 }
 ```
 
@@ -1070,8 +1110,11 @@ These are all code and message pairs produced through `command_error`.
 | `CONFIGURATION_CHANGED` | `The selected project configuration is no longer available` | A durable start no longer has its saved host, root, folder, harness, or model configuration. |
 | `HOST_OFFLINE` | `The selected host is offline` | A durable start cannot reach its configured host. |
 | `HERDR_UNAVAILABLE` | `Herdr is unavailable on the selected host` | SSH responds but the configured Herdr command does not return a usable pane snapshot. |
-| `AGENT_NOT_OBSERVABLE` | `Herdr did not expose a recoverable agent identity` | The start command returned, but the deterministic agent name was not visible before readiness timed out. |
+| `AGENT_NOT_OBSERVABLE` | `Herdr did not expose a recoverable agent identity` | Legacy terminal error retained for operations created by older relay versions; new readiness failures use `READY_TIMEOUT`. |
 | `DUPLICATE_AGENT` | `The host reported more than one matching agent` | More than one pane exposed the operation's deterministic name. |
+| `READY_TIMEOUT` | `Host did not become ready before the timeout` | A waking host did not expose SSH, Herdr, or the named pane before its configured readiness timeout. |
+| `WAKE_FAILED` | `Wake-on-LAN command failed` | The durable operation's configured Wake-on-LAN process raises or exits unsuccessfully. |
+| `OPERATION_NOT_FOUND` | `Start operation is no longer available` | `cancel_start.operation_id` or `start_session.retry_of_operation_id` does not identify a persisted start operation. |
 | `CONFIRMATION_REQUIRED` | `confirmation_nonce is required` | `terminate_session` or `shutdown_host` lacks a non-empty string nonce. |
 | `STALE_SESSION` | `Session is no longer active` | `terminate_session.session_id` is absent from the latest active session map. |
 | `TERMINATE_FAILED` | `Herdr did not terminate the client` | The `herdr pane close` process fails or exits unsuccessfully. |

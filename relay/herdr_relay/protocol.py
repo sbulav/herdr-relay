@@ -7,10 +7,15 @@ def server_info():
     """The first frame on every connection: who this relay is and what it requires.
 
     Per-connection rather than a field on the broadcast `agents` frame, so a client
-    that is too old can block before it renders a single agent, and so these two
-    values do not ride on every fan-out frame for the life of the protocol.
+    that is too old can block before it renders a single agent, and so these
+    handshake values do not ride on every fan-out frame for the life of the protocol.
     """
-    return {"type": "server_info", "relay_version": config.RELAY_VERSION, "min_client": config.MIN_CLIENT}
+    return {
+        "type": "server_info",
+        "relay_version": config.RELAY_VERSION,
+        "min_client": config.MIN_CLIENT,
+        "durable_start": True,
+    }
 
 
 def public_agents(agents):

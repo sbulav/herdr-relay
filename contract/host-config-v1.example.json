@@ -20,7 +20,7 @@
         {"id": "codex", "display_name": "Codex"}
       ],
       "power": {"wake": null, "shutdown": false},
-      "readiness_timeout_seconds": 15
+      "readiness_timeout_seconds": 180
     }
   ]
 }

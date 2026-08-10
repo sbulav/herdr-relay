@@ -102,6 +102,67 @@ MIGRATIONS = {
             ON start_operations(stage, updated_at)
         """,
     ),
+    5: (
+        "DROP INDEX IF EXISTS start_operations_active_idx",
+        "ALTER TABLE start_operations RENAME TO start_operations_v4",
+        """
+        CREATE TABLE start_operations (
+            operation_id TEXT PRIMARY KEY,
+            request_id TEXT NOT NULL UNIQUE,
+            host_id TEXT NOT NULL,
+            project_id TEXT NOT NULL REFERENCES projects(project_id),
+            harness TEXT NOT NULL,
+            model TEXT NOT NULL,
+            agent_name TEXT NOT NULL UNIQUE,
+            stage TEXT NOT NULL CHECK(stage IN (
+                'queued', 'sending_wake', 'waiting_for_host', 'checking_herdr',
+                'starting_agent', 'started', 'failed', 'cancelled'
+            )),
+            session_id TEXT,
+            error_code TEXT,
+            error_message TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )
+        """,
+        """
+        INSERT INTO start_operations(
+            operation_id, request_id, host_id, project_id, harness, model,
+            agent_name, stage, session_id, error_code, error_message,
+            created_at, updated_at
+        )
+        SELECT operation_id, request_id, host_id, project_id, harness, model,
+            agent_name,
+            CASE stage
+                WHEN 'checking' THEN 'checking_herdr'
+                WHEN 'starting' THEN 'starting_agent'
+                ELSE stage
+            END,
+            session_id, error_code, error_message,
+            created_at, updated_at
+        FROM start_operations_v4
+        """,
+        "DROP TABLE start_operations_v4",
+        """
+        CREATE INDEX start_operations_active_idx
+            ON start_operations(stage, updated_at)
+        """,
+    ),
+    6: (
+        "ALTER TABLE start_operations ADD COLUMN revision INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE start_operations ADD COLUMN retry_of_operation_id TEXT",
+        "ALTER TABLE start_operations ADD COLUMN attempt INTEGER NOT NULL DEFAULT 1",
+        """
+        CREATE UNIQUE INDEX start_operations_retry_idx
+            ON start_operations(retry_of_operation_id, attempt)
+            WHERE retry_of_operation_id IS NOT NULL
+        """,
+        "DROP INDEX IF EXISTS start_operations_active_idx",
+        """
+        CREATE INDEX start_operations_active_idx
+            ON start_operations(stage, updated_at, revision)
+        """,
+    ),
 }
 
 

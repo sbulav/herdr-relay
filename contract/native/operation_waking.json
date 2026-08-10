@@ -12,10 +12,10 @@
     "project_id": "0123456789abcdef0123456789abcdef",
     "request_id": "req-start-1",
     "retry_of_operation_id": null,
-    "revision": 4,
+    "revision": 2,
     "session_id": null,
-    "stage": "starting_agent",
-    "updated_at": 1700000000100
+    "stage": "sending_wake",
+    "updated_at": 1700000000050
   },
   "type": "operation"
 }

@@ -3,8 +3,8 @@
     "agent_name": "herdr-mobile-op-1",
     "attempt": 1,
     "created_at": 1700000000000,
-    "error_code": null,
-    "error_message": null,
+    "error_code": "READY_TIMEOUT",
+    "error_message": "Host did not become ready before the timeout",
     "harness": "claude",
     "host_id": "buildbox",
     "model": "default",
@@ -12,10 +12,10 @@
     "project_id": "0123456789abcdef0123456789abcdef",
     "request_id": "req-start-1",
     "retry_of_operation_id": null,
-    "revision": 4,
+    "revision": 5,
     "session_id": null,
-    "stage": "starting_agent",
-    "updated_at": 1700000000100
+    "stage": "failed",
+    "updated_at": 1700000000200
   },
   "type": "operation"
 }
