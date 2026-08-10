@@ -1,6 +1,7 @@
 {
   "operation": {
     "agent_name": "herdr-mobile-op-1",
+    "attempt": 1,
     "created_at": 1700000000000,
     "error_code": null,
     "error_message": null,
@@ -10,6 +11,8 @@
     "operation_id": "op-1",
     "project_id": "0123456789abcdef0123456789abcdef",
     "request_id": "req-start-1",
+    "retry_of_operation_id": null,
+    "revision": 5,
     "session_id": null,
     "stage": "cancelled",
     "updated_at": 1700000000200

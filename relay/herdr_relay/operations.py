@@ -22,10 +22,12 @@ ACTIVE_STAGES = {
     "starting_agent",
 }
 TERMINAL_STAGES = {"started", "failed", "cancelled"}
+RETRYABLE_STAGES = {"failed", "cancelled"}
 MAX_HARNESS_LENGTH = 64
 MAX_MODEL_LENGTH = 256
 DEFAULT_READINESS_TIMEOUT_SECONDS = 180
 POST_START_PROBE_INTERVAL_SECONDS = 0.5
+TERMINAL_RECOVERY_LIMIT = 32
 _worker_lock = threading.Lock()
 _running = set()
 _cancel_events = {}
@@ -68,18 +70,48 @@ class OperationStore:
         finally:
             connection.close()
 
+    def by_retry(self, retry_of_operation_id, attempt):
+        connection = self._connect()
+        try:
+            return self._row(connection.execute(
+                "SELECT * FROM start_operations WHERE retry_of_operation_id = ? AND attempt = ?",
+                (retry_of_operation_id, attempt),
+            ).fetchone())
+        finally:
+            connection.close()
+
     def active(self):
         connection = self._connect()
         try:
             return [self._row(row) for row in connection.execute(
                 "SELECT * FROM start_operations WHERE stage IN "
                 "('queued', 'sending_wake', 'waiting_for_host', 'checking_herdr', 'starting_agent') "
-                "ORDER BY created_at ASC"
+                "ORDER BY created_at ASC, revision ASC"
             ).fetchall()]
         finally:
             connection.close()
 
-    def begin(self, request_id, host_id, project_id, harness, model):
+    def recovery(self, terminal_limit=TERMINAL_RECOVERY_LIMIT):
+        connection = self._connect()
+        try:
+            active = connection.execute(
+                "SELECT * FROM start_operations WHERE stage IN "
+                "('queued', 'sending_wake', 'waiting_for_host', 'checking_herdr', 'starting_agent') "
+                "ORDER BY created_at ASC, revision ASC"
+            ).fetchall()
+            terminal = connection.execute(
+                "SELECT * FROM start_operations WHERE stage IN ('started', 'failed', 'cancelled') "
+                "ORDER BY updated_at DESC, revision DESC LIMIT ?",
+                (terminal_limit,),
+            ).fetchall()
+            return sorted(
+                [self._row(row) for row in active + terminal],
+                key=lambda row: (row["created_at"], row["revision"], row["operation_id"]),
+            )
+        finally:
+            connection.close()
+
+    def begin(self, request_id, host_id, project_id, harness, model, retry_of_operation_id=None, attempt=1):
         now = _now_ms()
         operation_id = uuid.uuid4().hex
         agent_name = deterministic_agent_name(operation_id)
@@ -92,15 +124,35 @@ class OperationStore:
             if existing is not None:
                 connection.commit()
                 return self._row(existing), False
+            if retry_of_operation_id is not None:
+                existing = connection.execute(
+                    "SELECT * FROM start_operations WHERE retry_of_operation_id = ? AND attempt = ?",
+                    (retry_of_operation_id, attempt),
+                ).fetchone()
+                if existing is not None:
+                    connection.commit()
+                    return self._row(existing), False
             connection.execute(
                 """
                 INSERT INTO start_operations(
                     operation_id, request_id, host_id, project_id, harness, model,
                     agent_name, stage, session_id, error_code, error_message,
-                    created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', NULL, NULL, NULL, ?, ?)
+                    created_at, updated_at, revision, retry_of_operation_id, attempt
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', NULL, NULL, NULL, ?, ?, 0, ?, ?)
                 """,
-                (operation_id, request_id, host_id, project_id, harness, model, agent_name, now, now),
+                (
+                    operation_id,
+                    request_id,
+                    host_id,
+                    project_id,
+                    harness,
+                    model,
+                    agent_name,
+                    now,
+                    now,
+                    retry_of_operation_id,
+                    attempt,
+                ),
             )
             connection.commit()
             return self.get(operation_id), True
@@ -109,6 +161,11 @@ class OperationStore:
             existing = self._row(connection.execute(
                 "SELECT * FROM start_operations WHERE request_id = ?", (request_id,)
             ).fetchone())
+            if existing is None and retry_of_operation_id is not None:
+                existing = self._row(connection.execute(
+                    "SELECT * FROM start_operations WHERE retry_of_operation_id = ? AND attempt = ?",
+                    (retry_of_operation_id, attempt),
+                ).fetchone())
             if existing is not None:
                 return existing, False
             raise
@@ -123,7 +180,7 @@ class OperationStore:
                 """
                 UPDATE start_operations
                 SET stage = ?, session_id = COALESCE(?, session_id),
-                    error_code = ?, error_message = ?, updated_at = ?
+                    error_code = ?, error_message = ?, updated_at = ?, revision = revision + 1
                 WHERE operation_id = ? AND stage IN (
                     'queued', 'sending_wake', 'waiting_for_host', 'checking_herdr', 'starting_agent'
                 )
@@ -144,7 +201,8 @@ class OperationStore:
             connection.execute(
                 """
                 UPDATE start_operations
-                SET stage = 'cancelled', error_code = NULL, error_message = NULL, updated_at = ?
+                SET stage = 'cancelled', error_code = NULL, error_message = NULL,
+                    updated_at = ?, revision = revision + 1
                 WHERE operation_id = ? AND stage IN (
                     'queued', 'sending_wake', 'waiting_for_host', 'checking_herdr', 'starting_agent'
                 )
@@ -184,11 +242,18 @@ def public_operation(row):
         "error_message": row["error_message"],
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
+        "revision": row.get("revision", 0),
+        "retry_of_operation_id": row.get("retry_of_operation_id"),
+        "attempt": row.get("attempt", 1),
     }
 
 
 def public_active():
     return [public_operation(row) for row in OperationStore().active()]
+
+
+def public_recovery():
+    return [public_operation(row) for row in OperationStore().recovery()]
 
 
 def _emit(row):
@@ -561,7 +626,8 @@ def begin_start(msg):
     request_id = msg.get("request_id")
     if not isinstance(request_id, str) or not projects.REQUEST_ID_RE.fullmatch(request_id):
         return protocol.command_error(None, "INVALID_REQUEST", "request_id is required")
-    existing = OperationStore().by_request(request_id)
+    store = OperationStore()
+    existing = store.by_request(request_id)
     if existing is not None:
         ensure_worker(existing["operation_id"])
         return {
@@ -569,10 +635,43 @@ def begin_start(msg):
             "request_id": request_id,
             "result": {"operation": public_operation(existing)},
         }
-    project_id = msg.get("project_id")
-    host_id = msg.get("host_id")
-    harness = msg.get("harness")
-    model = msg.get("model", "default")
+    retry_of_operation_id = msg.get("retry_of_operation_id")
+    if retry_of_operation_id is not None:
+        if not isinstance(retry_of_operation_id, str) or not retry_of_operation_id or len(retry_of_operation_id) > 128:
+            return protocol.command_error(request_id, "INVALID_REQUEST", "retry_of_operation_id is invalid")
+        source = store.get(retry_of_operation_id)
+        if source is None:
+            return protocol.command_error(request_id, "OPERATION_NOT_FOUND", "Start operation is no longer available")
+        if source["stage"] not in RETRYABLE_STAGES:
+            return protocol.command_error(request_id, "INVALID_REQUEST", "Only failed or cancelled starts can be retried")
+        attempt = msg.get("attempt", source.get("attempt", 1) + 1)
+        if (
+            not isinstance(attempt, int)
+            or isinstance(attempt, bool)
+            or attempt != source.get("attempt", 1) + 1
+            or attempt > 1000
+        ):
+            return protocol.command_error(request_id, "INVALID_REQUEST", "Retry attempt must immediately follow its source")
+        project_id = source["project_id"]
+        host_id = source["host_id"]
+        harness = source["harness"]
+        model = source["model"]
+        existing = store.by_retry(retry_of_operation_id, attempt)
+        if existing is not None:
+            ensure_worker(existing["operation_id"])
+            return {
+                "type": "command_ack",
+                "request_id": request_id,
+                "result": {"operation": public_operation(existing)},
+            }
+    else:
+        attempt = msg.get("attempt", 1)
+        if not isinstance(attempt, int) or isinstance(attempt, bool) or attempt != 1:
+            return protocol.command_error(request_id, "INVALID_REQUEST", "Initial starts must use attempt 1")
+        project_id = msg.get("project_id")
+        host_id = msg.get("host_id")
+        harness = msg.get("harness")
+        model = msg.get("model", "default")
     if not isinstance(project_id, str) or not projects.PROJECT_ID_RE.fullmatch(project_id):
         return protocol.command_error(request_id, "INVALID_REQUEST", "project_id is invalid")
     if not isinstance(host_id, str) or not projects.HOST_ID_RE.fullmatch(host_id):
@@ -590,7 +689,15 @@ def begin_start(msg):
             "CONFIGURATION_CHANGED",
             ERROR_MESSAGES["CONFIGURATION_CHANGED"],
         )
-    operation, _created = OperationStore().begin(request_id, host_id, project_id, harness, model)
+    operation, _created = store.begin(
+        request_id,
+        host_id,
+        project_id,
+        harness,
+        model,
+        retry_of_operation_id=retry_of_operation_id,
+        attempt=attempt,
+    )
     ensure_worker(operation["operation_id"])
     return {
         "type": "command_ack",

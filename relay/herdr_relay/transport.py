@@ -102,7 +102,7 @@ async def _poll_once():
         "hosts": hosts,
         "projects": project_frame["projects"],
         "project_roots": project_frame["roots"],
-        "operations": operations.public_active(),
+        "operations": operations.public_recovery(),
         **catalogs.public_frame(),
     })
     # Read every newly blocked pane off the event loop, and all of them at once:

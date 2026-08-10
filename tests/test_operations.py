@@ -77,6 +77,64 @@ class StartOperationTests(unittest.TestCase):
         self.assertEqual(2, ensure_worker.call_count)
         self.assertEqual(1, len(herdr_relay.operations.OperationStore(str(self.db)).active()))
 
+    def test_operation_revision_increments_for_each_transition(self):
+        store = herdr_relay.operations.OperationStore(str(self.db))
+        operation = self.begin_operation()
+
+        checking = store.update(operation["operation_id"], "checking_herdr")
+        failed = store.update(
+            operation["operation_id"],
+            "failed",
+            error_code="READY_TIMEOUT",
+            error_message="Host did not become ready before the timeout",
+        )
+
+        self.assertEqual(0, operation["revision"])
+        self.assertEqual(1, checking["revision"])
+        self.assertEqual(2, failed["revision"])
+
+    def test_recovery_snapshot_includes_recent_terminal_operations(self):
+        operation = self.begin_operation()
+        store = herdr_relay.operations.OperationStore(str(self.db))
+        store.update(
+            operation["operation_id"],
+            "failed",
+            error_code="READY_TIMEOUT",
+            error_message="Host did not become ready before the timeout",
+        )
+
+        recovered = herdr_relay.operations.public_recovery()
+
+        self.assertEqual(["failed"], [item["stage"] for item in recovered])
+
+    def test_retry_attempt_is_idempotent_and_traces_its_source(self):
+        source = self.begin_operation()
+        store = herdr_relay.operations.OperationStore(str(self.db))
+        store.update(
+            source["operation_id"],
+            "failed",
+            error_code="READY_TIMEOUT",
+            error_message="Host did not become ready before the timeout",
+        )
+        retry = self.operation_message("retry-1")
+        retry.pop("project_id")
+        retry.pop("host_id")
+        retry.pop("harness")
+        retry.pop("model")
+        retry.update({"retry_of_operation_id": source["operation_id"], "attempt": 2})
+
+        with patch.object(herdr_relay.operations, "ensure_worker") as ensure_worker:
+            first = herdr_relay.lifecycle.start_session(retry)
+            duplicate = herdr_relay.lifecycle.start_session({**retry, "request_id": "retry-2"})
+
+        first_operation = first["result"]["operation"]
+        duplicate_operation = duplicate["result"]["operation"]
+        self.assertEqual(first_operation, duplicate_operation)
+        self.assertNotEqual(source["operation_id"], first_operation["operation_id"])
+        self.assertEqual(source["operation_id"], first_operation["retry_of_operation_id"])
+        self.assertEqual(2, first_operation["attempt"])
+        self.assertEqual(2, ensure_worker.call_count)
+
     def test_restart_reconciles_existing_named_pane_without_starting_another(self):
         operation = self.begin_operation()
         events = queue.Queue()
@@ -222,6 +280,15 @@ class StartOperationTests(unittest.TestCase):
         wake.assert_not_called()
         probe.assert_not_called()
         run.assert_not_called()
+
+    def test_already_cancelled_process_does_not_spawn(self):
+        cancel_event = threading.Event()
+        cancel_event.set()
+        with patch.object(herdr_relay.herdr.subprocess, "Popen") as popen:
+            success, _output = herdr_relay.herdr.run_process_checked(["wakeonlan", "00:11:22:33:44:55"], cancel_event=cancel_event)
+
+        self.assertFalse(success)
+        popen.assert_not_called()
 
     def test_cancel_start_command_returns_the_cancelled_operation(self):
         operation = self.begin_operation()

@@ -58,12 +58,12 @@ RELAY_VERSION = "0.7.0"  # this relay's own version; shown to a client that must
 # so a routine release never has to touch it, and a breaking change bumps it in
 # exactly two places (here and the app's CLIENT_PROTOCOL).
 #
-# Raising this locks out every older build, so it is a release decision: land the
-# client that declares the new revision first, then raise this. The relay does not
-# enforce it — it advertises, and the client blocks itself. Rejecting the socket
-# would park the app's reconnect loop, which looks like an outage rather than an
-# instruction to update.
-MIN_CLIENT = 1
+# Raising this locks out every older build, so it is a release decision: deploy
+# the relay that advertises the new revision first, then release the client that
+# declares it. The relay does not enforce it — it advertises, and the client
+# blocks itself. Rejecting the socket would park the app's reconnect loop, which
+# looks like an outage rather than an instruction to update.
+MIN_CLIENT = 2
 AUTH_TOKEN = os.environ.get("HERDR_RELAY_TOKEN", "")  # Shared secret for relay auth
 PRESETS_FILE = os.environ.get("HERDR_PRESETS_FILE", "")
 HOSTS_FILE = os.environ.get("HERDR_HOSTS_FILE", "")

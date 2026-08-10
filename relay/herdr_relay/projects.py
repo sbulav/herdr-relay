@@ -148,6 +148,21 @@ MIGRATIONS = {
             ON start_operations(stage, updated_at)
         """,
     ),
+    6: (
+        "ALTER TABLE start_operations ADD COLUMN revision INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE start_operations ADD COLUMN retry_of_operation_id TEXT",
+        "ALTER TABLE start_operations ADD COLUMN attempt INTEGER NOT NULL DEFAULT 1",
+        """
+        CREATE UNIQUE INDEX start_operations_retry_idx
+            ON start_operations(retry_of_operation_id, attempt)
+            WHERE retry_of_operation_id IS NOT NULL
+        """,
+        "DROP INDEX IF EXISTS start_operations_active_idx",
+        """
+        CREATE INDEX start_operations_active_idx
+            ON start_operations(stage, updated_at, revision)
+        """,
+    ),
 }
 
 

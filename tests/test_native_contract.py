@@ -120,6 +120,9 @@ class NativeContractTests(unittest.TestCase):
             "error_message": None,
             "created_at": 1700000000000,
             "updated_at": 1700000000100,
+            "revision": 4,
+            "retry_of_operation_id": None,
+            "attempt": 1,
         }
         self.assert_contract(
             "operation",
@@ -141,6 +144,9 @@ class NativeContractTests(unittest.TestCase):
             "error_message": None,
             "created_at": 1700000000000,
             "updated_at": 1700000000050,
+            "revision": 2,
+            "retry_of_operation_id": None,
+            "attempt": 1,
         }
         self.assert_contract(
             "operation_waking",
@@ -162,6 +168,9 @@ class NativeContractTests(unittest.TestCase):
             "error_message": None,
             "created_at": 1700000000000,
             "updated_at": 1700000000200,
+            "revision": 5,
+            "retry_of_operation_id": None,
+            "attempt": 1,
         }
         self.assert_contract(
             "operation_cancelled",
@@ -183,6 +192,9 @@ class NativeContractTests(unittest.TestCase):
             "error_message": "Host did not become ready before the timeout",
             "created_at": 1700000000000,
             "updated_at": 1700000000200,
+            "revision": 5,
+            "retry_of_operation_id": None,
+            "attempt": 1,
         }
         self.assert_contract(
             "operation_timeout",

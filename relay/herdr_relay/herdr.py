@@ -53,6 +53,9 @@ def run_process_checked(command, timeout=5, cancel_event=None):
             output = result.stderr.strip()
         return result.returncode == 0, output
 
+    if cancel_event.is_set():
+        return False, ""
+
     try:
         process = subprocess.Popen(
             command,
