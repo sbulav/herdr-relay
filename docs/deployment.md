@@ -142,6 +142,10 @@ Everything the relay reads. Only the first is mandatory.
 |----------|---------|---------|
 | `HERDR_RELAY_TOKEN` | — | **Required.** Shared secret; the relay exits without it |
 | `HERDR_RELAY_PORT` | `8375` | TCP port for WebSocket + HTTP |
+| `HERDR_RATE_INPUT_BURST` | `10` | Per-connection burst for `respond`, `send_keys`, `send_text`. `0` disables the tier |
+| `HERDR_RATE_INPUT_PER_SECOND` | `2` | Sustained refill for the same tier |
+| `HERDR_RATE_HOST_BURST` | `30` | Per-connection burst for the other host-reaching commands. `0` disables the tier |
+| `HERDR_RATE_HOST_PER_SECOND` | `10` | Sustained refill for the same tier |
 | `HERDR_BIN` | `herdr` on `PATH`, else `/opt/homebrew/bin/herdr` | herdr binary. The fallback does not exist off macOS, so set it explicitly or every local poll reports the host offline |
 | `HERDR_LOG_DIR` | `/var/log/herdr-remote` if writable, else `~/.local/state/herdr-remote/log` (`~/Library/Logs/herdr-remote` on macOS) | Written at import, before anything else. Set it, or a hardened unit picks an unwritable path |
 | `HERDR_REMOTES` | — | Comma-separated SSH targets to poll alongside the local host |
@@ -159,6 +163,14 @@ Everything the relay reads. Only the first is mandatory.
 
 `HERDR_RELAY` is a *client* variable — the URL a client or the herdr push plugin
 dials. The relay itself never reads it.
+
+The `HERDR_RATE_*` defaults are chosen so that no human-driven session reaches
+them, and they are per connection rather than per token — one shared secret means
+every client is otherwise the same principal. Raise them for a deployment with
+many simultaneous viewers of one relay; a rejection is logged and written to the
+audit trail with the device and address, so the log says whether a limit is too
+tight or a client is looping. [`native-protocol.md`](native-protocol.md#rate-limiting)
+specifies which commands each tier covers and what a rejected client receives.
 
 `HERDR_HOSTS_FILE` is the preferred multi-host configuration. Its schema is
 `contract/host-config-v1.schema.json`; keep the file in the operator's private

@@ -12,7 +12,7 @@ except ImportError:
     from websockets.server import serve
 from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
 
-from . import catalogs, config, herdr, lifecycle, panes, projects, protocol, push, state, transcripts, transport
+from . import catalogs, config, herdr, lifecycle, panes, projects, protocol, push, ratelimit, state, transcripts, transport
 from .audit import audit
 from .config import log
 
@@ -175,6 +175,9 @@ async def handle_client(ws):
     log.info("Client connected: ip=%s device=%s origin=%s", ip, device, origin or "-")
     connected_at = time.monotonic()
     request_results = {}
+    # Per connection, and local for the same reason `request_results` is: the
+    # buckets die with the socket, so there is nothing to evict in the finally.
+    limits = ratelimit.ConnectionLimits()
     try:
         # Handshake before registering, so the ordering this frame exists to
         # guarantee is a property of this function rather than of the library.
@@ -200,7 +203,18 @@ async def handle_client(ws):
             msg_type = msg.get("type")
             request_id = msg.get("request_id")
             if request_id and request_id in request_results:
+                # Replaying a remembered answer reaches no host, so it is not
+                # metered: the work this would rate-limit already happened once.
                 await ws.send(json.dumps(request_results[request_id]))
+            elif not limits.allows(msg_type):
+                # Audited, not just logged. One shared token means a flood is
+                # indistinguishable from a compromised client until the audit
+                # trail says which device and address it came from.
+                limited_pane = msg.get("pane_id")
+                pane_id = limited_pane if isinstance(limited_pane, str) else ""
+                log.warning("Rate limited %s from %s (%s)", msg_type, ip, device)
+                audit("rate_limited", ip, device, pane_id, f"type={msg_type}")
+                await ws.send(json.dumps(ratelimit.rejection(msg_type, request_id)))
             elif msg_type in projects.COMMANDS:
                 response = await asyncio.to_thread(projects.handle_command, msg)
                 if response is None:

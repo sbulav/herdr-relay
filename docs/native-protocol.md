@@ -69,6 +69,37 @@ Invalid token
 
 There is no unauthenticated mode.
 
+## Rate Limiting
+
+Every command that reaches a host is metered per connection by a refilling token
+bucket: a burst available at once, then a sustained rate. There are two tiers,
+because the cost differs.
+
+| Tier | Commands | Default burst | Default sustained |
+| --- | --- | --- | --- |
+| Terminal input | `respond`, `send_keys`, `send_text` | 10 | 2/s |
+| Host reads and writes | `read_pane`, `subscribe_pane`, `catalog_refresh`, `create_tab`, `launch_session`, `start_session`, `cancel_start`, `terminate_session`, `wake_host`, `shutdown_host`, and every `project_*` command | 30 | 10/s |
+
+`agent_event`, `unsubscribe_pane`, `push_subscribe`, and `push_unsubscribe` are
+not metered: none of them reaches a host. Replaying a `request_id` the relay
+already answered is not metered either — the reply comes from the per-connection
+result cache, so the work being limited has already happened.
+
+A rejected command **does not run**. The rejection is returned in the dialect the
+rejected command already speaks: a typed command gets `command_error` with code
+`RATE_LIMITED`, and a pane command gets `error` with message
+`rate limited, slow down`.
+
+Neither frame carries a retry hint. A client that has been told to slow down
+knows the burst it just spent, and a backoff derived from the relay's clock
+cannot be pinned by a golden frame. Back off and retry; the bucket refills at the
+sustained rate whether or not the client keeps asking.
+
+The limit is per *connection*, which is the most it can be while every client
+shares one token. Per-device tokens are tracked in
+[#18](https://github.com/sbulav/herdr-relay/issues/18). Operators tune the tiers
+through the `HERDR_RATE_*` variables in [`deployment.md`](deployment.md).
+
 ## Server To Client
 
 ### `server_info`
@@ -574,6 +605,7 @@ point-to-point and is not correlated with `request_id`.
 | `keys contain disallowed values` | At least one `send_keys.keys` value fails the key allowlist. |
 | `text empty or too long` | `send_text.text` is empty or longer than 1,000 characters. |
 | `workspace_id required` | `create_tab.workspace_id` is absent or empty. |
+| `rate limited, slow down` | The connection exceeded its [rate limit](#rate-limiting) on a pane command. The command did not run. |
 
 ```json
 {
@@ -1122,6 +1154,7 @@ These are all code and message pairs produced through `command_error`.
 | `WAKE_FAILED` | `Wake-on-LAN command failed` | The configured Wake-on-LAN process raises or exits unsuccessfully. |
 | `UNKNOWN_HOST` | `Power host has no SSH target` | The shutdown power host has no truthy preset SSH target. |
 | `SHUTDOWN_FAILED` | `Host shutdown command failed` | The fixed SSH shutdown process raises or exits unsuccessfully. |
+| `RATE_LIMITED` | `Too many requests, slow down` | The connection exceeded its [rate limit](#rate-limiting) on a typed command. The command did not run. |
 
 ## Source Of Truth
 

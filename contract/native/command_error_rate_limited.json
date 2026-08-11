@@ -1,0 +1,6 @@
+{
+  "code": "RATE_LIMITED",
+  "message": "Too many requests, slow down",
+  "request_id": "req-flood",
+  "type": "command_error"
+}

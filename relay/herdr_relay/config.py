@@ -65,6 +65,15 @@ RELAY_VERSION = "0.7.0"  # this relay's own version; shown to a client that must
 # looks like an outage rather than an instruction to update.
 MIN_CLIENT = 2
 AUTH_TOKEN = os.environ.get("HERDR_RELAY_TOKEN", "")  # Shared secret for relay auth
+# Public-edge rate limiting (#18), applied per connection. Each tier is a token
+# bucket: BURST commands available at once, refilling at PER_SECOND. The defaults
+# are set so no human-driven session reaches them — tapping approvals or paging
+# through panes stays well under — while a client that loops is bounded within a
+# second. Set a BURST to 0 to disable that tier.
+RATE_INPUT_BURST = int(os.environ.get("HERDR_RATE_INPUT_BURST", "10"))
+RATE_INPUT_PER_SECOND = float(os.environ.get("HERDR_RATE_INPUT_PER_SECOND", "2"))
+RATE_HOST_BURST = int(os.environ.get("HERDR_RATE_HOST_BURST", "30"))
+RATE_HOST_PER_SECOND = float(os.environ.get("HERDR_RATE_HOST_PER_SECOND", "10"))
 PRESETS_FILE = os.environ.get("HERDR_PRESETS_FILE", "")
 HOSTS_FILE = os.environ.get("HERDR_HOSTS_FILE", "")
 PROJECTS_DB = os.environ.get(

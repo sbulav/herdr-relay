@@ -485,6 +485,19 @@ class NativeContractTests(unittest.TestCase):
 
         self.assert_contract("command_ack_terminate_session", frame)
 
+    def test_rate_limited_command_error(self):
+        """RATE_LIMITED goes on the wire like any other code, so it is pinned too.
+
+        It carries no retry hint on purpose: a backoff computed from a monotonic
+        clock is exactly the kind of value a golden cannot hold. The pane commands
+        are rejected in their own `error` dialect, which no golden covers because
+        no golden covers that dialect at all — `tests/test_ratelimit.py` pins it.
+        """
+        self.assert_contract(
+            "command_error_rate_limited",
+            herdr_relay.ratelimit.rejection("start_session", "req-flood"),
+        )
+
     def test_command_errors(self):
         preset = {
             "id": "review",

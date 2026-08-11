@@ -9,9 +9,14 @@ Its reason to exist is [herdr-mobile](https://github.com/sbulav/herdr-mobile),
 the Android client. A single-file web PWA and a Telegram bot also speak the
 protocol.
 
-> Originally forked from [dcolinmorgan/herdr-remote](https://github.com/dcolinmorgan/herdr-remote)
-> (AGPL-3.0-or-later — see [`LICENSE`](LICENSE)). It is now a hard fork with its
-> own protocol contract and no upstream merge target.
+> **A hard fork.** This began as a fork of
+> [dcolinmorgan/herdr-remote](https://github.com/dcolinmorgan/herdr-remote)
+> (AGPL-3.0-or-later — see [`LICENSE`](LICENSE)) and has since diverged into its
+> own thing: its own wire contract, its own packaging, no upstream remote and no
+> merge target. Durable start operations, private host configuration, saved
+> projects, harness and model catalogs, the version handshake, and rate limiting
+> exist only here. Nothing is held back for upstream compatibility, and nothing
+> comes back from upstream.
 
 ## What it does
 
@@ -25,6 +30,18 @@ protocol.
 - **Push and poll** — authenticated HTTP events beat the poll interval
 - **Host readiness** — separates SSH reachability, Herdr readiness, and active-agent count
 - **Saved projects** — host-scoped SQLite bookmarks with safe lazy folder browsing, labels, search, and non-destructive archive/restore
+- **Durable starts** — the relay owns a start operation rather than the socket
+  that asked for it, so a request survives losing its client, and a relay
+  restart looks for the agent it already created before starting another
+- **Wake and launch** — a start aimed at a sleeping host wakes it, waits for SSH
+  and for herdr to come up, and reports each transition as it happens
+- **Harness and model catalogs** — probed off the launch path and cached per
+  host, so a client can still offer choices while a host is asleep. Clients pick
+  an ID; they never supply a command
+- **Version handshake** — `server_info` advertises `relay_version` and
+  `min_client`, so an outdated client can say so instead of failing obscurely
+- **A metered edge** — per-connection token buckets on every command that
+  reaches a host
 
 ## Components
 
@@ -33,6 +50,7 @@ protocol.
 | `relay/herdr-relay.py` | Launcher: PEP 723 metadata, starts the package below |
 | `relay/herdr_relay/` | The relay: WebSocket + HTTP server, host polling |
 | `relay/herdr_telegram.py` | Telegram bot client |
+| `herdr-plugin.toml`, `relay/on_event.py` | The push plugin, shipped from this repo — not from upstream |
 | `web/index.html` | Single-file web PWA (browser client) |
 | `docs/native-protocol.md` | **The wire contract.** Clients are written against it |
 | `docs/deployment.md` | **The deployment contract.** Ports, paths, proxy requirements, env |
@@ -79,14 +97,23 @@ HERDR_TG_TOKEN="..." HERDR_TG_CHAT_ID="..." uv run relay/herdr_telegram.py
 | `HERDR_HOSTS_FILE` | Versioned host configuration with public names, private routing, roots, wrappers, harnesses, power capabilities, and readiness timeouts |
 | `HERDR_PROJECTS_DB` | Writable SQLite path for saved host-scoped projects (default: `~/.local/state/herdr-relay/projects.sqlite3`) |
 | `HERDR_BIN` | Path to the herdr binary (default: `/opt/homebrew/bin/herdr`) |
+| `HERDR_RATE_INPUT_BURST` | Terminal-input commands allowed at once, per connection (default: 10; `0` disables the tier) |
+| `HERDR_RATE_INPUT_PER_SECOND` | Terminal-input refill rate (default: 2) |
+| `HERDR_RATE_HOST_BURST` | Host read/write commands allowed at once, per connection (default: 30; `0` disables the tier) |
+| `HERDR_RATE_HOST_PER_SECOND` | Host read/write refill rate (default: 10) |
 
 Every variable the relay reads is tabulated in
-[`docs/deployment.md`](docs/deployment.md).
+[`docs/deployment.md`](docs/deployment.md). The rate-limit defaults sit far above
+any human-driven session; what they bound is a client stuck in a loop. Which
+commands fall in which tier, and what a refusal looks like on the wire, is in
+[`docs/native-protocol.md`](docs/native-protocol.md#rate-limiting).
 
-Optional push acceleration, from any machine running herdr:
+Optional push acceleration, from any machine running herdr — this repo ships the
+plugin itself (`herdr-plugin.toml`, `relay/on_event.py`); the upstream
+`herdr-push` plugin is not it:
 
 ```bash
-herdr plugin install dcolinmorgan/herdr-push
+herdr plugin install sbulav/herdr-relay
 export HERDR_RELAY="https://relay.example.com"
 ```
 
@@ -106,6 +133,21 @@ herdr-mobile (Android)   web PWA   Telegram bot
 Server-side state stays server-side: the SSH target behind a host, and a
 preset's `target`, are never broadcast. A client addresses a pane by `host` and
 `pane_id`.
+
+## Starting agents
+
+`start_session` creates a durable operation the relay owns; the socket that asked
+for it is only a subscriber. Progress arrives as `operation` frames, and
+`cancel_start` withdraws one. Because the operation is journalled in SQLite, a
+relay restart mid-start resumes from the row and checks whether the agent already
+exists before creating a second one; a client that reconnects on a new socket
+picks up the in-flight set from `server_info` rather than guessing. A start aimed
+at a host that is asleep — and whose host configuration grants wake — wakes it
+first and reports each readiness transition.
+
+The harness and model a client may pick come from `catalog_refresh`, which probes
+a host off the launch path and caches the result per host. A client selects a
+catalog ID; it cannot supply a command line.
 
 ## Host power controls
 
