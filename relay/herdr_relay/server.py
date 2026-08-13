@@ -45,9 +45,10 @@ async def process_request(connection, request):
         if key.lower() == "authorization":
             token = value.removeprefix("Bearer ").strip()
             break
-    # LEGACY (#14): query-param auth exists because a browser cannot set headers
-    # on a WebSocket handshake. It leaks the token into every proxy access log,
-    # so it is retired with web/. Native clients send Authorization.
+    # Query-param auth exists because a browser cannot set headers on a WebSocket
+    # handshake, and the browser client is supported (#14 was superseded by
+    # herdr-mobile#37). It leaks the token into every proxy access log, so it stays
+    # a fallback: native clients send Authorization and must keep doing so.
     # Also check query param ?token=
     if not token and "token=" in (request.path or ""):
         import urllib.parse
@@ -95,10 +96,10 @@ async def process_request(connection, request):
         ])
         return Response(204, "No Content", headers, b"")
 
-    # LEGACY (#14): the four static routes below (/, /index.html, /sw.js,
-    # /logo.svg) and /api/vapid-public-key serve the browser PWA out of web/.
-    # They are deleted together with web/ once a herdr-mobile build without the
-    # WebView fallback is actually installed on the phone.
+    # The four static routes below (/, /index.html, /sw.js, /logo.svg) and
+    # /api/vapid-public-key serve the browser client out of web/. It is a
+    # supported second client, not a transitional one — herdr-mobile#37 replaced
+    # the plan to retire it (#14) with keeping the two at parity.
     # Serve web app for GET / or GET /index.html
     path = (request.path or "/").split("?")[0]
     if path in ("/", "/index.html"):
@@ -248,10 +249,6 @@ async def handle_client(ws):
                 await ws.send(json.dumps(response))
                 if response.get("type") == "command_ack":
                     await transport.broadcast({"type": "catalogs", **catalogs.public_frame()})
-            elif msg_type == "launch_session":
-                response = await asyncio.to_thread(lifecycle.launch_session, msg)
-                _remember_response(request_results, request_id, response)
-                await ws.send(json.dumps(response))
             elif msg_type == "start_session":
                 response = await asyncio.to_thread(lifecycle.start_session, msg)
                 _remember_response(request_results, request_id, response)
@@ -383,7 +380,8 @@ async def handle_client(ws):
                     await ws.send(json.dumps({"type": "tab_created", "ok": True}))
                 else:
                     await ws.send(json.dumps(protocol.error("workspace_id required")))
-            # LEGACY (#14): browser-PWA only, retired with web/.
+            # Browser client only: herdr-mobile watches the socket in a
+            # foreground service and never subscribes.
             elif msg_type == "push_subscribe":
                 if push.subscribe(msg.get("subscription")):
                     log.info("Push subscription added from %s (%s)", ip, device)

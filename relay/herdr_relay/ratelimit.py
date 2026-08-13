@@ -39,7 +39,6 @@ HOST_COMMANDS = frozenset({
     "subscribe_pane",
     "catalog_refresh",
     "create_tab",
-    "launch_session",
     "start_session",
     "cancel_start",
     "terminate_session",
@@ -116,7 +115,7 @@ class ConnectionLimits:
         """The bucket governing `msg_type`, or None when it is not metered.
 
         Unmetered: `agent_event` (queued, never shelled out), `unsubscribe_pane`
-        (drops server-side state) and the LEGACY (#14) push subscription pair.
+        (drops server-side state) and the browser client's push subscription pair.
         """
         if msg_type in INPUT_COMMANDS:
             return self.input

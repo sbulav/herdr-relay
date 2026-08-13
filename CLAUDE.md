@@ -101,10 +101,13 @@ clock, hostname, or random value into one; freeze it in the test.
 ### What never goes on the wire
 
 Server-side routing state stays on the server. A pane is addressed by `host` and
-`pane_id`; the SSH target behind a host (`remote` on an agent entry, `target` on
-a preset) is a login string and is stripped at the broadcast boundary by
-`public_agents()` and `public_presets()`. Adding a field to an outbound frame
-means checking it is not one of these.
+`pane_id`; the SSH target behind a host (`remote` on an agent entry) is a login
+string and is stripped at the broadcast boundary by `public_agents()`. The host
+configuration file is the same kind of state: MAC addresses and wrapper paths
+never leave it — a client sees only the `capabilities` booleans `public_hosts()`
+derives from them — and a project root leaves it only as the opaque handle and
+label built by `hosts.project_roots()`, never as a filesystem path. Adding a
+field to an outbound frame means checking it is not one of these.
 
 ## Deployment
 
@@ -114,7 +117,9 @@ variable. Keep it current when any of those change.
 
 - Relay: `packages.herdr-relay` plus `nixosModules.herdr-relay` from the flake,
   or `contrib/herdr-relay.service` without Nix
-- Web app: Cloudflare Pages (push to main deploys `web/`) — LEGACY (#14)
+- Web app: Cloudflare Pages (push to main deploys `web/`). A supported second
+  client, not a transitional one — herdr-mobile#37 replaced #14's plan to retire
+  it with keeping the two at parity.
 
 **What does not belong in this repo.** Hostnames, TLS certificates, proxy or
 tunnel instance configuration, secret material, and the identity of any polled

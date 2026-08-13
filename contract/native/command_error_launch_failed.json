@@ -1,6 +1,0 @@
-{
-  "code": "LAUNCH_FAILED",
-  "message": "Herdr did not start the client",
-  "request_id": "req-launch",
-  "type": "command_error"
-}

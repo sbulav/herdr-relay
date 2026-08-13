@@ -10,7 +10,7 @@ import json
 
 from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
 
-from . import catalogs, config, herdr, operations, panes, presets, projects, protocol, push, state, transcripts
+from . import catalogs, config, herdr, operations, panes, projects, protocol, push, state, transcripts
 from .config import log
 
 
@@ -143,7 +143,6 @@ async def _poll_once():
     recovery = operations.public_recovery()
     await broadcast({
         "type": "agents", "agents": protocol.public_agents(agents),
-        "presets": presets.public_presets(),
         "hosts": hosts,
         "projects": project_frame["projects"],
         "project_roots": project_frame["roots"],

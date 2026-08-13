@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import json
 import os
 import pathlib
@@ -58,14 +59,6 @@ class NativeContractTests(unittest.TestCase):
             "capabilities": {"wake": False, "shutdown": False},
             "harnesses": [],
         }]
-        presets = [{
-            "id": "review",
-            "label": "Review",
-            "repository": "dcolinmorgan/herdr-remote",
-            "agent": "claude",
-            "model": "sonnet",
-            "hosts": {"buildbox": {"cwd": "/srv/herdr-remote", "target": "deploy@buildbox"}},
-        }]
         sent = []
 
         async def broadcast(frame):
@@ -73,8 +66,6 @@ class NativeContractTests(unittest.TestCase):
 
         with (
             patch.object(herdr_relay.herdr, "get_all_agents", return_value=(agents, hosts)),
-            patch.object(herdr_relay.presets, "PRESETS", presets),
-            patch.object(herdr_relay.presets, "PRESETS_BY_ID", {"review": presets[0]}),
             patch.object(herdr_relay.transport, "broadcast", side_effect=broadcast),
             patch.dict(herdr_relay.state.last_statuses, {}, clear=True),
             patch.dict(herdr_relay.state.pane_activity, {}, clear=True),
@@ -91,15 +82,15 @@ class NativeContractTests(unittest.TestCase):
             routed_target = herdr_relay.state.pane_remote_map.get("pane-7")
 
         self.assert_contract("agents", sent[0])
-        # The app's whole launch UI is driven by these two keys; a snapshot
-        # without them looks valid and silently empties the picker.
-        self.assertIn("presets", sent[0])
+        # `hosts` and `projects` drive the whole composer; a snapshot without
+        # them looks valid and silently empties the picker.
         self.assertIn("hosts", sent[0])
-        # public_presets() must strip the SSH target. Broadcasting it would hand
-        # every connected phone a login string for the build host.
-        self.assertNotIn("target", json.dumps(sent[0]["presets"]))
-        # The same value must not escape one key over, on the agent entries.
-        # It did, as "remote", while this test guarded only the presets.
+        self.assertIn("projects", sent[0])
+        # `presets` was the third such key until #45 retired preset launching.
+        # A client on revision 2 keys "is this a full snapshot?" off its presence,
+        # which is why its removal raised min_client rather than riding along.
+        self.assertNotIn("presets", sent[0])
+        # The SSH target must not escape on the agent entries, as "remote".
         self.assertNotIn("deploy@buildbox", json.dumps(sent[0]))
         self.assertNotIn("remote", sent[0]["agents"][0])
         # Routing still works internally; only the wire is cleaned.
@@ -437,36 +428,6 @@ class NativeContractTests(unittest.TestCase):
 
         self.assert_contract("pane_content", socket.sent[0])
 
-    def test_launch_session_ack_and_argv(self):
-        class UUID:
-            hex = "0123456789abcdef"
-
-        preset = {
-            "id": "review",
-            "label": "Review",
-            "repository": "dcolinmorgan/herdr-remote",
-            "agent": "claude",
-            "model": "sonnet",
-            "hosts": {"buildbox": {"cwd": "/srv/herdr-remote", "target": "deploy@buildbox"}},
-        }
-        with (
-            patch.object(herdr_relay.presets, "PRESETS_BY_ID", {"review": preset}),
-            patch.object(herdr_relay.lifecycle.uuid, "uuid4", return_value=UUID()),
-            patch.object(herdr_relay.herdr, "run_herdr_checked", return_value=(True, "started")) as run,
-        ):
-            frame = herdr_relay.launch_session({
-                "request_id": "req-launch-17",
-                "preset_id": "review",
-                "host_id": "buildbox",
-            })
-
-        self.assert_contract("command_ack_launch_session", frame)
-        run.assert_called_once_with(
-            "agent", "start", "mobile-review-01234567", "--cwd", "/srv/herdr-remote",
-            "--no-focus", "--", "claude", "--model", "sonnet",
-            remote="deploy@buildbox", host_id="buildbox", command=[herdr_relay.config.HERDR], timeout=15,
-        )
-
     def test_terminate_session_ack(self):
         session = "legacy:buildbox:pane-7"
         with (
@@ -512,35 +473,31 @@ class NativeContractTests(unittest.TestCase):
         )
 
     def test_command_errors(self):
-        preset = {
-            "id": "review",
-            "agent": "claude",
-            "model": "default",
-            "hosts": {"buildbox": {"cwd": "/srv/herdr-remote", "target": "deploy@buildbox"}},
-        }
+        """One golden per code that can reach a client, from a live emission site."""
         failed_process = type("Process", (), {"returncode": 1})()
-        with patch.object(herdr_relay.presets, "PRESETS_BY_ID", {"review": preset}):
-            self.assert_contract(
-                "command_error_invalid_request", herdr_relay.launch_session({})
-            )
-            self.assert_contract(
-                "command_error_unknown_preset",
-                herdr_relay.launch_session({"request_id": "req-unknown", "preset_id": "missing"}),
-            )
-            self.assert_contract(
-                "command_error_host_not_allowed",
-                herdr_relay.launch_session({
-                    "request_id": "req-host", "preset_id": "review", "host_id": "other"
-                }),
-            )
-            with patch.object(herdr_relay.herdr, "run_herdr_checked", return_value=(False, "")):
-                self.assert_contract(
-                    "command_error_launch_failed",
-                    herdr_relay.launch_session({
-                        "request_id": "req-launch", "preset_id": "review", "host_id": "buildbox"
-                    }),
-                )
+        powered = {
+            "id": "buildbox",
+            "display_name": "Build box",
+            "ssh": {"target": "deploy@buildbox"},
+            "project_roots": ["/srv"],
+            "herdr": {},
+            "harnesses": [],
+            "power": {"wake": {"mac": "00:11:22:33:44:55"}, "shutdown": True},
+            "readiness_timeout_seconds": 180,
+        }
 
+        @contextlib.contextmanager
+        def configured(host=powered):
+            """Patch both host lookups — they must never disagree."""
+            with (
+                patch.object(herdr_relay.hosts, "HOSTS", [host]),
+                patch.object(herdr_relay.hosts, "HOSTS_BY_ID", {host["id"]: host}),
+            ):
+                yield
+
+        self.assert_contract(
+            "command_error_invalid_request", herdr_relay.terminate_session({})
+        )
         self.assert_contract(
             "command_error_confirmation_required",
             herdr_relay.terminate_session({"request_id": "req-confirm"}),
@@ -570,25 +527,23 @@ class NativeContractTests(unittest.TestCase):
             )
 
         with (
-            patch.object(herdr_relay.config, "POWER_HOST_ID", "buildbox"),
-            patch.object(herdr_relay.config, "POWER_HOST_MAC", "00:11:22:33:44:55"),
+            configured(),
             patch.object(herdr_relay.lifecycle.subprocess, "run", return_value=failed_process),
         ):
             self.assert_contract(
                 "command_error_wake_failed",
                 herdr_relay.wake_host({"request_id": "req-wake", "host_id": "buildbox"}),
             )
-        # HOST_NOT_ALLOWED is emitted by two different subsystems with two
-        # different messages. Both are on the wire, so both are pinned.
-        with patch.object(herdr_relay.config, "POWER_HOST_ID", "buildbox"):
+        with configured():
             self.assert_contract(
                 "command_error_host_not_allowed_power",
                 herdr_relay.wake_host({"request_id": "req-wake", "host_id": "laptop"}),
             )
-        with (
-            patch.object(herdr_relay.config, "POWER_HOST_ID", "buildbox"),
-            patch.object(herdr_relay.presets, "HOST_TARGETS", {}),
-        ):
+        # A host file cannot declare `shutdown` without an SSH target — load_hosts
+        # refuses it. This pins what the power path does if that ever stops being
+        # true, which is the only way this code reaches a client.
+        unreachable = {**powered, "ssh": {}}
+        with configured(unreachable):
             self.assert_contract(
                 "command_error_unknown_host",
                 herdr_relay.shutdown_host({
@@ -596,8 +551,7 @@ class NativeContractTests(unittest.TestCase):
                 }),
             )
         with (
-            patch.object(herdr_relay.config, "POWER_HOST_ID", "buildbox"),
-            patch.object(herdr_relay.presets, "HOST_TARGETS", {"buildbox": "deploy@buildbox"}),
+            configured(),
             patch.object(herdr_relay.lifecycle.subprocess, "run", return_value=failed_process),
         ):
             self.assert_contract(
