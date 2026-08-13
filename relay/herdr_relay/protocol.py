@@ -78,3 +78,14 @@ def add_pane_metadata(entry, pane_id):
 
 def command_error(request_id, code, message):
     return {"type": "command_error", "request_id": request_id, "code": code, "message": message}
+
+
+def error(message):
+    """A refusal in the dialect the pane commands speak.
+
+    `respond`, `read_pane`, `send_keys` and `send_text` carry no `request_id`, so
+    their refusals cannot name what they are refusing: all a client gets is a
+    message. Kept here beside [command_error] so both dialects have one source
+    and the contract golden pins the shape rather than one caller's wording (#63).
+    """
+    return {"type": "error", "message": message}

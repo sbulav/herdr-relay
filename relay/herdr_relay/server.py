@@ -272,13 +272,13 @@ async def handle_client(ws):
             elif msg_type == "respond":
                 pane_id = msg["pane_id"]
                 if pane_id not in state.known_panes:
-                    await ws.send(json.dumps({"type": "error", "message": "unknown pane_id"}))
+                    await ws.send(json.dumps(protocol.error("unknown pane_id")))
                     continue
                 text = msg.get("text", "")
                 normalized_text = text.strip().lower()
                 allowed_responses = panes.SAFE_RESPONSES | state.pane_response_options.get(pane_id, set())
                 if normalized_text not in allowed_responses:
-                    await ws.send(json.dumps({"type": "error", "message": "response not in allowlist"}))
+                    await ws.send(json.dumps(protocol.error("response not in allowlist")))
                     continue
                 remote = state.pane_remote_map.get(pane_id)
                 log.info("Response from %s (%s): pane=%s text=%r", ip, device, pane_id, text)
@@ -293,7 +293,7 @@ async def handle_client(ws):
             elif msg_type == "read_pane":
                 pane_id = msg["pane_id"]
                 if pane_id not in state.known_panes:
-                    await ws.send(json.dumps({"type": "error", "message": "unknown pane_id"}))
+                    await ws.send(json.dumps(protocol.error("unknown pane_id")))
                     continue
                 # herdr rejects a non-numeric --lines by printing an error and
                 # exiting 0, which would reach the client as pane content.
@@ -345,11 +345,11 @@ async def handle_client(ws):
             elif msg_type == "send_keys":
                 pane_id = msg["pane_id"]
                 if pane_id not in state.known_panes:
-                    await ws.send(json.dumps({"type": "error", "message": "unknown pane_id"}))
+                    await ws.send(json.dumps(protocol.error("unknown pane_id")))
                     continue
                 keys = msg.get("keys", [])
                 if not all(panes.is_safe_key(k) for k in keys):
-                    await ws.send(json.dumps({"type": "error", "message": "keys contain disallowed values"}))
+                    await ws.send(json.dumps(protocol.error("keys contain disallowed values")))
                     continue
                 remote = state.pane_remote_map.get(pane_id)
                 log.info("Keys from %s (%s): pane=%s keys=%s", ip, device, pane_id, keys)
@@ -358,11 +358,11 @@ async def handle_client(ws):
             elif msg_type == "send_text":
                 pane_id = msg["pane_id"]
                 if pane_id not in state.known_panes:
-                    await ws.send(json.dumps({"type": "error", "message": "unknown pane_id"}))
+                    await ws.send(json.dumps(protocol.error("unknown pane_id")))
                     continue
                 text = msg.get("text", "")
                 if not text or len(text) > 1000:
-                    await ws.send(json.dumps({"type": "error", "message": "text empty or too long"}))
+                    await ws.send(json.dumps(protocol.error("text empty or too long")))
                     continue
                 remote = state.pane_remote_map.get(pane_id)
                 log.info("Text from %s (%s): pane=%s text=%r", ip, device, pane_id, text)
@@ -376,7 +376,7 @@ async def handle_client(ws):
                     await asyncio.to_thread(herdr.run_herdr, "tab", "create", "--workspace", workspace_id, "--focus")
                     await ws.send(json.dumps({"type": "tab_created", "ok": True}))
                 else:
-                    await ws.send(json.dumps({"type": "error", "message": "workspace_id required"}))
+                    await ws.send(json.dumps(protocol.error("workspace_id required")))
             # LEGACY (#14): browser-PWA only, retired with web/.
             elif msg_type == "push_subscribe":
                 if push.subscribe(msg.get("subscription")):

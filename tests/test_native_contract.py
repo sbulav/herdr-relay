@@ -490,12 +490,25 @@ class NativeContractTests(unittest.TestCase):
 
         It carries no retry hint on purpose: a backoff computed from a monotonic
         clock is exactly the kind of value a golden cannot hold. The pane commands
-        are rejected in their own `error` dialect, which no golden covers because
-        no golden covers that dialect at all — `tests/test_ratelimit.py` pins it.
+        are rejected in the other dialect, pinned by `test_bare_error` below.
         """
         self.assert_contract(
             "command_error_rate_limited",
             herdr_relay.ratelimit.rejection("start_session", "req-flood"),
+        )
+
+    def test_bare_error(self):
+        """The second refusal dialect, pinned through the helper every site now uses.
+
+        `respond`, `read_pane`, `send_keys` and `send_text` have no `request_id` to
+        answer with, so their refusals carry a message and nothing else. Generated
+        through `ratelimit.rejection` because that is a real emission site rather
+        than a frame written for the test; the message is the only part that varies
+        between the nine of them, and `protocol.error` is what fixes the rest (#63).
+        """
+        self.assert_contract(
+            "error_bare",
+            herdr_relay.ratelimit.rejection("send_keys", None),
         )
 
     def test_command_errors(self):
