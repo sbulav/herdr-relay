@@ -132,5 +132,5 @@ class ConnectionLimits:
 def rejection(msg_type, request_id):
     """The frame a rate-limited command answers with, in that command's dialect."""
     if msg_type in _UNTYPED_COMMANDS:
-        return {"type": "error", "message": "rate limited, slow down"}
+        return protocol.error("rate limited, slow down")
     return protocol.command_error(request_id, "RATE_LIMITED", "Too many requests, slow down")
