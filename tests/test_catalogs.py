@@ -48,6 +48,65 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual("1.2.3", catalog["version"])
         self.assertEqual(3, run.call_count)
 
+    def test_opencode_is_probed_without_json_flag_and_parses_one_id_per_line(self):
+        # OpenCode rejects `models --json` with usage text and exit 1, which
+        # reached clients as MODEL_DISCOVERY_FAILED and made the harness
+        # unlaunchable. The argv is the fix, so pin it here.
+        listing = "opencode/big-pickle\nanthropic/claude-opus-4-8\nhhdev-grok/grok-4.6\n"
+        with (
+            patch.object(herdr_relay.config, "PROJECTS_DB", self.db),
+            patch.object(herdr_relay.herdr, "configured_host_records", return_value=self.records()),
+            patch.object(herdr_relay.herdr, "run_herdr_checked", side_effect=[
+                (True, "opencode 1.18.4"),
+                (True, listing),
+                (True, "claude 1.0"),
+            ]) as run,
+        ):
+            frame = herdr_relay.catalogs.refresh_all()
+
+        model_calls = [call for call in run.call_args_list if call.args and call.args[0] == "models"]
+        self.assertEqual([("models",)], [call.args for call in model_calls])
+        catalog = next(item for item in frame["catalogs"] if item["harness_id"] == "opencode")
+        self.assertTrue(catalog["available"])
+        self.assertEqual(
+            ["default", "opencode/big-pickle", "anthropic/claude-opus-4-8", "hhdev-grok/grok-4.6"],
+            [item["id"] for item in catalog["models"]],
+        )
+        self.assertEqual("1.18.4", catalog["version"])
+
+    def test_opencode_listing_keeps_ids_and_drops_interleaved_noise(self):
+        listing = "warning: config key is deprecated\nanthropic/claude-opus-4-8\n\n"
+        with (
+            patch.object(herdr_relay.config, "PROJECTS_DB", self.db),
+            patch.object(herdr_relay.herdr, "configured_host_records", return_value=self.records()),
+            patch.object(herdr_relay.herdr, "run_herdr_checked", side_effect=[
+                (True, "opencode 1.18.4"),
+                (True, listing),
+                (True, "claude 1.0"),
+            ]),
+        ):
+            frame = herdr_relay.catalogs.refresh_all()
+
+        catalog = next(item for item in frame["catalogs"] if item["harness_id"] == "opencode")
+        self.assertEqual(["default", "anthropic/claude-opus-4-8"], [item["id"] for item in catalog["models"]])
+
+    def test_opencode_listing_in_an_unknown_shape_is_not_an_empty_catalog(self):
+        with (
+            patch.object(herdr_relay.config, "PROJECTS_DB", self.db),
+            patch.object(herdr_relay.herdr, "configured_host_records", return_value=self.records()),
+            patch.object(herdr_relay.herdr, "run_herdr_checked", side_effect=[
+                (True, "opencode 1.18.4"),
+                (True, "Usage: opencode models [provider]"),
+                (True, "claude 1.0"),
+            ]),
+        ):
+            frame = herdr_relay.catalogs.refresh_all()
+
+        catalog = next(item for item in frame["catalogs"] if item["harness_id"] == "opencode")
+        self.assertFalse(catalog["available"])
+        self.assertFalse(catalog["disabled"])
+        self.assertTrue(catalog["error"].startswith("MODEL_DISCOVERY_INVALID:"))
+
     def test_claude_uses_configured_aliases_without_model_probe(self):
         with (
             patch.object(herdr_relay.config, "PROJECTS_DB", self.db),

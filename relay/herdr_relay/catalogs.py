@@ -262,12 +262,51 @@ def _discover_json_models(host, command, timeout):
     )
 
 
-# Keep the adapters named even though OpenCode and Codex currently expose the
-# same stable JSON-shaped command. Their parsers can diverge independently as
-# either CLI changes without changing the wire contract or cache.
+def _discover_opencode_models(host, command, timeout):
+    # OpenCode has no `--json` on `models`: it rejects the flag with usage text
+    # on stderr and exit 1 (checked against 1.18.4), which the relay could only
+    # report as MODEL_DISCOVERY_FAILED — leaving every OpenCode harness
+    # unlaunchable, because a harness without a catalog cannot be started.
+    # Plain `models` is the machine-readable listing.
+    remote = hosts.ssh_target(host)
+    return herdr.run_herdr_checked(
+        "models", remote=remote, host_id=host["id"], command=command, timeout=timeout,
+    )
+
+
+def _parse_json_models(output):
+    return _catalog_models(json.loads(output))
+
+
+def _parse_line_models(output):
+    """Parse a listing of one model id per line, tolerating a JSON listing."""
+    text = (output or "").strip()
+    if not text:
+        return []
+    # A future release that grows a JSON listing should not need a new adapter.
+    if text[0] in "[{":
+        return _parse_json_models(text)
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    # An OpenCode model id is always `provider/model` and never contains a
+    # space, so this both selects ids and drops any banner or warning the CLI
+    # interleaves with them.
+    models = [line for line in lines if "/" in line and not any(char.isspace() for char in line)]
+    if not models:
+        # Output that parses to nothing is not an empty catalog; it is a listing
+        # in a shape this adapter does not know. Say so instead of reporting a
+        # healthy harness with no models.
+        raise ValueError("no model ids in listing")
+    return _catalog_models(models)
+
+
+# A probe and its parser travel together so either CLI can change the shape of
+# its listing without touching the other or the wire contract. Codex is assumed
+# to have the JSON listing it was written against; only OpenCode is verified
+# here.
+_JSON_ADAPTER = (_discover_json_models, _parse_json_models)
 MODEL_ADAPTERS = {
-    "opencode": _discover_json_models,
-    "codex": _discover_json_models,
+    "opencode": (_discover_opencode_models, _parse_line_models),
+    "codex": _JSON_ADAPTER,
 }
 
 
@@ -289,18 +328,18 @@ def discover_harness(host, harness):
     if harness_id == "claude":
         models = _configured_aliases(harness)
     else:
-        # Both adapters expose a machine-readable model listing.  The parser is
-        # intentionally tolerant because CLI releases have used both a bare
-        # array and a {models: [...]} envelope.
-        adapter = MODEL_ADAPTERS.get(harness_id, _discover_json_models)
-        ok, output = adapter(host, command, timeout)
+        # Every adapter exposes a machine-readable model listing.  The parsers
+        # are intentionally tolerant because CLI releases have used a bare
+        # array, a {models: [...]} envelope, and one id per line.
+        probe, parse = MODEL_ADAPTERS.get(harness_id, _JSON_ADAPTER)
+        ok, output = probe(host, command, timeout)
         if not ok:
             if _output_is_missing(output):
                 return {"ok": False, "code": "HARNESS_MISSING", "message": "Harness command is missing", "permanent": True}
             return {"ok": False, "code": "MODEL_DISCOVERY_FAILED", "message": "Model discovery failed", "permanent": False}
         try:
-            models = _catalog_models(json.loads(output))
-        except (json.JSONDecodeError, TypeError):
+            models = parse(output)
+        except (TypeError, ValueError):  # JSONDecodeError is a ValueError
             return {"ok": False, "code": "MODEL_DISCOVERY_INVALID", "message": "Harness returned invalid model data", "permanent": False}
 
     # `default` is always a valid no-argument launch when the harness itself is
