@@ -137,23 +137,28 @@ class HostStatusTests(unittest.TestCase):
         run.return_value.returncode = 0
         run.return_value.stdout = "ok\n"
 
-        self.assertEqual(
-            herdr_relay.herdr.run_herdr_checked("pane", "list", remote="workstation"),
-            (True, "ok"),
-        )
-        run.assert_called_once_with(
-            [
-                "ssh",
-                "-o", "ConnectTimeout=5",
-                "-o", "ServerAliveInterval=3",
-                "-o", "ServerAliveCountMax=2",
-                "-o", "BatchMode=yes",
-                "workstation", herdr_relay.config.HERDR, "pane", "list",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
+        with tempfile.TemporaryDirectory() as control_dir:
+            with patch.object(herdr_relay.config, "SSH_CONTROL_DIR", control_dir):
+                self.assertEqual(
+                    herdr_relay.herdr.run_herdr_checked("pane", "list", remote="workstation"),
+                    (True, "ok"),
+                )
+            run.assert_called_once_with(
+                [
+                    "ssh",
+                    "-o", "ConnectTimeout=5",
+                    "-o", "ServerAliveInterval=3",
+                    "-o", "ServerAliveCountMax=2",
+                    "-o", "BatchMode=yes",
+                    "-o", "ControlMaster=auto",
+                    "-o", f"ControlPath={control_dir}/%C",
+                    "-o", "ControlPersist=60",
+                    "workstation", herdr_relay.config.HERDR, "pane", "list",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
 
     @patch.object(herdr_relay.lifecycle.subprocess, "run")
     def test_remote_poll_reports_failures(self, run):
@@ -487,27 +492,32 @@ class HostPowerTests(unittest.TestCase):
     def test_shutdown_is_a_fixed_non_interactive_ssh_command(self, run):
         run.return_value.returncode = 0
 
-        response = herdr_relay.shutdown_host({
-            "request_id": "request-2",
-            "host_id": "workstation",
-            "confirmation_nonce": "nonce-1",
-        })
+        with tempfile.TemporaryDirectory() as control_dir:
+            with patch.object(herdr_relay.config, "SSH_CONTROL_DIR", control_dir):
+                response = herdr_relay.shutdown_host({
+                    "request_id": "request-2",
+                    "host_id": "workstation",
+                    "confirmation_nonce": "nonce-1",
+                })
 
-        self.assertEqual(response["type"], "command_ack")
-        run.assert_called_once_with(
-            [
-                "ssh",
-                "-o", "ConnectTimeout=5",
-                "-o", "ServerAliveInterval=3",
-                "-o", "ServerAliveCountMax=2",
-                "-o", "BatchMode=yes",
-                "ssh-target",
-                "sudo", "-n", "systemctl", "poweroff",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
+            self.assertEqual(response["type"], "command_ack")
+            run.assert_called_once_with(
+                [
+                    "ssh",
+                    "-o", "ConnectTimeout=5",
+                    "-o", "ServerAliveInterval=3",
+                    "-o", "ServerAliveCountMax=2",
+                    "-o", "BatchMode=yes",
+                    "-o", "ControlMaster=auto",
+                    "-o", f"ControlPath={control_dir}/%C",
+                    "-o", "ControlPersist=60",
+                    "ssh-target",
+                    "sudo", "-n", "systemctl", "poweroff",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
 
     @patch.object(herdr_relay.config, "POWER_HOST_ID", "workstation")
     @patch.object(herdr_relay.lifecycle.subprocess, "run")
@@ -518,6 +528,240 @@ class HostPowerTests(unittest.TestCase):
         self.assertEqual(wake["code"], "HOST_NOT_ALLOWED")
         self.assertEqual(shutdown["code"], "CONFIRMATION_REQUIRED")
         run.assert_not_called()
+
+
+class SshMultiplexingTests(unittest.TestCase):
+    """#19: one shared connection per host instead of one per poll."""
+
+    def setUp(self):
+        # The usability verdict is cached per directory, and these cases reuse
+        # directory names across tests.
+        herdr_relay.herdr._control_dir_state = None
+        self.addCleanup(setattr, herdr_relay.herdr, "_control_dir_state", None)
+
+    def test_control_directory_is_created_private(self):
+        with tempfile.TemporaryDirectory() as parent:
+            control_dir = os.path.join(parent, "ssh")
+            with patch.object(herdr_relay.config, "SSH_CONTROL_DIR", control_dir):
+                options = herdr_relay.herdr.ssh_options()
+
+            self.assertIn(f"ControlPath={control_dir}/%C", options)
+            # ssh creates the socket, never the directory holding it, so an
+            # absent directory means every multiplexed call fails.
+            self.assertTrue(os.path.isdir(control_dir))
+            self.assertEqual(os.stat(control_dir).st_mode & 0o777, 0o700)
+
+    def test_overlong_control_path_disables_multiplexing_rather_than_failing(self):
+        # An over-long ControlPath does not degrade to a direct connection —
+        # ssh exits immediately — so every remote host would go dark.
+        with tempfile.TemporaryDirectory() as parent:
+            control_dir = os.path.join(parent, "d" * 100)
+            with patch.object(herdr_relay.config, "SSH_CONTROL_DIR", control_dir):
+                options = herdr_relay.herdr.ssh_options()
+
+        self.assertEqual(options, herdr_relay.herdr.SSH_OPTIONS)
+        self.assertNotIn("ControlMaster=auto", options)
+
+    def test_a_control_path_at_the_limit_is_refused(self):
+        # ssh compares `>= 104`, sun_path being a C string. A directory that
+        # produces exactly 104 characters passes a `> 104` check and then fails
+        # every call — the one length this has to get right.
+        with tempfile.TemporaryDirectory() as parent:
+            padding = 104 - len(parent) - len("/") - len("/") - 40
+            self.assertGreater(padding, 0, "tempdir too long for this case")
+            control_dir = os.path.join(parent, "d" * padding)
+            with patch.object(herdr_relay.config, "SSH_CONTROL_DIR", control_dir):
+                options = herdr_relay.herdr.ssh_options()
+
+        self.assertEqual(len(f"{control_dir}/{'c' * 40}"), 104)
+        self.assertEqual(options, herdr_relay.herdr.SSH_OPTIONS)
+
+    def test_a_configured_tilde_is_expanded_before_the_directory_is_made(self):
+        # ssh expands `~` in a ControlPath itself. Handing it one we never
+        # expanded means creating the directory somewhere ssh does not look,
+        # and a missing directory fails the call rather than degrading.
+        with tempfile.TemporaryDirectory() as home:
+            with patch.dict(os.environ, {"HOME": home}), patch.object(
+                herdr_relay.config, "SSH_CONTROL_DIR", "~/sock"
+            ):
+                options = herdr_relay.herdr.ssh_options()
+
+            self.assertIn(f"ControlPath={home}/sock/%C", options)
+            self.assertTrue(os.path.isdir(os.path.join(home, "sock")))
+
+    def test_unusable_control_directory_disables_multiplexing(self):
+        with tempfile.TemporaryDirectory() as parent:
+            # A regular file where the directory should be: makedirs raises,
+            # and the fallback must be a working relay, not an exception.
+            control_dir = os.path.join(parent, "occupied")
+            with open(control_dir, "w") as handle:
+                handle.write("")
+            with patch.object(herdr_relay.config, "SSH_CONTROL_DIR", control_dir):
+                options = herdr_relay.herdr.ssh_options()
+
+        self.assertEqual(options, herdr_relay.herdr.SSH_OPTIONS)
+
+    def test_folder_browsing_reuses_the_masters_the_poll_loop_opens(self):
+        # project_fs used to carry its own copy of the option list, so every
+        # browse opened a second connection beside the master already up.
+        with tempfile.TemporaryDirectory() as control_dir:
+            with patch.object(
+                herdr_relay.config, "SSH_CONTROL_DIR", control_dir
+            ), patch.object(
+                herdr_relay.project_fs.hosts, "ssh_target", return_value="user@host"
+            ), patch.object(herdr_relay.project_fs.subprocess, "run") as run:
+                run.return_value.returncode = 0
+                run.return_value.stdout = json.dumps(
+                    {"ok": True, "canonical_path": "/work", "entries": []}
+                )
+                herdr_relay.project_fs.browse_remote({"host_id": "h"}, "/work", [])
+
+            argv = run.call_args[0][0]
+            self.assertEqual(argv[0], "ssh")
+            self.assertIn("ControlMaster=auto", argv)
+            self.assertIn(f"ControlPath={control_dir}/%C", argv)
+
+
+class PollPacingTests(unittest.TestCase):
+    """#19: the poll loop costs less when nothing is happening."""
+
+    def setUp(self):
+        herdr_relay.state.poll_idle_streak = 0
+        herdr_relay.state.poll_wakeup.clear()
+        self.addCleanup(setattr, herdr_relay.state, "poll_idle_streak", 0)
+        self.addCleanup(herdr_relay.state.poll_wakeup.clear)
+        # Entered once per test, not once per poll: a pane the loop has never
+        # seen is itself a change, so clearing between two polls of the same
+        # test would make every cycle look busy and prove nothing.
+        stack = PaneMetadataTests.poll_state()
+        stack.enter_context(patch.object(herdr_relay.state, "clients", set()))
+        stack.__enter__()
+        self.addCleanup(stack.close)
+
+    def test_interval_climbs_geometrically_to_the_ceiling(self):
+        interval = herdr_relay.transport.poll_interval
+        self.assertEqual(interval(0), herdr_relay.config.POLL_INTERVAL)
+        self.assertEqual(interval(1), 3.0)
+        self.assertEqual(interval(2), 4.5)
+        # Clamped, and never past the ceiling however long the quiet lasts.
+        self.assertEqual(interval(50), herdr_relay.config.POLL_INTERVAL_MAX)
+        # A negative streak is not a shorter-than-floor poll.
+        self.assertEqual(interval(-1), herdr_relay.config.POLL_INTERVAL)
+
+    def test_a_very_long_quiet_spell_does_not_kill_the_loop(self):
+        # The streak is unbounded, and `1.5 ** 2000` raises OverflowError rather
+        # than saturating. poll_interval supplies the timeout of the wait, which
+        # sits outside the try guarding a failed cycle, so raising here stops
+        # the relay polling until it is restarted.
+        interval = herdr_relay.transport.poll_interval
+        self.assertEqual(interval(10_000), herdr_relay.config.POLL_INTERVAL_MAX)
+        with patch.object(herdr_relay.config, "POLL_BACKOFF_FACTOR", 1e300):
+            self.assertEqual(interval(3), herdr_relay.config.POLL_INTERVAL_MAX)
+
+    @staticmethod
+    def run_poll(agents, clients=(), operations=()):
+        async def get_all_agents():
+            return agents, []
+
+        async def broadcast(_frame):
+            return None
+
+        with patch.object(
+            herdr_relay.herdr, "get_all_agents", side_effect=get_all_agents
+        ), patch.object(
+            herdr_relay.transport, "broadcast", side_effect=broadcast
+        ), patch.object(
+            herdr_relay.operations, "public_recovery", return_value=list(operations)
+        ):
+            herdr_relay.state.clients.update(clients)
+            asyncio.run(herdr_relay._poll_once())
+        return herdr_relay.state.poll_idle_streak
+
+    def test_quiet_cycles_accumulate_and_a_busy_one_resets(self):
+        idle = [PaneMetadataTests.agent(status="idle")]
+        # The first poll of a pane is itself a change, so the streak starts at 0.
+        self.assertEqual(self.run_poll(idle), 0)
+        herdr_relay.state.poll_idle_streak = 3
+        self.assertEqual(self.run_poll(idle), 4)
+        self.assertEqual(
+            self.run_poll([PaneMetadataTests.agent(status="working")]), 0
+        )
+
+    def test_a_working_agent_holds_the_loop_at_its_floor_while_unchanged(self):
+        # A long tool call reports "working" poll after poll with no new output.
+        # Nothing has changed, but the turn is live and its end must land fast.
+        working = [PaneMetadataTests.agent(status="working")]
+        self.run_poll(working)  # First sight of a pane is a change; get past it.
+        herdr_relay.state.poll_idle_streak = 4
+        self.assertEqual(self.run_poll(working), 0)
+
+    def test_a_connected_client_holds_the_loop_at_its_floor(self):
+        # Not "a subscribed client": the agent list is what a client sees before
+        # it subscribes to anything, and a status change there is what it opened
+        # the app for. Backing off behind a connected client trades one poll for
+        # up to POLL_INTERVAL_MAX of stale dashboard.
+        idle = [PaneMetadataTests.agent(status="idle")]
+        self.run_poll(idle)  # First sight of a pane is a change; get past it.
+        herdr_relay.state.poll_idle_streak = 4
+        self.assertEqual(self.run_poll(idle), 5, "nobody connected: expected backoff")
+        self.assertEqual(self.run_poll(idle, clients=[object()]), 0)
+
+    def test_an_active_operation_holds_the_loop_at_its_floor(self):
+        idle = [PaneMetadataTests.agent(status="idle")]
+        self.run_poll(idle)  # First sight of a pane is a change; get past it.
+        # A terminal operation in the recovery frame is history, not work.
+        herdr_relay.state.poll_idle_streak = 2
+        self.assertEqual(self.run_poll(idle, operations=[{"stage": "started"}]), 3)
+        herdr_relay.state.poll_idle_streak = 2
+        self.assertEqual(self.run_poll(idle, operations=[{"stage": "waiting_for_host"}]), 0)
+
+    def test_changed_output_holds_the_loop_at_its_floor(self):
+        self.run_poll([PaneMetadataTests.agent(status="idle", revision=1)])
+        herdr_relay.state.poll_idle_streak = 5
+        # Same status, new output: the pane is producing, so drop back to the
+        # floor even though its status never moved.
+        streak = self.run_poll([PaneMetadataTests.agent(status="idle", revision=2)])
+        self.assertEqual(streak, 0)
+
+    def test_an_edge_cuts_the_backoff_short(self):
+        async def scenario():
+            herdr_relay.state.poll_idle_streak = 50  # would wait the full ceiling
+            polls = 0
+
+            async def poll_once():
+                nonlocal polls
+                polls += 1
+                if polls == 1:
+                    # Arrives while the cycle is still running: it must still
+                    # be seen, not cleared out from under the wait below.
+                    herdr_relay.transport.wake_poll_loop()
+
+            with patch.object(herdr_relay.transport, "_poll_once", side_effect=poll_once):
+                task = asyncio.create_task(herdr_relay.poll_loop())
+                await asyncio.sleep(0.05)
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+            return polls
+
+        # Two polls inside 50ms only happens if the 10s backoff was interrupted.
+        self.assertGreaterEqual(asyncio.run(scenario()), 2)
+
+    def test_a_pushed_event_wakes_the_loop(self):
+        async def scenario():
+            queue = asyncio.Queue()
+            await queue.put({"type": "operation_event", "operation": {"stage": "queued"}})
+            with patch.object(herdr_relay.state, "event_queue", queue), patch.object(
+                herdr_relay.transport, "broadcast", new=AsyncMock()
+            ):
+                task = asyncio.create_task(herdr_relay.event_push())
+                await asyncio.sleep(0.05)
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+            return herdr_relay.state.poll_wakeup.is_set()
+
+        self.assertTrue(asyncio.run(scenario()))
 
 
 class PaneChromeTests(unittest.TestCase):

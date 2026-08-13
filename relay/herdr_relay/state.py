@@ -27,3 +27,9 @@ subscriptions = {}     # ws -> pane_id the client is currently viewing
 stream_sigs = {}       # (id(ws), pane_id) -> signature of the last blocks pushed
 known_panes = set()
 pane_response_options = {}
+# Poll pacing (#19). `poll_idle_streak` counts consecutive cycles that saw
+# nothing worth staying fast for; `poll_wakeup` is how an edge — a client
+# connecting or subscribing, an event pushed by the herdr hook — cuts the
+# current backoff short instead of waiting it out.
+poll_idle_streak = 0
+poll_wakeup = asyncio.Event()
