@@ -179,6 +179,31 @@ class StartOperationTests(unittest.TestCase):
         self.assertIn("--cwd", run.call_args.args)
         self.assertNotIn("--model", run.call_args.args)
 
+    def test_ready_host_launch_without_exact_name_is_not_a_readiness_timeout(self):
+        operation = self.begin_operation()
+        ready = {"ssh_reachable": True, "herdr_ready": True}
+        with (
+            patch.object(herdr_relay.state, "event_queue", queue.Queue()),
+            patch.object(
+                herdr_relay.herdr,
+                "get_agents_from_host",
+                return_value=([{"agent": "claude", "pane_id": "pane-unnamed"}], ready),
+            ),
+            patch.object(herdr_relay.herdr, "run_herdr_checked", return_value=(True, "")),
+            patch.object(herdr_relay.operations.time, "monotonic", side_effect=[0, 2]),
+            self.assertLogs(herdr_relay.config.log, level="WARNING") as logs,
+        ):
+            herdr_relay.operations._start_operation(operation["operation_id"])
+
+        result = herdr_relay.operations.OperationStore(str(self.db)).get(operation["operation_id"])
+        self.assertEqual("failed", result["stage"])
+        self.assertEqual("AGENT_NOT_OBSERVABLE", result["error_code"])
+        self.assertEqual(
+            "Herdr did not expose a recoverable agent identity",
+            result["error_message"],
+        )
+        self.assertIn("failed at starting_agent: AGENT_NOT_OBSERVABLE", logs.output[0])
+
     def test_offline_wol_start_reports_wake_and_readiness_stages(self):
         self.host["power"] = {"wake": {"mac": "00:11:22:33:44:55"}, "shutdown": False}
         ready = {"ssh_reachable": True, "herdr_ready": True}

@@ -288,6 +288,15 @@ ERROR_MESSAGES = {
 
 
 def _error(store, operation_id, code):
+    current = store.get(operation_id)
+    if current is not None and current.get("stage") in ACTIVE_STAGES:
+        config.log.warning(
+            "start operation %s on host %s failed at %s: %s",
+            operation_id[:8],
+            current.get("host_id", "configured-host"),
+            current.get("stage", "unknown"),
+            code,
+        )
     return _transition(
         store,
         operation_id,
@@ -570,7 +579,10 @@ def _start_operation(operation_id):
             break
         if _wait_for_probe(cancel_event, min(POST_START_PROBE_INTERVAL_SECONDS, max(remaining, 0))):
             return
-    _error(store, operation_id, "READY_TIMEOUT")
+    # The host and Herdr were ready before launch. What timed out here is the
+    # exact-name contract needed to recover this operation without ever
+    # creating a duplicate, not host readiness.
+    _error(store, operation_id, "AGENT_NOT_OBSERVABLE")
 
 
 def ensure_worker(operation_id):
