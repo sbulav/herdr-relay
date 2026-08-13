@@ -61,14 +61,6 @@ class HostConfigurationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.load(invalid)
 
-    def test_project_root_allowlist_normalizes_paths_without_prefix_collisions(self):
-        host = self.load(self.valid_document())[0]
-
-        self.assertTrue(herdr_relay.hosts.project_root_allows(host, "/srv/projects/herdr"))
-        self.assertTrue(herdr_relay.hosts.project_root_allows(host, "/srv/projects/../projects/herdr"))
-        self.assertFalse(herdr_relay.hosts.project_root_allows(host, "/srv/projects-old/herdr"))
-        self.assertFalse(herdr_relay.hosts.project_root_allows(host, "/srv/projects/../secrets"))
-
     def test_public_host_has_state_but_no_private_configuration(self):
         host = self.load(self.valid_document())[0]
         public = herdr_relay.hosts.public_host(
@@ -84,29 +76,6 @@ class HostConfigurationTests(unittest.TestCase):
         self.assertNotIn("00:11:22:33:44:55", encoded)
         self.assertNotIn("/srv/projects", encoded)
         self.assertNotIn("/opt/herdr", encoded)
-
-    def test_launch_rejects_a_preset_cwd_outside_the_host_roots(self):
-        host = self.load(self.valid_document())[0]
-        preset = {
-            "id": "review",
-            "agent": "claude",
-            "model": "default",
-            "hosts": {"workstation": {"cwd": "/srv/secrets"}},
-        }
-        with (
-            patch.object(herdr_relay.hosts, "HOSTS", [host]),
-            patch.object(herdr_relay.hosts, "HOSTS_BY_ID", {"workstation": host}),
-            patch.object(herdr_relay.presets, "PRESETS_BY_ID", {"review": preset}),
-            patch.object(herdr_relay.herdr, "run_herdr_checked") as run,
-        ):
-            frame = herdr_relay.lifecycle.launch_session({
-                "request_id": "req-root",
-                "preset_id": "review",
-                "host_id": "workstation",
-            })
-
-        self.assertEqual(frame["code"], "PROJECT_NOT_ALLOWED")
-        run.assert_not_called()
 
     def test_public_readiness_distinguishes_ssh_and_herdr_failures(self):
         host = self.load(self.valid_document())[0]

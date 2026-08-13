@@ -23,7 +23,7 @@ def _get_log_dir():
     return os.path.expanduser("~/.local/state/herdr-remote/log")
 
 
-# The LEGACY (#14) static routes serve web/ from the repo root. Resolve it once,
+# The static routes serve web/ from the repo root. Resolve it once,
 # here, rather than from __file__ at each route: this file sits inside the package
 # rather than beside web/, and three separate copies of the same ".." arithmetic
 # is how that kind of move breaks quietly.
@@ -79,7 +79,7 @@ SSH_CONTROL_DIR = os.environ.get(
 # a backed-off poll loop still finds the connection it opened last cycle.
 SSH_CONTROL_PERSIST = os.environ.get("HERDR_SSH_CONTROL_PERSIST", "60")
 
-RELAY_VERSION = "0.7.0"  # this relay's own version; shown to a client that must update
+RELAY_VERSION = "0.8.0"  # this relay's own version; shown to a client that must update
 # The oldest client protocol revision this relay will work with. Deliberately not
 # an app version: a client's protocol revision changes only when the wire changes,
 # so a routine release never has to touch it, and a breaking change bumps it in
@@ -90,7 +90,11 @@ RELAY_VERSION = "0.7.0"  # this relay's own version; shown to a client that must
 # declares it. The relay does not enforce it — it advertises, and the client
 # blocks itself. Rejecting the socket would park the app's reconnect loop, which
 # looks like an outage rather than an instruction to update.
-MIN_CLIENT = 2
+# Revision 3 (#45) removed `launch_session` and the `presets` key from the agents
+# snapshot. A revision-2 client can still read every frame it gets, but its only
+# way to start an agent is gone, so it is told to update rather than left with a
+# composer whose button does nothing.
+MIN_CLIENT = 3
 AUTH_TOKEN = os.environ.get("HERDR_RELAY_TOKEN", "")  # Shared secret for relay auth
 # Public-edge rate limiting (#18), applied per connection. Each tier is a token
 # bucket: BURST commands available at once, refilling at PER_SECOND. The defaults
@@ -101,14 +105,15 @@ RATE_INPUT_BURST = int(os.environ.get("HERDR_RATE_INPUT_BURST", "10"))
 RATE_INPUT_PER_SECOND = float(os.environ.get("HERDR_RATE_INPUT_PER_SECOND", "2"))
 RATE_HOST_BURST = int(os.environ.get("HERDR_RATE_HOST_BURST", "30"))
 RATE_HOST_PER_SECOND = float(os.environ.get("HERDR_RATE_HOST_PER_SECOND", "10"))
-PRESETS_FILE = os.environ.get("HERDR_PRESETS_FILE", "")
 HOSTS_FILE = os.environ.get("HERDR_HOSTS_FILE", "")
 PROJECTS_DB = os.environ.get(
     "HERDR_PROJECTS_DB",
     os.path.expanduser("~/.local/state/herdr-relay/projects.sqlite3"),
 )
-POWER_HOST_ID = os.environ.get("HERDR_POWER_HOST_ID", "")
-POWER_HOST_MAC = os.environ.get("HERDR_POWER_HOST_MAC", "")
+# Which hosts may be woken or shut down, and by what MAC, comes from the host
+# configuration file alone (#45) — there is no environment fallback naming one
+# host, because a power capability the relay cannot tie to a configured host is
+# a capability nobody reviewed.
 WAKE_BIN = os.environ.get("HERDR_WAKE_BIN", "wakeonlan")
 # Native structured stores used by supported coding agents.
 CLAUDE_PROJECTS = os.environ.get("HERDR_CLAUDE_PROJECTS", "~/.claude/projects")

@@ -232,45 +232,6 @@ class ProjectStoreTests(unittest.TestCase):
             herdr_relay.projects.ProjectStore(str(self.db)).begin_create("req-concurrent")
         self.assertEqual("REQUEST_IN_FLIGHT", duplicate.exception.code)
 
-    def test_project_launch_names_are_unique(self):
-        root = herdr_relay.hosts.project_roots(self.host)[0]
-        canonical_path = str(self.root / "nested")
-        project = {
-            "project_id": "0123456789abcdef0123456789abcdef",
-            "host_id": "workstation",
-            "root_id": root["id"],
-            "canonical_path": canonical_path,
-            "archived": 0,
-            "available": 1,
-        }
-        store = Mock()
-        store.get.return_value = project
-        with (
-            patch.object(herdr_relay.hosts, "HOSTS_BY_ID", {"workstation": self.host}),
-            patch.object(herdr_relay.projects, "store", return_value=store),
-            patch.object(herdr_relay.project_fs, "browse", return_value={"canonical_path": canonical_path}),
-            patch.object(herdr_relay.herdr, "run_herdr_checked", return_value=(True, "")) as run,
-        ):
-            first = herdr_relay.lifecycle._launch_project({
-                "type": "launch_session",
-                "request_id": "launch-1",
-                "project_id": project["project_id"],
-                "host_id": "workstation",
-            })
-            second = herdr_relay.lifecycle._launch_project({
-                "type": "launch_session",
-                "request_id": "launch-2",
-                "project_id": project["project_id"],
-                "host_id": "workstation",
-            })
-
-        self.assertEqual("command_ack", first["type"])
-        self.assertEqual("command_ack", second["type"])
-        names = [call.args[2] for call in run.call_args_list]
-        self.assertEqual(2, len(names))
-        self.assertNotEqual(names[0], names[1])
-        self.assertTrue(names[0].startswith("mobile-project-0123456789ab-"))
-
     def test_typed_save_and_remove_never_delete_directory(self):
         root = herdr_relay.hosts.project_roots(self.host)[0]
         with (

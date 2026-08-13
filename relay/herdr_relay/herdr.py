@@ -11,7 +11,7 @@ import signal
 import subprocess
 import time
 
-from . import config, hosts, panes, presets, state
+from . import config, hosts, panes, state
 
 
 SSH_OPTIONS = [
@@ -287,36 +287,14 @@ def get_agents_from_host(remote=None, host_id=None, host=None, cancel_event=None
 
 
 def configured_host_records():
-    """Return host definitions, with a temporary preset fallback for cutover."""
+    """Return host definitions: the configured topology, or a bare fallback.
+
+    The fallback keeps a relay with no host file usable — the local host plus
+    whatever `HERDR_REMOTES` names — with `/` as the only project root and no
+    power capability, because nothing here knows a MAC or a wrapper path.
+    """
     if hosts.HOSTS:
         return list(hosts.HOSTS)
-    if presets.HOST_TARGETS:
-        records = []
-        for host_id, remote in presets.HOST_TARGETS.items():
-            roots = [
-                host.get("cwd")
-                for preset in presets.PRESETS
-                for configured_id, host in preset.get("hosts", {}).items()
-                if configured_id == host_id and host.get("cwd")
-            ]
-            records.append(
-                {
-                    "id": host_id,
-                    "display_name": host_id,
-                    "ssh": {"target": remote} if remote else {},
-                    "project_roots": sorted(set(roots)) or ["/"],
-                    "herdr": {},
-                    "harnesses": [],
-                    "power": {
-                        "wake": {"mac": config.POWER_HOST_MAC}
-                        if host_id == config.POWER_HOST_ID and config.POWER_HOST_MAC
-                        else None,
-                        "shutdown": host_id == config.POWER_HOST_ID,
-                    },
-                    "readiness_timeout_seconds": 180,
-                }
-            )
-        return records
     return [
         {
             "id": "local",

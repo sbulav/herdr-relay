@@ -338,6 +338,36 @@ class StartOperationTests(unittest.TestCase):
         )
         probe.assert_not_called()
 
+    def test_a_project_path_outside_its_root_never_launches(self):
+        """The allowlist that guarded preset launches now guards durable starts (#45).
+
+        The stored path is edited underneath the operation, which is what a moved
+        symlink or a hand-edited database looks like from here. `_path_is_within`
+        is the only thing standing between that and a herdr start in /etc.
+        """
+        operation = self.begin_operation()
+        connection = herdr_relay.projects.ProjectStore(str(self.db))._connect()
+        try:
+            connection.execute(
+                "UPDATE projects SET canonical_path = ? WHERE project_id = ?",
+                (str(Path(self.directory.name) / "outside"), self.project["project_id"]),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        with (
+            patch.object(herdr_relay.state, "event_queue", queue.Queue()),
+            patch.object(herdr_relay.herdr, "get_agents_from_host") as probe,
+            patch.object(herdr_relay.herdr, "run_herdr_checked") as run,
+        ):
+            herdr_relay.operations._start_operation(operation["operation_id"])
+
+        result = herdr_relay.operations.OperationStore(str(self.db)).get(operation["operation_id"])
+        self.assertEqual("CONFIGURATION_CHANGED", result["error_code"])
+        probe.assert_not_called()
+        run.assert_not_called()
+
     def test_pane_observability_contract_keeps_start_name_internal(self):
         pane = {
             "pane_id": "pane-named",

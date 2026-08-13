@@ -30,9 +30,9 @@ Authorization: Bearer $HERDR_RELAY_TOKEN
 
 `HERDR_RELAY_TOKEN` is mandatory; the relay exits at startup without it, and
 compares it in constant time. A `?token=` query parameter is also accepted, but
-that is LEGACY (#14) — it exists because a browser cannot set headers on a
+that is a browser fallback — it exists because a browser cannot set headers on a
 WebSocket handshake, and it leaks the token into every proxy access log. Native
-clients send the header.
+clients send the header and must keep doing so.
 
 ### Paths
 
@@ -56,9 +56,9 @@ Non-upgrade requests do match on path:
 
 | Method | Path | Response |
 |--------|------|----------|
-| `GET` | `/`, `/index.html` | the PWA from `web/` — LEGACY (#14) |
-| `GET` | `/sw.js`, `/logo.svg` | PWA assets — LEGACY (#14) |
-| `GET` | `/api/vapid-public-key` | Web Push key — LEGACY (#14) |
+| `GET` | `/`, `/index.html` | the browser client from `web/` |
+| `GET` | `/sw.js`, `/logo.svg` | browser client assets |
+| `GET` | `/api/vapid-public-key` | Web Push key, browser client only |
 | `GET` | any, with `?d=<url-encoded JSON>` | queues a push event, answers `200 ok` |
 
 **Every HTTP request is a `GET`.** The websockets library parses the request line
@@ -151,9 +151,6 @@ Everything the relay reads. Only the first is mandatory.
 | `HERDR_REMOTES` | — | Comma-separated SSH targets to poll alongside the local host |
 | `HERDR_HOSTS_FILE` | — | Versioned host configuration JSON; owns host IDs, SSH routing, project roots, Herdr wrappers, harnesses, power capabilities, and readiness timeouts |
 | `HERDR_PROJECTS_DB` | `~/.local/state/herdr-relay/projects.sqlite3` | Writable SQLite database for versioned saved-project metadata and migrations |
-| `HERDR_PRESETS_FILE` | — | JSON launch presets. Each preset's `target` is an SSH login string, so treat the file as a secret |
-| `HERDR_POWER_HOST_ID` | — | Legacy preset-mode power host id; host-file deployments declare power per host |
-| `HERDR_POWER_HOST_MAC` | — | Legacy preset-mode Wake-on-LAN MAC; host-file deployments keep the MAC in private host configuration |
 | `HERDR_WAKE_BIN` | `wakeonlan` | Wake-on-LAN binary |
 | `HERDR_POLL_INTERVAL_MAX` | `10` | Seconds the poll loop backs off to while nothing is happening (#19). The floor stays 2s and returns on the first edge |
 | `HERDR_POLL_BACKOFF_FACTOR` | `1.5` | Geometric step from the 2s floor toward that ceiling, one factor per consecutive quiet cycle |
@@ -161,9 +158,9 @@ Everything the relay reads. Only the first is mandatory.
 | `HERDR_SSH_CONTROL_PERSIST` | `60` | `ControlPersist` seconds — how long an idle master connection lingers. Keep it above `HERDR_POLL_INTERVAL_MAX` |
 | `HERDR_CLAUDE_PROJECTS` | `~/.claude/projects` | Claude Code session store, for transcript blocks |
 | `HERDR_OPENCODE_DB` | `~/.local/share/opencode/opencode-stable.db` | OpenCode session store |
-| `HERDR_VAPID_PUBLIC` | — | LEGACY (#14) Web Push key |
-| `HERDR_VAPID_PRIVATE` | — | LEGACY (#14) Web Push key |
-| `HERDR_VAPID_SUBJECT` | `mailto:herdr@localhost` | LEGACY (#14) Web Push contact |
+| `HERDR_VAPID_PUBLIC` | — | Web Push key; the browser client subscribes, herdr-mobile does not |
+| `HERDR_VAPID_PRIVATE` | — | Web Push key; browser client only |
+| `HERDR_VAPID_SUBJECT` | `mailto:herdr@localhost` | Web Push contact; browser client only |
 
 `HERDR_RELAY` is a *client* variable — the URL a client or the herdr push plugin
 dials. The relay itself never reads it.

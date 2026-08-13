@@ -325,7 +325,7 @@ body { font-family: -apple-system, system-ui, -webkit-system-font, sans-serif; b
 
 <script>
 
-let ws = null, agents = [], hosts = [], presets = [], projects = [], projectRoots = [], catalogs = [], catalogStatus = {}, operations = [], activePane = null, refreshInterval = null, userScrolledUp = false;
+let ws = null, agents = [], hosts = [], projects = [], projectRoots = [], catalogs = [], catalogStatus = {}, operations = [], activePane = null, refreshInterval = null, userScrolledUp = false;
 let timeline = [], prevStatuses = {};
 let activeWorkspace = null;
 let activeTab = null;
@@ -467,7 +467,6 @@ function tryDemo() {
 function handleMessage(msg) {
   if (msg.type === 'agents') {
     if (Array.isArray(msg.hosts)) hosts = msg.hosts;
-    if (Array.isArray(msg.presets)) presets = msg.presets;
     if (Array.isArray(msg.projects)) projects = msg.projects;
     if (Array.isArray(msg.project_roots)) projectRoots = msg.project_roots;
     if (Array.isArray(msg.catalogs)) catalogs = msg.catalogs;
@@ -734,35 +733,11 @@ function selectComposerHost(hostId) {
 }
 
 function renderComposer() {
-  if (projectRoots.length || projects.length) {
-    renderProjectComposer();
-    return;
-  }
-  const body = document.getElementById('composerBody');
-  if (!body) return;
-  selectedHostId = chooseHost();
-  let html = renderOperationCards() + `<div class="composer-section"><label>Host</label>`;
-  if (!hosts.length) {
-    html += '<p class="empty" style="padding:16px 0">The relay has not reported any hosts yet.</p>';
-  } else {
-    html += hosts.map(host => hostCard(host, true)).join('');
-  }
-  html += '</div>';
-  const host = hosts.find(item => item.host_id === selectedHostId);
-  const availablePresets = presets.filter(preset => !selectedHostId || preset.hosts?.[selectedHostId]);
-  html += `<div class="composer-section"><label for="composerPreset">Session template</label>`;
-  if (availablePresets.length) {
-    html += `<select id="composerPreset">${availablePresets.map(preset => `<option value="${escapeHtml(preset.id)}">${escapeHtml(preset.label || preset.id)}</option>`).join('')}</select>`;
-  } else {
-    const harnesses = (host?.harnesses || []).map(item => item.display_name || item.id).join(', ');
-    html += `<p class="host-detail">${harnesses ? `Configured harnesses: ${escapeHtml(harnesses)}. ` : ''}Project and model choices will appear when their relay slices are enabled.</p>`;
-  }
-  html += '</div>';
-  const preset = availablePresets[0];
-  const canStart = Boolean(host && (host.status === 'ready' || (!host.status && host.online)) && preset);
-  const summary = preset ? `${preset.label || preset.id} on ${host?.display_name || selectedHostId}` : 'Select a ready host and session template';
-  html += `<div class="composer-footer"><div class="composer-summary">${escapeHtml(summary)}</div><button class="primary" onclick="startSession()" ${canStart ? '' : 'disabled'}>Start session</button></div>`;
-  body.innerHTML = html;
+  // One composer, always the project one (#45). The preset branch that used to
+  // stand in when the relay reported no projects is gone along with the presets
+  // themselves; the project composer states its own empty cases — no hosts, no
+  // configured roots, no matching projects — so there is nothing to fall back to.
+  renderProjectComposer();
 }
 
 function escapeJs(value) {
@@ -1026,14 +1001,6 @@ function retryStart(operationId) {
 
 function requestId() {
   return crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-}
-
-function startSession() {
-  const preset = document.getElementById('composerPreset')?.value;
-  if (!preset || !selectedHostId || !ws || ws.readyState !== 1) return;
-  const id = requestId();
-  pendingLaunchRequests.add(id);
-  ws.send(JSON.stringify({type: 'launch_session', request_id: id, preset_id: preset, host_id: selectedHostId}));
 }
 
 function wakeHost(hostId) {

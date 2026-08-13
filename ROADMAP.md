@@ -309,8 +309,9 @@ repo says why.
    `flake.nix` gives `devShells` + a `checks.relay` that runs `make check`; add
    `packages.herdr-relay`.
 2. Ship a NixOS module: systemd unit, SOPS-managed token, `HERDR_REMOTES`,
-   `HERDR_PRESETS_FILE`, `HERDR_POWER_HOST_*`, hardening
-   (`DynamicUser`, `ProtectSystem=strict`).
+   `HERDR_HOSTS_FILE`, hardening (`DynamicUser`, `ProtectSystem=strict`).
+   (`HERDR_PRESETS_FILE` and `HERDR_POWER_HOST_*` were named here when this was
+   written; #45 retired all three, and the host file replaced them.)
 3. Commit the reverse-proxy config, including the `/native/ws` rewrite.
 4. Then delete `relay/install-service.sh` (31 KB of launchd/systemd/brew
    bootstrap) and `relay/start.sh` (cloudflared tunnel orchestration). Both

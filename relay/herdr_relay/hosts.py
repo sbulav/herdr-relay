@@ -21,7 +21,8 @@ MAX_TIMEOUT_SECONDS = 300
 def load_hosts(path=None):
     """Load and validate the operator-owned host file.
 
-    An unset path means the relay is running in its legacy preset-only mode.  An
+    An unset path leaves the relay on `herdr.configured_host_records()`'s bare
+    fallback — the local host plus HERDR_REMOTES, no power capability.  An
     explicit path is strict: a malformed file must stop startup rather than
     silently falling back to a different host topology.
     """
@@ -181,18 +182,6 @@ def herdr_command(host):
     settings = host.get("herdr") or {}
     binary = settings.get("binary") or config.HERDR
     return [*settings.get("wrapper", []), binary]
-
-
-def project_root_allows(host, cwd):
-    """Check a preset cwd against the host's lexical project-root allowlist."""
-    if not isinstance(cwd, str) or not os.path.isabs(cwd):
-        return False
-    candidate = os.path.normpath(cwd)
-    for root in host.get("project_roots", []):
-        normalized_root = os.path.normpath(root)
-        if candidate == normalized_root or candidate.startswith(normalized_root.rstrip(os.sep) + os.sep):
-            return True
-    return False
 
 
 def project_roots(host):

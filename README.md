@@ -130,9 +130,9 @@ herdr-mobile (Android)   web PWA   Telegram bot
     (local + SSH)             (HTTP, same port)
 ```
 
-Server-side state stays server-side: the SSH target behind a host, and a
-preset's `target`, are never broadcast. A client addresses a pane by `host` and
-`pane_id`.
+Server-side state stays server-side: the SSH target behind a host, and every
+other routing detail in the host configuration file, are never broadcast. A
+client addresses a pane by `host` and `pane_id`.
 
 ## Starting agents
 

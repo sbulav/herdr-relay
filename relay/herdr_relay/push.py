@@ -1,8 +1,10 @@
-"""Web Push for the browser PWA.
+"""Web Push for the browser client.
 
-LEGACY (#14): browser-PWA only. herdr-mobile monitors the WebSocket in a
-foreground service and never subscribes. This module, the four HERDR_VAPID_*
-vars, and the push_subscribe/push_unsubscribe handlers go once web/ does.
+Browser-only by design: herdr-mobile monitors the WebSocket in a foreground
+service and never subscribes, so this module, the HERDR_VAPID_* variables, and
+the push_subscribe/push_unsubscribe handlers exist for web/ alone. web/ is a
+supported client (herdr-mobile#37 superseded the plan to retire it, #14), so
+none of it is transitional.
 """
 import json
 import os

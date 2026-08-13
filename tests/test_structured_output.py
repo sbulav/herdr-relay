@@ -57,8 +57,39 @@ class RelayLifecycleTests(unittest.TestCase):
         asyncio.run(run())
 
 
+def host_record(host_id, target=None, **overrides):
+    """A minimal record in the shape `hosts.load_hosts()` produces.
+
+    Tests that only care about topology should not have to spell out a whole
+    validated host document; anything they do care about goes in `overrides`.
+    """
+    record = {
+        "id": host_id,
+        "display_name": host_id,
+        "ssh": {"target": target} if target else {},
+        "project_roots": ["/"],
+        "herdr": {},
+        "harnesses": [],
+        "power": {"wake": None, "shutdown": False},
+        "readiness_timeout_seconds": 180,
+    }
+    record.update(overrides)
+    return record
+
+
+def configured_hosts(*records):
+    """Patch both host lookups at once — they must never disagree."""
+    return (
+        patch.object(herdr_relay.hosts, "HOSTS", list(records)),
+        patch.object(herdr_relay.hosts, "HOSTS_BY_ID", {record["id"]: record for record in records}),
+    )
+
+
 class HostStatusTests(unittest.TestCase):
-    @patch.object(herdr_relay.presets, "HOST_TARGETS", {"workstation-a": "target-a", "workstation-b": "target-b"})
+    @patch.object(
+        herdr_relay.hosts, "HOSTS",
+        [host_record("workstation-a", "target-a"), host_record("workstation-b", "target-b")],
+    )
     @patch.object(herdr_relay.herdr, "run_ssh_checked", return_value=True)
     @patch.object(herdr_relay.herdr, "run_herdr_checked")
     def test_host_status_reflects_ssh_and_herdr_readiness(self, run_herdr_checked, run_ssh_checked):
@@ -100,7 +131,7 @@ class HostStatusTests(unittest.TestCase):
             ],
         )
 
-    @patch.object(herdr_relay.presets, "HOST_TARGETS", {"host-a": "a", "host-b": "b"})
+    @patch.object(herdr_relay.hosts, "HOSTS", [host_record("host-a", "a"), host_record("host-b", "b")])
     @patch.object(herdr_relay.herdr, "get_agents_from_host")
     def test_hosts_are_polled_concurrently(self, get_agents_from_host):
         barrier = threading.Barrier(2, timeout=1)
@@ -470,10 +501,27 @@ class PaneMetadataTests(unittest.TestCase):
 
 
 class HostPowerTests(unittest.TestCase):
-    @patch.object(herdr_relay.config, "POWER_HOST_ID", "workstation")
-    @patch.object(herdr_relay.config, "POWER_HOST_MAC", "34:5a:60:ba:8e:20")
+    """Power is allowlisted by the host configuration and by nothing else (#45)."""
+
+    @staticmethod
+    def powered_host(**overrides):
+        return host_record(
+            "workstation",
+            "ssh-target",
+            power={"wake": {"mac": "34:5a:60:ba:8e:20"}, "shutdown": True},
+            **overrides,
+        )
+
+    def configure(self, *records):
+        # `TestCase.enterContext` is 3.11+ and the relay supports 3.10, so
+        # enter each patch and register its unwind by hand.
+        for context in configured_hosts(*records):
+            context.__enter__()
+            self.addCleanup(context.__exit__, None, None, None)
+
     @patch.object(herdr_relay.lifecycle.subprocess, "run")
     def test_wake_is_a_fixed_magic_packet_command(self, run):
+        self.configure(self.powered_host())
         run.return_value.returncode = 0
 
         response = herdr_relay.wake_host({"request_id": "request-1", "host_id": "workstation"})
@@ -486,10 +534,9 @@ class HostPowerTests(unittest.TestCase):
             timeout=10,
         )
 
-    @patch.object(herdr_relay.config, "POWER_HOST_ID", "workstation")
-    @patch.object(herdr_relay.presets, "HOST_TARGETS", {"workstation": "ssh-target"})
     @patch.object(herdr_relay.lifecycle.subprocess, "run")
     def test_shutdown_is_a_fixed_non_interactive_ssh_command(self, run):
+        self.configure(self.powered_host())
         run.return_value.returncode = 0
 
         with tempfile.TemporaryDirectory() as control_dir:
@@ -519,14 +566,42 @@ class HostPowerTests(unittest.TestCase):
                 timeout=15,
             )
 
-    @patch.object(herdr_relay.config, "POWER_HOST_ID", "workstation")
     @patch.object(herdr_relay.lifecycle.subprocess, "run")
     def test_power_commands_reject_other_hosts_and_missing_confirmation(self, run):
+        self.configure(self.powered_host())
+
         wake = herdr_relay.wake_host({"request_id": "request-1", "host_id": "other"})
         shutdown = herdr_relay.shutdown_host({"request_id": "request-2", "host_id": "workstation"})
 
         self.assertEqual(wake["code"], "HOST_NOT_ALLOWED")
         self.assertEqual(shutdown["code"], "CONFIRMATION_REQUIRED")
+        run.assert_not_called()
+
+    @patch.object(herdr_relay.lifecycle.subprocess, "run")
+    def test_an_unconfigured_host_has_no_power_at_all(self, run):
+        """#45 removed the HERDR_POWER_HOST_* pair; nothing outside the file grants power."""
+        self.configure(host_record("workstation", "ssh-target"))
+
+        wake = herdr_relay.wake_host({"request_id": "request-1", "host_id": "unlisted"})
+        shutdown = herdr_relay.shutdown_host({
+            "request_id": "request-2", "host_id": "unlisted", "confirmation_nonce": "nonce-1",
+        })
+
+        self.assertEqual(wake["code"], "HOST_NOT_ALLOWED")
+        self.assertEqual(shutdown["code"], "HOST_NOT_ALLOWED")
+        run.assert_not_called()
+
+    @patch.object(herdr_relay.lifecycle.subprocess, "run")
+    def test_a_configured_host_without_the_capability_is_still_refused(self, run):
+        self.configure(host_record("workstation", "ssh-target"))
+
+        wake = herdr_relay.wake_host({"request_id": "request-1", "host_id": "workstation"})
+        shutdown = herdr_relay.shutdown_host({
+            "request_id": "request-2", "host_id": "workstation", "confirmation_nonce": "nonce-1",
+        })
+
+        self.assertEqual(wake["code"], "HOST_NOT_ALLOWED")
+        self.assertEqual(shutdown["code"], "HOST_NOT_ALLOWED")
         run.assert_not_called()
 
 

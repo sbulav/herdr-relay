@@ -21,10 +21,11 @@ def server_info():
 def public_agents(agents):
     """Strip server-side routing state from agent entries before broadcasting.
 
-    `remote` is the preset's SSH `target` — the same value `presets.public_presets()`
-    deliberately withholds. No client addresses a pane by it (they use `host` and
-    `pane_id`); the relay does, through `state.pane_remote_map`. Sending it would hand
-    every connected phone, and every proxy log, a login string for the host.
+    `remote` is the SSH `target` from the host configuration, which the relay
+    resolves through `hosts.ssh_target()` and never broadcasts. No client addresses
+    a pane by it (they use `host` and `pane_id`); the relay does, through
+    `state.pane_remote_map`. Sending it would hand every connected phone, and every
+    proxy log, a login string for the host.
     """
     return [
         {key: value for key, value in agent.items() if key not in {"remote", "agent_name"}}

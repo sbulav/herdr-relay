@@ -78,7 +78,7 @@ because the cost differs.
 | Tier | Commands | Default burst | Default sustained |
 | --- | --- | --- | --- |
 | Terminal input | `respond`, `send_keys`, `send_text` | 10 | 2/s |
-| Host reads and writes | `read_pane`, `subscribe_pane`, `catalog_refresh`, `create_tab`, `launch_session`, `start_session`, `cancel_start`, `terminate_session`, `wake_host`, `shutdown_host`, and every `project_*` command | 30 | 10/s |
+| Host reads and writes | `read_pane`, `subscribe_pane`, `catalog_refresh`, `create_tab`, `start_session`, `cancel_start`, `terminate_session`, `wake_host`, `shutdown_host`, and every `project_*` command | 30 | 10/s |
 
 `agent_event`, `unsubscribe_pane`, `push_subscribe`, and `push_unsubscribe` are
 not metered: none of them reaches a host. Replaying a `request_id` the relay
@@ -118,8 +118,8 @@ to one poll interval for the first `agents` broadcast.
 ```json
 {
   "type": "server_info",
-  "relay_version": "0.7.0",
-  "min_client": 2,
+  "relay_version": "0.8.0",
+  "min_client": 3,
   "durable_start": true
 }
 ```
@@ -154,22 +154,23 @@ harnesses, power capabilities, and per-host readiness timeouts.
 The relay validates this file at startup. A wrapper is an argv prefix, not a
 shell string, and client frames can never replace it or add commands. SSH
 targets, MAC addresses, wrapper paths, project roots, and power implementation
-details are server-side and are never logged or broadcast. The old preset file
-remains a launch compatibility fallback until the coordinated composer cutover.
+details are server-side and are never logged or broadcast. This file is the only
+source of host topology: revision 3 retired the preset file that once supplied a
+parallel one, so a host absent from here does not exist and has no power
+capability.
 
 ### `agents`
 
 Reports agent and host state. `_poll_once` broadcasts a complete snapshot every
 poll, including an empty `agents` array when no agents remain. `event_push` can
 also broadcast a partial, one-agent update after an `agent_event`; that form
-omits `presets` and `hosts`. Clients must distinguish a complete poll snapshot
-from a partial event update by the presence of `presets` and `hosts`.
+omits `hosts`. Clients must distinguish a complete poll snapshot from a partial
+event update by the presence of `hosts`.
 
 | Name | Type | Presence | Meaning |
 | --- | --- | --- | --- |
 | `type` | string | Required | Always `"agents"`. |
 | `agents` | array of agent objects | Required | Complete current list for a poll, or one partial agent for an event update. |
-| `presets` | array of preset objects | Poll snapshots only | Public launch compatibility data. |
 | `hosts` | array of host objects | Poll snapshots only | Public configured host state and capabilities. |
 
 A complete poll agent contains all of these fields. A partial event agent
@@ -191,22 +192,8 @@ contains `pane_id`, `agent`, `status`, `cwd`, `project`, and `host` only.
 | `output_revision` | integer | Optional | Additive monotonic per-pane output revision reported by `herdr`; omitted when unavailable or invalid. |
 
 The relay's own SSH routing never appears here. A pane is addressed by `host` and
-`pane_id`; the SSH target behind a host is server-side state, like the preset
-`target` that `public_presets()` withholds.
-
-Each public preset has this shape:
-
-| Preset field | Type | Presence | Meaning |
-| --- | --- | --- | --- |
-| `id` | string | Required | Preset identifier. |
-| `label` | string | Required | Display label from the preset file. |
-| `repository` | string | Required | Preset repository string. |
-| `agent` | string | Required | One of `"claude"`, `"opencode"`, or `"codex"`. |
-| `model` | string | Required | Model configured for the preset. |
-| `hosts` | object | Required | Map from host ID to a public host configuration. |
-| `hosts.<host_id>.cwd` | string | Required | Absolute working directory used when launching on that host. |
-
-The relay removes each preset host's private `target` field before broadcast.
+`pane_id`; the SSH target behind a host is server-side state, resolved from the
+host configuration file and withheld by `public_agents()`.
 
 | Host field | Type | Presence | Meaning |
 | --- | --- | --- | --- |
@@ -235,18 +222,6 @@ The relay removes each preset host's private `target` field before broadcast.
       "host": "buildbox",
       "workspace_id": "workspace-2",
       "tab_id": "tab-4"
-    }
-  ],
-  "presets": [
-    {
-      "id": "review",
-      "label": "Review",
-      "repository": "dcolinmorgan/herdr-remote",
-      "agent": "claude",
-      "model": "default",
-      "hosts": {
-        "buildbox": {"cwd": "/srv/herdr-remote"}
-      }
     }
   ],
   "hosts": [{
@@ -484,7 +459,7 @@ subscribed to that `pane_id`, and only when the transcript signature changes.
 
 ### `command_ack`
 
-Acknowledges a successful `launch_session`, `start_session`, `terminate_session`, `wake_host`,
+Acknowledges a successful `start_session`, `cancel_start`, `terminate_session`, `wake_host`,
 `shutdown_host`, `project_create`, `project_save`, `project_rename`, `project_remove`, or
 `project_restore` request. The frame is point-to-point. Responses are cached
 by non-empty `request_id`; repeating a cached ID returns the cached frame before
@@ -582,9 +557,9 @@ response to be cached under that original value.
 ```json
 {
   "type": "command_error",
-  "request_id": "req-launch-17",
-  "code": "UNKNOWN_PRESET",
-  "message": "Unknown preset"
+  "request_id": "req-stale",
+  "code": "STALE_SESSION",
+  "message": "Session is no longer active"
 }
 ```
 
@@ -659,53 +634,14 @@ was not stored. This frame is point-to-point.
 
 ## Client To Server
 
-### `launch_session`
-
-Starts an agent from a server-configured preset on an allowed host.
-
-| Name | Type | Presence | Meaning |
-| --- | --- | --- | --- |
-| `type` | string | Required | Always `"launch_session"`. |
-| `request_id` | string | Required | Non-empty idempotency and response-correlation key. |
-| `preset_id` | string | Required | ID in the relay's configured presets. |
-| `host_id` | string | Required | Host allowed by that preset. |
-
-The preset controls the agent, model, working directory, and SSH target. The
-client cannot supply command text. Unknown presets and disallowed hosts are
-rejected.
-
-```json
-{
-  "type": "launch_session",
-  "request_id": "req-launch-17",
-  "preset_id": "review",
-  "host_id": "buildbox"
-}
-```
-
-The same command may launch a saved project instead of a preset. In that form
-`project_id` is required, `host_id` must match the saved project, and `harness`
-and `model` are bounded configured selections. The relay re-opens the stored
-folder through the host helper immediately before starting the agent and updates
-`last_launch_at` only after Herdr accepts the launch.
-
-```json
-{
-  "type": "launch_session",
-  "request_id": "req-project-launch-1",
-  "project_id": "0123456789abcdef0123456789abcdef",
-  "host_id": "buildbox",
-  "harness": "claude",
-  "model": "default"
-}
-```
-
 ### `start_session`
 
-Starts a saved project as a durable, idempotent operation. Unlike the legacy
-project form of `launch_session`, this command accepts the typed host, project,
-harness, and model selection directly. `model` is optional and defaults to
-`default`; clients send model IDs, never preset IDs or command text.
+Starts a saved project as a durable, idempotent operation, and is the only way
+to start an agent. Revision 3 retired `launch_session`, which started an agent
+immediately from a server-configured preset; a client that still sends it gets
+no response beyond the relay ignoring an unknown command. The typed host,
+project, harness, and model selection are supplied directly. `model` is optional
+and defaults to `default`; clients send model IDs, never command text.
 
 The request is acknowledged as soon as the operation is persisted. The relay
 then checks for the operation's deterministic Herdr name before starting a
@@ -1135,10 +1071,7 @@ These are all code and message pairs produced through `command_error`.
 | `PROJECT_NOT_FOUND` | `Project not found` | A project mutation or project launch names an unknown opaque ID. |
 | `PROJECT_ARCHIVED` | `Project is removed` | A launch names an archived project. |
 | `PROJECT_UNAVAILABLE` | `Project configuration is unavailable` | A project launch is orphaned by host/root configuration or its folder changed. |
-| `UNKNOWN_PRESET` | `Unknown preset` | `launch_session.preset_id` is not configured. |
-| `HOST_NOT_ALLOWED` | `Preset is not allowed on this host` | `launch_session.host_id` is not in the selected preset. |
-| `PROJECT_NOT_ALLOWED` | `Preset cwd is outside the configured project roots` | `launch_session` selects a configured host but its preset cwd is outside that host's private project-root allowlist. |
-| `LAUNCH_FAILED` | `Herdr did not start the client` | The `herdr agent start` process fails or exits unsuccessfully. |
+| `LAUNCH_FAILED` | `Herdr did not start the client` | The `herdr agent start` process fails or exits unsuccessfully. Since revision 3 this reaches a client as an operation error only, never as a `command_error`. |
 | `CONFIGURATION_CHANGED` | `The selected project configuration is no longer available` | A durable start no longer has its saved host, root, folder, harness, or model configuration. |
 | `HOST_OFFLINE` | `The selected host is offline` | A durable start cannot reach its configured host. |
 | `HERDR_UNAVAILABLE` | `Herdr is unavailable on the selected host` | SSH responds but the configured Herdr command does not return a usable pane snapshot. |
@@ -1150,9 +1083,9 @@ These are all code and message pairs produced through `command_error`.
 | `CONFIRMATION_REQUIRED` | `confirmation_nonce is required` | `terminate_session` or `shutdown_host` lacks a non-empty string nonce. |
 | `STALE_SESSION` | `Session is no longer active` | `terminate_session.session_id` is absent from the latest active session map. |
 | `TERMINATE_FAILED` | `Herdr did not terminate the client` | The `herdr pane close` process fails or exits unsuccessfully. |
-| `HOST_NOT_ALLOWED` | `Power control is not allowed for this host` | `wake_host.host_id` is not the power host, its MAC is unconfigured, or `shutdown_host.host_id` is not the power host. |
+| `HOST_NOT_ALLOWED` | `Power control is not allowed for this host` | `wake_host.host_id` or `shutdown_host.host_id` names a host absent from the host configuration file, or one whose configuration grants no `wake` MAC or no `shutdown`. |
 | `WAKE_FAILED` | `Wake-on-LAN command failed` | The configured Wake-on-LAN process raises or exits unsuccessfully. |
-| `UNKNOWN_HOST` | `Power host has no SSH target` | The shutdown power host has no truthy preset SSH target. |
+| `UNKNOWN_HOST` | `Power host has no SSH target` | A host configured for shutdown has no SSH target. `load_hosts` rejects that combination at startup, so this is a last-resort guard rather than a reachable configuration. |
 | `SHUTDOWN_FAILED` | `Host shutdown command failed` | The fixed SSH shutdown process raises or exits unsuccessfully. |
 | `RATE_LIMITED` | `Too many requests, slow down` | The connection exceeded its [rate limit](#rate-limiting) on a typed command. The command did not run. |
 
@@ -1160,8 +1093,8 @@ These are all code and message pairs produced through `command_error`.
 
 This reference was derived from `relay/herdr_relay/`, especially
 `handle_client`, `_poll_once`, `event_push`, `broadcast`, `process_request`,
-`public_presets`, `get_agents_from_host`, `get_all_agents`, `pane_blocks`,
+`public_agents`, `get_agents_from_host`, `get_all_agents`, `pane_blocks`,
 `transcript_to_blocks`, `opencode_to_blocks`, `command_error`,
-`launch_session`, `terminate_session`, `wake_host`, `shutdown_host`, and the
+`start_session`, `terminate_session`, `wake_host`, `shutdown_host`, and the
 project store/filesystem handlers. Re-read
 those functions when changing or re-verifying the native contract.
