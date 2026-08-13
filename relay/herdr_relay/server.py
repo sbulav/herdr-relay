@@ -192,6 +192,9 @@ async def handle_client(ws):
         # cleaning up a socket that was never registered is a no-op.
         await ws.send(json.dumps(protocol.server_info()))
         state.clients.add(ws)
+        # A client that just connected wants a current snapshot, not whatever
+        # the backoff was in the middle of waiting out (#19).
+        transport.wake_poll_loop()
         async for raw in ws:
             try:
                 msg = json.loads(raw)
@@ -327,6 +330,9 @@ async def handle_client(ws):
                 if pane_id in state.pane_cwd_map:
                     previous = state.subscriptions.get(ws)
                     state.subscriptions[ws] = pane_id
+                    # Someone is now watching this pane live, so the poll loop
+                    # returns to its floor without waiting out a backoff (#19).
+                    transport.wake_poll_loop()
                     if previous is not None:
                         state.stream_sigs.pop((id(ws), previous), None)
                     try:

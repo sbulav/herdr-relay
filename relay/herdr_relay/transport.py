@@ -30,13 +30,55 @@ async def broadcast(msg):
     state.clients.difference_update(dead)
 
 
+def poll_interval(idle_streak):
+    """How long to wait before the next poll, given consecutive quiet cycles.
+
+    Kept separate from the loop, and a pure function of the streak, because the
+    interesting part is the curve: floor on the first quiet cycle, ceiling once
+    the host has clearly gone to sleep, and nothing in between that a test
+    cannot state exactly.
+    """
+    if idle_streak <= 0:
+        return config.POLL_INTERVAL
+    # The streak has no upper bound — a relay nobody connects to over a weekend
+    # reaches five figures — and `1.5 ** 2000` raises OverflowError rather than
+    # returning inf. Every overflow means "far past the ceiling", which is the
+    # ceiling. Raising from here would kill poll_loop outright: this supplies
+    # the timeout of the wait, outside the try that guards a failed cycle.
+    try:
+        interval = config.POLL_INTERVAL * (config.POLL_BACKOFF_FACTOR ** idle_streak)
+    except OverflowError:
+        return config.POLL_INTERVAL_MAX
+    return min(interval, config.POLL_INTERVAL_MAX)
+
+
+def wake_poll_loop():
+    """Cut the current backoff short — something happened worth polling for.
+
+    Safe to call from anywhere on the event loop, and cheap when the loop is
+    already at its floor: setting a set Event is a no-op.
+    """
+    state.poll_wakeup.set()
+
+
 async def poll_loop():
     while True:
         try:
             await _poll_once()
         except Exception:
+            # A failed cycle tells us nothing about how busy the host is, so it
+            # neither extends nor resets the streak — the previous pace stands.
             log.exception("poll cycle failed; retrying")
-        await asyncio.sleep(config.POLL_INTERVAL)
+        try:
+            await asyncio.wait_for(
+                state.poll_wakeup.wait(), timeout=poll_interval(state.poll_idle_streak)
+            )
+        except asyncio.TimeoutError:
+            pass
+        # Cleared after the wait rather than before it: an edge that arrives
+        # while _poll_once is still running must still be seen, and clearing
+        # here means that set flag short-circuits the very next wait.
+        state.poll_wakeup.clear()
 
 
 async def catalog_loop():
@@ -54,6 +96,7 @@ async def catalog_loop():
 async def _poll_once():
     state.pane_session_refs.clear()  # Host threads populate refs while herdr.get_all_agents() awaits.
     agents, hosts = await herdr.get_all_agents()
+    changed = False
     current_pane_ids = {a["pane_id"] for a in agents}
     state.pane_remote_map.clear()
     state.session_target_map.clear()
@@ -90,21 +133,40 @@ async def _poll_once():
             or revision != previous_revision
         ):
             state.pane_activity[pid] = protocol.now_ms()
+            changed = True
         state.pane_revisions[pid] = revision
         protocol.add_pane_metadata(a, pid)
 
     # Always send a complete snapshot. In particular, an empty snapshot
     # removes stale agents after every remote host goes offline.
     project_frame = projects.public_snapshot()
+    recovery = operations.public_recovery()
     await broadcast({
         "type": "agents", "agents": protocol.public_agents(agents),
         "presets": presets.public_presets(),
         "hosts": hosts,
         "projects": project_frame["projects"],
         "project_roots": project_frame["roots"],
-        "operations": operations.public_recovery(),
+        "operations": recovery,
         **catalogs.public_frame(),
     })
+    # Pace the next cycle (#19). Any of these means the next two seconds could
+    # carry something a client needs promptly; none of them means nobody is
+    # watching and nothing is moving, so the loop may cost less. Filtered from
+    # the recovery frame already in hand rather than queried again — the frame
+    # carries terminal operations too, and only the active ones need reconciling.
+    #
+    # `state.clients`, not `state.subscriptions`: the agent list is the screen a
+    # client sees before it subscribes to anything, and a status change there is
+    # exactly what it opened the app for. Backing off behind a connected client
+    # would trade a poll for up to POLL_INTERVAL_MAX of stale dashboard.
+    busy = (
+        changed
+        or bool(state.clients)
+        or any(a["status"] in ("working", "blocked") for a in agents)
+        or any(op["stage"] in operations.ACTIVE_STAGES for op in recovery)
+    )
+    state.poll_idle_streak = 0 if busy else state.poll_idle_streak + 1
     # Read every newly blocked pane off the event loop, and all of them at once:
     # `herdr pane read` shells out (over ssh for remote hosts) with a 15s timeout,
     # and a herd of agents tends to block together. Done inline, one slow host
@@ -229,6 +291,10 @@ async def event_push():
     try:
         while True:
             event = await state.event_queue.get()
+            # An event is the edge the backoff exists to be interrupted by: the
+            # herdr hook reports a status change the next poll would otherwise
+            # discover up to POLL_INTERVAL_MAX later.
+            wake_poll_loop()
             if event.get("type") == "operation_event":
                 await broadcast({"type": "operation", "operation": event.get("operation")})
                 continue

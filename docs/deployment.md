@@ -155,6 +155,10 @@ Everything the relay reads. Only the first is mandatory.
 | `HERDR_POWER_HOST_ID` | — | Legacy preset-mode power host id; host-file deployments declare power per host |
 | `HERDR_POWER_HOST_MAC` | — | Legacy preset-mode Wake-on-LAN MAC; host-file deployments keep the MAC in private host configuration |
 | `HERDR_WAKE_BIN` | `wakeonlan` | Wake-on-LAN binary |
+| `HERDR_POLL_INTERVAL_MAX` | `10` | Seconds the poll loop backs off to while nothing is happening (#19). The floor stays 2s and returns on the first edge |
+| `HERDR_POLL_BACKOFF_FACTOR` | `1.5` | Geometric step from the 2s floor toward that ceiling, one factor per consecutive quiet cycle |
+| `HERDR_SSH_CONTROL_DIR` | `~/.local/state/herdr-relay/ssh` | Directory holding SSH multiplexing sockets (#19). Created `0700`. Keep it short: the socket path must fit `sockaddr_un` (104 bytes on macOS) or multiplexing is skipped |
+| `HERDR_SSH_CONTROL_PERSIST` | `60` | `ControlPersist` seconds — how long an idle master connection lingers. Keep it above `HERDR_POLL_INTERVAL_MAX` |
 | `HERDR_CLAUDE_PROJECTS` | `~/.claude/projects` | Claude Code session store, for transcript blocks |
 | `HERDR_OPENCODE_DB` | `~/.local/share/opencode/opencode-stable.db` | OpenCode session store |
 | `HERDR_VAPID_PUBLIC` | — | LEGACY (#14) Web Push key |
@@ -183,6 +187,22 @@ opaque project IDs, host IDs, canonical paths, editable labels, archive state,
 availability, and launch timestamps. It never contains or accepts client shell
 commands. A service deployment should point it at its state directory so the
 database survives relay restarts without becoming part of the source checkout.
+
+The `HERDR_POLL_*` and `HERDR_SSH_CONTROL_*` defaults exist because polling used
+to cost the same whether or not anyone was looking (#19). Two SSH connections per
+remote host per cycle now share one master connection, and the cycle itself slows
+down while no client is connected, no agent is working or blocked, no durable
+operation is in flight, and nothing changed. Any of those — including the herdr
+hook pushing an event — restores the 2s floor immediately, so the ceiling is only
+ever paid by a relay nobody is watching. A connected client is enough on its own:
+the agent list is the screen it sees before subscribing to any pane.
+
+`HERDR_SSH_CONTROL_DIR` is the one that can bite. `ControlPath` is a Unix socket
+path, and an over-long one makes ssh fail the call outright rather than fall back
+to a direct connection, which would take every remote host offline. The relay
+therefore measures the path first and logs a warning and runs unmultiplexed
+instead of risking that. If the log says multiplexing is disabled, point the
+variable at a shorter directory.
 
 The Telegram bot (`relay/herdr_telegram.py`) is a separate process with its own
 variables, `HERDR_TG_TOKEN` and `HERDR_TG_CHAT_ID`. It is not packaged here.

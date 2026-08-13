@@ -8,7 +8,7 @@ import shlex
 import stat
 import subprocess
 
-from . import hosts
+from . import herdr, hosts
 
 
 MAX_COMPONENTS = 64
@@ -324,12 +324,6 @@ _REMOTE_PYTHON = (
     % _REMOTE_SCRIPT_B64
 )
 _REMOTE_COMMAND = f"python3 -c {shlex.quote(_REMOTE_PYTHON)}"
-_SSH_OPTIONS = (
-    "-o", "ConnectTimeout=5",
-    "-o", "ServerAliveInterval=3",
-    "-o", "ServerAliveCountMax=2",
-    "-o", "BatchMode=yes",
-)
 
 
 def _remote(host, root, components, operation, name=None):
@@ -341,7 +335,9 @@ def _remote(host, root, components, operation, name=None):
         request["name"] = validate_name(name)
     try:
         result = subprocess.run(
-            ["ssh", *_SSH_OPTIONS, target, _REMOTE_COMMAND],
+            # Browsing walks a tree one request at a time, so these reuse the
+            # master the poll loop already keeps open to the same host (#19).
+            ["ssh", *herdr.ssh_options(), target, _REMOTE_COMMAND],
             input=json.dumps(request),
             capture_output=True,
             text=True,

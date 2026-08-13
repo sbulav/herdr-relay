@@ -230,15 +230,7 @@ def shutdown_host(msg):
         return protocol.command_error(request_id, "UNKNOWN_HOST", "Power host has no SSH target")
     try:
         result = subprocess.run(
-            [
-                "ssh",
-                "-o", "ConnectTimeout=5",
-                "-o", "ServerAliveInterval=3",
-                "-o", "ServerAliveCountMax=2",
-                "-o", "BatchMode=yes",
-                target,
-                "sudo", "-n", "systemctl", "poweroff",
-            ],
+            ["ssh", *herdr.ssh_options(), target, "sudo", "-n", "systemctl", "poweroff"],
             capture_output=True,
             text=True,
             timeout=15,

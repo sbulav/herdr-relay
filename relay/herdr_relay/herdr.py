@@ -21,6 +21,82 @@ SSH_OPTIONS = [
     "-o", "BatchMode=yes",
 ]
 
+# `%C` is a SHA1 of the connection tuple, so a control path is always the
+# directory plus this many characters.
+_CONTROL_TOKEN_LENGTH = 40
+# sockaddr_un.sun_path. Linux allows 108, darwin 104; take the smaller.
+_CONTROL_PATH_LIMIT = 104
+_control_dir_state = None  # (directory, usable) — resolved once per directory
+
+
+def _control_path(directory):
+    return os.path.join(directory, "%C")
+
+
+def _control_dir_usable(directory):
+    """Create the control directory, or report why multiplexing is off.
+
+    Cached per directory: this runs on the way to every SSH call, and both the
+    length arithmetic and the failure log should happen once, not twice a second.
+    """
+    global _control_dir_state
+    if _control_dir_state is not None and _control_dir_state[0] == directory:
+        return _control_dir_state[1]
+
+    usable = True
+    # `>=`, not `>`: sun_path is a C string, so 104 bytes hold 103 characters
+    # plus the terminator, and ssh rejects a path at exactly the limit
+    # ("ControlPath too long ('...' >= 104 bytes)").
+    if len(directory) + 1 + _CONTROL_TOKEN_LENGTH >= _CONTROL_PATH_LIMIT:
+        # Refusing is the safe branch. An over-long ControlPath makes ssh exit
+        # immediately instead of connecting, so shipping one would turn a
+        # latency optimisation into a total loss of every remote host.
+        config.log.warning(
+            "SSH control path under %s would exceed %d bytes; multiplexing disabled. "
+            "Set HERDR_SSH_CONTROL_DIR to a shorter directory to enable it.",
+            directory, _CONTROL_PATH_LIMIT,
+        )
+        usable = False
+    else:
+        try:
+            # 0700: anyone who can write here can offer a socket our SSH calls
+            # would then speak to.
+            os.makedirs(directory, mode=0o700, exist_ok=True)
+            os.chmod(directory, 0o700)
+        except OSError as error:
+            config.log.warning(
+                "cannot use SSH control directory %s (%s); multiplexing disabled", directory, error
+            )
+            usable = False
+    _control_dir_state = (directory, usable)
+    return usable
+
+
+def ssh_options():
+    """The fixed options for every SSH invocation, multiplexing included.
+
+    A function rather than a constant because the control directory is
+    configuration, and because it has to exist before ssh is handed a path
+    inside it — ssh creates the socket but not the directory holding it.
+    """
+    # Expanded here rather than trusted as configured: ssh expands `~` in a
+    # ControlPath itself, so an unexpanded one would have us create the
+    # directory somewhere ssh never looks — and ssh does not fall back when the
+    # socket's directory is missing, it fails the call.
+    directory = os.path.expanduser(config.SSH_CONTROL_DIR or "")
+    if not directory or not _control_dir_usable(directory):
+        return list(SSH_OPTIONS)
+    return [
+        *SSH_OPTIONS,
+        # `auto` opens a master when there is no socket yet and reuses one when
+        # there is. `no` would never open the first one, and nothing else here
+        # does; the master that `auto` backgrounds does not hold this process's
+        # stdout, so a captured call still returns as soon as its own command does.
+        "-o", "ControlMaster=auto",
+        "-o", f"ControlPath={_control_path(directory)}",
+        "-o", f"ControlPersist={config.SSH_CONTROL_PERSIST}",
+    ]
+
 
 def _terminate_process(process):
     """Stop a process group so cancelling SSH also stops its remote helper."""
@@ -85,7 +161,7 @@ def run_ssh_checked(remote, *args, host_id=None, timeout=5, cancel_event=None):
     """Probe or invoke a fixed SSH command without logging the login target."""
     try:
         success, _output = run_process_checked(
-            ["ssh", *SSH_OPTIONS, remote, *args],
+            ["ssh", *ssh_options(), remote, *args],
             timeout=timeout,
             cancel_event=cancel_event,
         )
@@ -101,7 +177,7 @@ def run_herdr_checked(*args, remote=None, host_id=None, command=None, timeout=15
     try:
         command = list(command or [config.HERDR])
         if remote:
-            cmd = ["ssh", *SSH_OPTIONS, remote, *command, *args]
+            cmd = ["ssh", *ssh_options(), remote, *command, *args]
         else:
             cmd = [*command, *args]
         return run_process_checked(cmd, timeout=timeout, cancel_event=cancel_event)

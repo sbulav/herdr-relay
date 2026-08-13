@@ -51,6 +51,33 @@ logging.getLogger("websockets").setLevel(logging.WARNING)
 HERDR = os.environ.get("HERDR_BIN") or shutil.which("herdr") or "/opt/homebrew/bin/herdr"
 WS_PORT = int(os.environ.get("HERDR_RELAY_PORT", "8375"))
 POLL_INTERVAL = 2
+# The ceiling the poll loop backs off to when nothing is happening — no client
+# connected, no agent working or blocked, no durable operation in flight,
+# nothing changed since the last cycle (#19). The floor stays
+# POLL_INTERVAL and is restored on the first edge, so this trades latency only
+# in the state where no one is looking at the result.
+POLL_INTERVAL_MAX = float(os.environ.get("HERDR_POLL_INTERVAL_MAX", "10"))
+# Geometric rather than a step to the ceiling: a single quiet cycle between two
+# busy ones should cost a fraction of a second, not the full backoff.
+POLL_BACKOFF_FACTOR = float(os.environ.get("HERDR_POLL_BACKOFF_FACTOR", "1.5"))
+
+# SSH connection multiplexing (#19). Polling opens two SSH connections per
+# remote host per cycle — a `true` reachability probe and `herdr pane list` —
+# and each one pays a TCP handshake, a key exchange and an authentication.
+# A shared master connection pays that once per ControlPersist window instead.
+#
+# ControlPath goes through a Unix socket, so the whole path must fit in
+# sockaddr_un: 104 bytes on darwin. Exceeding it does not degrade to an
+# unmultiplexed connection, it fails the call outright, which would take every
+# remote host offline — hence the length check in herdr.ssh_options() rather
+# than a bare string here.
+SSH_CONTROL_DIR = os.environ.get(
+    "HERDR_SSH_CONTROL_DIR",
+    "~/.local/state/herdr-relay/ssh",
+)  # `~` expanded at the point of use, so a configured one is expanded too
+# Seconds an idle master lingers. Comfortably longer than POLL_INTERVAL_MAX so
+# a backed-off poll loop still finds the connection it opened last cycle.
+SSH_CONTROL_PERSIST = os.environ.get("HERDR_SSH_CONTROL_PERSIST", "60")
 
 RELAY_VERSION = "0.7.0"  # this relay's own version; shown to a client that must update
 # The oldest client protocol revision this relay will work with. Deliberately not
