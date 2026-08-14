@@ -322,6 +322,29 @@ def agent_started_pane_id(raw):
     return pane_id if isinstance(pane_id, str) and pane_id else None
 
 
+def tab_created_ids(raw):
+    """The pane and tab a `tab create` made, straight from its own response.
+
+    Herdr 0.8 needs a pane at a shell prompt before an agent can be attached to
+    it, so a launch is two calls; this reads the handle the first one returns.
+    The tab id comes back too because a launch that fails afterwards leaves the
+    tab behind, and only its id can close it.
+    """
+    data = _parse_response(raw)
+    if data is None:
+        return None, None
+    result = data.get("result")
+    if not isinstance(result, dict) or result.get("type") != "tab_created":
+        return None, None
+    pane = result.get("root_pane")
+    pane_id = pane.get("pane_id") if isinstance(pane, dict) else None
+    if not isinstance(pane_id, str) or not pane_id:
+        return None, None
+    tab = result.get("tab")
+    tab_id = tab.get("tab_id") if isinstance(tab, dict) else None
+    return pane_id, tab_id if isinstance(tab_id, str) and tab_id else None
+
+
 def get_agent_by_name(name, host, cancel_event=None, timeout=None):
     """Resolve an exact agent name through `herdr agent get`.
 

@@ -1071,7 +1071,7 @@ These are all code and message pairs produced through `command_error`.
 | `PROJECT_NOT_FOUND` | `Project not found` | A project mutation or project launch names an unknown opaque ID. |
 | `PROJECT_ARCHIVED` | `Project is removed` | A launch names an archived project. |
 | `PROJECT_UNAVAILABLE` | `Project configuration is unavailable` | A project launch is orphaned by host/root configuration or its folder changed. |
-| `LAUNCH_FAILED` | `Herdr did not start the client` | The `herdr agent start` process fails or exits unsuccessfully. Since revision 3 this reaches a client as an operation error only, never as a `command_error`. |
+| `LAUNCH_FAILED` | `Herdr did not start the client` | Either half of the launch fails: `herdr tab create` does not return a pane, or `herdr agent start` fails or exits unsuccessfully. Since revision 3 this reaches a client as an operation error only, never as a `command_error`. |
 | `CONFIGURATION_CHANGED` | `The selected project configuration is no longer available` | A durable start no longer has its saved host, root, folder, harness, or model configuration. |
 | `HOST_OFFLINE` | `The selected host is offline` | A durable start cannot reach its configured host. |
 | `HERDR_UNAVAILABLE` | `Herdr is unavailable on the selected host` | SSH responds but the configured Herdr command does not answer usably — no pane snapshot for polling, and no name-registry answer (including a `protocol_mismatch` from version skew) for a durable start. |

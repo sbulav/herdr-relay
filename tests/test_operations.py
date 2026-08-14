@@ -11,6 +11,41 @@ from unittest.mock import AsyncMock, patch
 from relay import herdr_relay
 
 
+def tab_created(pane_id="pane-new", tab_id="tab-new"):
+    return json.dumps({
+        "id": "cli:tab:create",
+        "result": {
+            "type": "tab_created",
+            "root_pane": {"pane_id": pane_id, "tab_id": tab_id},
+            "tab": {"tab_id": tab_id, "title": "shell"},
+        },
+    })
+
+
+def herdr_cli(start_reply, tab_reply=None):
+    """Stand in for the Herdr CLI across a whole two-step launch.
+
+    Herdr 0.8 needs `tab create` before `agent start`, so a single canned reply
+    can no longer answer a launch: this dispatches on the subcommand and lets a
+    test speak only about the step it is testing.
+    """
+    def run(*args, **_kwargs):
+        if args[:2] == ("tab", "create"):
+            return (True, tab_created()) if tab_reply is None else tab_reply
+        if args[:2] == ("tab", "close"):
+            return True, json.dumps({"result": {"type": "ok"}})
+        return start_reply
+    return run
+
+
+def call_args(run, *prefix):
+    """The arguments of the one CLI call that starts with `prefix`."""
+    matches = [call.args for call in run.call_args_list if call.args[:len(prefix)] == prefix]
+    if len(matches) != 1:
+        raise AssertionError(f"expected exactly one {' '.join(prefix)} call, got {len(matches)}")
+    return matches[0]
+
+
 class StartOperationTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
@@ -171,16 +206,124 @@ class StartOperationTests(unittest.TestCase):
         with (
             patch.object(herdr_relay.state, "event_queue", queue.Queue()),
             patch.object(herdr_relay.herdr, "get_agent_by_name", return_value=([], ready)) as probe,
-            patch.object(herdr_relay.herdr, "run_herdr_checked", return_value=(True, started)) as run,
+            patch.object(herdr_relay.herdr, "run_herdr_checked", side_effect=herdr_cli((True, started))) as run,
         ):
             herdr_relay.operations._start_operation(operation["operation_id"])
 
         result = herdr_relay.operations.OperationStore(str(self.db)).get(operation["operation_id"])
         self.assertEqual("started", result["stage"])
         self.assertEqual("legacy:workstation:pane-9", result["session_id"])
-        self.assertEqual(operation["agent_name"], run.call_args.args[2])
+        start = call_args(run, "agent", "start")
+        self.assertEqual(operation["agent_name"], start[2])
         # The reply named the pane; nothing was polled after launch.
         probe.assert_called_once()
+
+    def test_launch_creates_the_pane_then_attaches_the_agent_to_it(self):
+        """Herdr 0.8 removed `agent start --cwd`: the pane carries the directory.
+
+        `agent start` now attaches to a pane that already exists, so the project
+        path belongs to `tab create` and the pane it returns is what the agent
+        must be pointed at. Passing the old flags is an argument error, which is
+        how every launch broke on the 0.8 upgrade.
+        """
+        operation = self.begin_operation()
+        ready = {"ssh_reachable": True, "herdr_ready": True}
+        started = json.dumps({
+            "result": {
+                "type": "agent_started",
+                "agent": {"pane_id": "pane-new", "name": operation["agent_name"]},
+            },
+        })
+        with (
+            patch.object(herdr_relay.state, "event_queue", queue.Queue()),
+            patch.object(herdr_relay.herdr, "get_agent_by_name", return_value=([], ready)),
+            patch.object(herdr_relay.herdr, "run_herdr_checked", side_effect=herdr_cli((True, started))) as run,
+        ):
+            herdr_relay.operations._start_operation(operation["operation_id"])
+
+        result = herdr_relay.operations.OperationStore(str(self.db)).get(operation["operation_id"])
+        self.assertEqual("started", result["stage"])
+        self.assertEqual("legacy:workstation:pane-new", result["session_id"])
+
+        create = call_args(run, "tab", "create")
+        self.assertEqual(("--cwd", os.path.realpath(self.root)), create[2:4])
+        self.assertIn("--no-focus", create)
+
+        start = call_args(run, "agent", "start")
+        self.assertEqual(["--kind", "claude"], list(start[3:5]))
+        self.assertEqual(["--pane", "pane-new"], list(start[5:7]))
+        self.assertNotIn("--cwd", start)
+        self.assertNotIn("--no-focus", start)
+        # Herdr caps its own prompt wait at 300s and defaults to 30s; the
+        # operation's readiness budget is what should govern it.
+        self.assertEqual("1000", start[start.index("--timeout") + 1])
+
+    def test_model_selection_is_passed_to_the_harness_not_to_herdr(self):
+        operation, _created = herdr_relay.operations.OperationStore(str(self.db)).begin(
+            "start-model", "workstation", self.project["project_id"], "claude", "opus"
+        )
+        ready = {"ssh_reachable": True, "herdr_ready": True}
+        started = json.dumps({
+            "result": {
+                "type": "agent_started",
+                "agent": {"pane_id": "pane-new", "name": operation["agent_name"]},
+                "argv": ["claude", "--model", "opus"],
+            },
+        })
+        with (
+            patch.object(herdr_relay.state, "event_queue", queue.Queue()),
+            patch.object(herdr_relay.herdr, "get_agent_by_name", return_value=([], ready)),
+            patch.object(herdr_relay.herdr, "run_herdr_checked", side_effect=herdr_cli((True, started))) as run,
+        ):
+            herdr_relay.operations._start_operation(operation["operation_id"])
+
+        result = herdr_relay.operations.OperationStore(str(self.db)).get(operation["operation_id"])
+        self.assertEqual("started", result["stage"])
+        start = call_args(run, "agent", "start")
+        # `--kind` names the harness now, so everything past `--` is its own.
+        self.assertEqual(["--", "--model", "opus"], list(start[-3:]))
+
+    def test_harness_kind_follows_the_configured_command(self):
+        """A configured harness declares the executable Herdr names its kind after."""
+        self.host["harnesses"] = [{"id": "claude", "command": ["/usr/local/bin/claude"]}]
+        self.assertEqual("claude", herdr_relay.operations._harness_kind(self.host, "claude"))
+        # An unconfigured host has no command to read; the id is the same name.
+        self.assertEqual("opencode", herdr_relay.operations._harness_kind(self.host, "opencode"))
+
+    def test_a_failed_launch_does_not_leave_an_empty_tab_behind(self):
+        operation = self.begin_operation()
+        ready = {"ssh_reachable": True, "herdr_ready": True}
+        refused = json.dumps({"error": {"code": "invalid_argument", "message": "unknown kind"}})
+        with (
+            patch.object(herdr_relay.state, "event_queue", queue.Queue()),
+            patch.object(herdr_relay.herdr, "get_agent_by_name", return_value=([], ready)),
+            patch.object(herdr_relay.herdr, "run_herdr_checked", side_effect=herdr_cli((False, refused))) as run,
+            self.assertLogs(herdr_relay.config.log, level="WARNING"),
+        ):
+            herdr_relay.operations._start_operation(operation["operation_id"])
+
+        result = herdr_relay.operations.OperationStore(str(self.db)).get(operation["operation_id"])
+        self.assertEqual("LAUNCH_FAILED", result["error_code"])
+        self.assertEqual(("tab", "close", "tab-new"), call_args(run, "tab", "close"))
+
+    def test_a_tab_that_never_opened_fails_the_launch_without_starting(self):
+        operation = self.begin_operation()
+        ready = {"ssh_reachable": True, "herdr_ready": True}
+        with (
+            patch.object(herdr_relay.state, "event_queue", queue.Queue()),
+            patch.object(herdr_relay.herdr, "get_agent_by_name", return_value=([], ready)),
+            patch.object(
+                herdr_relay.herdr,
+                "run_herdr_checked",
+                side_effect=herdr_cli((True, ""), tab_reply=(False, json.dumps({"error": {"code": "no_server"}}))),
+            ) as run,
+            self.assertLogs(herdr_relay.config.log, level="WARNING"),
+        ):
+            herdr_relay.operations._start_operation(operation["operation_id"])
+
+        result = herdr_relay.operations.OperationStore(str(self.db)).get(operation["operation_id"])
+        self.assertEqual("LAUNCH_FAILED", result["error_code"])
+        self.assertEqual([("tab", "create")], [call.args[:2] for call in run.call_args_list])
 
     def test_name_taken_launch_reconciles_the_existing_agent(self):
         operation = self.begin_operation()
@@ -196,7 +339,7 @@ class StartOperationTests(unittest.TestCase):
         with (
             patch.object(herdr_relay.state, "event_queue", queue.Queue()),
             patch.object(herdr_relay.herdr, "get_agent_by_name", side_effect=observed),
-            patch.object(herdr_relay.herdr, "run_herdr_checked", return_value=(False, taken)),
+            patch.object(herdr_relay.herdr, "run_herdr_checked", side_effect=herdr_cli((False, taken))) as run,
             patch.object(herdr_relay.operations.time, "monotonic", side_effect=[0, 0]),
         ):
             herdr_relay.operations._start_operation(operation["operation_id"])
@@ -205,6 +348,9 @@ class StartOperationTests(unittest.TestCase):
         self.assertEqual("started", result["stage"])
         self.assertEqual("legacy:workstation:pane-3", result["session_id"])
         self.assertIsNone(result["error_code"])
+        # The agent was already running elsewhere, so the tab opened for it is
+        # an orphan — reconciling to the old pane must not litter a new one.
+        self.assertEqual(("tab", "close", "tab-new"), call_args(run, "tab", "close"))
 
     def test_start_waits_for_the_same_named_pane_before_started(self):
         operation = self.begin_operation()
@@ -216,7 +362,7 @@ class StartOperationTests(unittest.TestCase):
         with (
             patch.object(herdr_relay.state, "event_queue", queue.Queue()),
             patch.object(herdr_relay.herdr, "get_agent_by_name", side_effect=observed),
-            patch.object(herdr_relay.herdr, "run_herdr_checked", return_value=(True, "")) as run,
+            patch.object(herdr_relay.herdr, "run_herdr_checked", side_effect=herdr_cli((True, ""))) as run,
             patch.object(herdr_relay.operations.time, "monotonic", side_effect=[0, 0]),
         ):
             herdr_relay.operations._start_operation(operation["operation_id"])
@@ -224,9 +370,12 @@ class StartOperationTests(unittest.TestCase):
         result = herdr_relay.operations.OperationStore(str(self.db)).get(operation["operation_id"])
         self.assertEqual("started", result["stage"])
         self.assertEqual("legacy:workstation:pane-8", result["session_id"])
-        self.assertEqual(operation["agent_name"], run.call_args.args[2])
-        self.assertIn("--cwd", run.call_args.args)
-        self.assertNotIn("--model", run.call_args.args)
+        start = call_args(run, "agent", "start")
+        self.assertEqual(operation["agent_name"], start[2])
+        self.assertNotIn("--model", start)
+        # The start reply said nothing usable, so the agent may well be running
+        # in the new tab — closing it would kill the launch this is recovering.
+        self.assertNotIn(("tab", "close"), [call.args[:2] for call in run.call_args_list])
 
     def test_ready_host_launch_without_exact_name_is_not_a_readiness_timeout(self):
         operation = self.begin_operation()
@@ -234,7 +383,7 @@ class StartOperationTests(unittest.TestCase):
         with (
             patch.object(herdr_relay.state, "event_queue", queue.Queue()),
             patch.object(herdr_relay.herdr, "get_agent_by_name", return_value=([], ready)),
-            patch.object(herdr_relay.herdr, "run_herdr_checked", return_value=(True, "")),
+            patch.object(herdr_relay.herdr, "run_herdr_checked", side_effect=herdr_cli((True, ""))),
             patch.object(herdr_relay.operations.time, "monotonic", side_effect=[0, 2]),
             self.assertLogs(herdr_relay.config.log, level="WARNING") as logs,
         ):
@@ -268,14 +417,17 @@ class StartOperationTests(unittest.TestCase):
             patch.object(herdr_relay.state, "event_queue", events),
             patch.object(herdr_relay.operations, "_wake_host", return_value=True) as wake,
             patch.object(herdr_relay.operations, "_probe_existing", side_effect=observed),
-            patch.object(herdr_relay.herdr, "run_herdr_checked", return_value=(True, started)) as run,
+            patch.object(herdr_relay.herdr, "run_herdr_checked", side_effect=herdr_cli((True, started))) as run,
         ):
             herdr_relay.operations._start_operation(operation["operation_id"])
             result = herdr_relay.operations.OperationStore(str(self.db)).get(operation["operation_id"])
 
             self.assertEqual("started", result["stage"])
             wake.assert_called_once()
-            run.assert_called_once()
+            self.assertEqual(
+                [("tab", "create"), ("agent", "start")],
+                [call.args[:2] for call in run.call_args_list],
+            )
 
         stages = []
         while not events.empty():
@@ -314,7 +466,7 @@ class StartOperationTests(unittest.TestCase):
             patch.object(herdr_relay.operations, "_probe_existing", side_effect=observed),
             patch.object(herdr_relay.operations, "_wake_host", side_effect=wake),
             patch.object(herdr_relay.project_fs, "browse", side_effect=browse),
-            patch.object(herdr_relay.herdr, "run_herdr_checked", return_value=(True, started)),
+            patch.object(herdr_relay.herdr, "run_herdr_checked", side_effect=herdr_cli((True, started))),
         ):
             herdr_relay.operations._start_operation(operation["operation_id"])
 

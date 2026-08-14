@@ -145,8 +145,15 @@ picks up the in-flight set from `server_info` rather than guessing. A start aime
 at a host that is asleep — and whose host configuration grants wake — wakes it
 first and reports each readiness transition.
 
+A launch is two Herdr calls, because Herdr 0.8's `agent start` attaches an agent
+to a pane that already exists rather than creating one: the relay opens the
+project directory with `herdr tab create --cwd <path> --no-focus`, then runs
+`herdr agent start <name> --kind <harness> --pane <pane_id>`. A launch that
+fails after the tab exists closes it again, so a retry does not accumulate empty
+tabs. Requires Herdr 0.8 or newer.
+
 A launch is correlated by exact identity, never by guessing: the `agent start`
-reply names the pane it created, and recovery — before launch, after a relay
+reply names the pane it claimed, and recovery — before launch, after a relay
 restart, or when the reply is lost — resolves the deterministic start name
 through `herdr agent get <name>`. The relay never substitutes cwd, harness,
 pane order, or timing for that identity.
