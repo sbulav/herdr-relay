@@ -143,8 +143,8 @@ class StartOperationTests(unittest.TestCase):
             patch.object(herdr_relay.state, "event_queue", events),
             patch.object(
                 herdr_relay.herdr,
-                "get_agents_from_host",
-                return_value=([{"agent_name": operation["agent_name"], "pane_id": "pane-7"}], ready),
+                "get_agent_by_name",
+                return_value=([{"pane_id": "pane-7", "agent_name": operation["agent_name"]}], ready),
             ),
             patch.object(herdr_relay.herdr, "run_herdr_checked") as run,
         ):
@@ -157,16 +157,65 @@ class StartOperationTests(unittest.TestCase):
         self.assertEqual("checking_herdr", events.get_nowait()["operation"]["stage"])
         self.assertEqual("started", events.get_nowait()["operation"]["stage"])
 
+    def test_ready_host_start_correlates_from_the_launch_reply(self):
+        operation = self.begin_operation()
+        ready = {"ssh_reachable": True, "herdr_ready": True}
+        started = json.dumps({
+            "id": "cli:agent:start",
+            "result": {
+                "type": "agent_started",
+                "agent": {"pane_id": "pane-9", "name": operation["agent_name"]},
+                "argv": ["claude"],
+            },
+        })
+        with (
+            patch.object(herdr_relay.state, "event_queue", queue.Queue()),
+            patch.object(herdr_relay.herdr, "get_agent_by_name", return_value=([], ready)) as probe,
+            patch.object(herdr_relay.herdr, "run_herdr_checked", return_value=(True, started)) as run,
+        ):
+            herdr_relay.operations._start_operation(operation["operation_id"])
+
+        result = herdr_relay.operations.OperationStore(str(self.db)).get(operation["operation_id"])
+        self.assertEqual("started", result["stage"])
+        self.assertEqual("legacy:workstation:pane-9", result["session_id"])
+        self.assertEqual(operation["agent_name"], run.call_args.args[2])
+        # The reply named the pane; nothing was polled after launch.
+        probe.assert_called_once()
+
+    def test_name_taken_launch_reconciles_the_existing_agent(self):
+        operation = self.begin_operation()
+        ready = {"ssh_reachable": True, "herdr_ready": True}
+        taken = json.dumps({
+            "id": "cli:agent:start",
+            "error": {"code": "agent_name_taken", "message": "agent name is already used"},
+        })
+        observed = [
+            ([], ready),
+            ([{"pane_id": "pane-3", "agent_name": operation["agent_name"]}], ready),
+        ]
+        with (
+            patch.object(herdr_relay.state, "event_queue", queue.Queue()),
+            patch.object(herdr_relay.herdr, "get_agent_by_name", side_effect=observed),
+            patch.object(herdr_relay.herdr, "run_herdr_checked", return_value=(False, taken)),
+            patch.object(herdr_relay.operations.time, "monotonic", side_effect=[0, 0]),
+        ):
+            herdr_relay.operations._start_operation(operation["operation_id"])
+
+        result = herdr_relay.operations.OperationStore(str(self.db)).get(operation["operation_id"])
+        self.assertEqual("started", result["stage"])
+        self.assertEqual("legacy:workstation:pane-3", result["session_id"])
+        self.assertIsNone(result["error_code"])
+
     def test_start_waits_for_the_same_named_pane_before_started(self):
         operation = self.begin_operation()
         ready = {"ssh_reachable": True, "herdr_ready": True}
         observed = [
             ([], ready),
-            ([{"agent_name": operation["agent_name"], "pane_id": "pane-8"}], ready),
+            ([{"pane_id": "pane-8", "agent_name": operation["agent_name"]}], ready),
         ]
         with (
             patch.object(herdr_relay.state, "event_queue", queue.Queue()),
-            patch.object(herdr_relay.herdr, "get_agents_from_host", side_effect=observed),
+            patch.object(herdr_relay.herdr, "get_agent_by_name", side_effect=observed),
             patch.object(herdr_relay.herdr, "run_herdr_checked", return_value=(True, "")) as run,
             patch.object(herdr_relay.operations.time, "monotonic", side_effect=[0, 0]),
         ):
@@ -179,6 +228,27 @@ class StartOperationTests(unittest.TestCase):
         self.assertIn("--cwd", run.call_args.args)
         self.assertNotIn("--model", run.call_args.args)
 
+    def test_ready_host_launch_without_exact_name_is_not_a_readiness_timeout(self):
+        operation = self.begin_operation()
+        ready = {"ssh_reachable": True, "herdr_ready": True}
+        with (
+            patch.object(herdr_relay.state, "event_queue", queue.Queue()),
+            patch.object(herdr_relay.herdr, "get_agent_by_name", return_value=([], ready)),
+            patch.object(herdr_relay.herdr, "run_herdr_checked", return_value=(True, "")),
+            patch.object(herdr_relay.operations.time, "monotonic", side_effect=[0, 2]),
+            self.assertLogs(herdr_relay.config.log, level="WARNING") as logs,
+        ):
+            herdr_relay.operations._start_operation(operation["operation_id"])
+
+        result = herdr_relay.operations.OperationStore(str(self.db)).get(operation["operation_id"])
+        self.assertEqual("failed", result["stage"])
+        self.assertEqual("AGENT_NOT_OBSERVABLE", result["error_code"])
+        self.assertEqual(
+            "Herdr did not expose a recoverable agent identity",
+            result["error_message"],
+        )
+        self.assertIn("failed at starting_agent: AGENT_NOT_OBSERVABLE", logs.output[0])
+
     def test_offline_wol_start_reports_wake_and_readiness_stages(self):
         self.host["power"] = {"wake": {"mac": "00:11:22:33:44:55"}, "shutdown": False}
         ready = {"ssh_reachable": True, "herdr_ready": True}
@@ -186,14 +256,19 @@ class StartOperationTests(unittest.TestCase):
         observed = [
             ([], {"ssh_reachable": False, "herdr_ready": False}),
             ([], ready),
-            ([{"agent_name": operation["agent_name"], "pane_id": "pane-wol"}], ready),
         ]
+        started = json.dumps({
+            "result": {
+                "type": "agent_started",
+                "agent": {"pane_id": "pane-wol", "name": operation["agent_name"]},
+            },
+        })
         events = queue.Queue()
         with (
             patch.object(herdr_relay.state, "event_queue", events),
             patch.object(herdr_relay.operations, "_wake_host", return_value=True) as wake,
             patch.object(herdr_relay.operations, "_probe_existing", side_effect=observed),
-            patch.object(herdr_relay.herdr, "run_herdr_checked", return_value=(True, "")) as run,
+            patch.object(herdr_relay.herdr, "run_herdr_checked", return_value=(True, started)) as run,
         ):
             herdr_relay.operations._start_operation(operation["operation_id"])
             result = herdr_relay.operations.OperationStore(str(self.db)).get(operation["operation_id"])
@@ -217,8 +292,13 @@ class StartOperationTests(unittest.TestCase):
         observed = [
             ([], {"ssh_reachable": False, "herdr_ready": False}),
             ([], {"ssh_reachable": True, "herdr_ready": True}),
-            ([{"agent_name": operation["agent_name"], "pane_id": "pane-wol"}], {"ssh_reachable": True, "herdr_ready": True}),
         ]
+        started = json.dumps({
+            "result": {
+                "type": "agent_started",
+                "agent": {"pane_id": "pane-wol", "name": operation["agent_name"]},
+            },
+        })
         browses = []
 
         def browse(*_args, **_kwargs):
@@ -234,7 +314,7 @@ class StartOperationTests(unittest.TestCase):
             patch.object(herdr_relay.operations, "_probe_existing", side_effect=observed),
             patch.object(herdr_relay.operations, "_wake_host", side_effect=wake),
             patch.object(herdr_relay.project_fs, "browse", side_effect=browse),
-            patch.object(herdr_relay.herdr, "run_herdr_checked", return_value=(True, "")),
+            patch.object(herdr_relay.herdr, "run_herdr_checked", return_value=(True, started)),
         ):
             herdr_relay.operations._start_operation(operation["operation_id"])
 
@@ -303,30 +383,12 @@ class StartOperationTests(unittest.TestCase):
         self.assertEqual("cancel-1", response["request_id"])
         self.assertEqual("cancelled", response["result"]["operation"]["stage"])
 
-    def test_duplicate_matching_panes_fail_without_a_second_launch(self):
-        operation = self.begin_operation()
-        matches = [
-            {"agent_name": operation["agent_name"], "pane_id": "pane-1"},
-            {"name": operation["agent_name"], "pane_id": "pane-2"},
-        ]
-        with (
-            patch.object(herdr_relay.state, "event_queue", queue.Queue()),
-            patch.object(herdr_relay.herdr, "get_agents_from_host", return_value=(matches, {"ssh_reachable": True, "herdr_ready": True})),
-            patch.object(herdr_relay.herdr, "run_herdr_checked") as run,
-        ):
-            herdr_relay.operations._start_operation(operation["operation_id"])
-
-        result = herdr_relay.operations.OperationStore(str(self.db)).get(operation["operation_id"])
-        self.assertEqual("failed", result["stage"])
-        self.assertEqual("DUPLICATE_AGENT", result["error_code"])
-        run.assert_not_called()
-
     def test_configuration_removal_becomes_a_stable_sanitized_failure(self):
         operation = self.begin_operation()
         herdr_relay.projects.ProjectStore(str(self.db)).reconcile(set(), set())
         with (
             patch.object(herdr_relay.state, "event_queue", queue.Queue()),
-            patch.object(herdr_relay.herdr, "get_agents_from_host") as probe,
+            patch.object(herdr_relay.herdr, "get_agent_by_name") as probe,
         ):
             herdr_relay.operations._start_operation(operation["operation_id"])
 
@@ -358,7 +420,7 @@ class StartOperationTests(unittest.TestCase):
 
         with (
             patch.object(herdr_relay.state, "event_queue", queue.Queue()),
-            patch.object(herdr_relay.herdr, "get_agents_from_host") as probe,
+            patch.object(herdr_relay.herdr, "get_agent_by_name") as probe,
             patch.object(herdr_relay.herdr, "run_herdr_checked") as run,
         ):
             herdr_relay.operations._start_operation(operation["operation_id"])
@@ -386,6 +448,38 @@ class StartOperationTests(unittest.TestCase):
         self.assertTrue(probe["herdr_ready"])
         self.assertEqual("herdr-mobile-op-1", agents[0]["agent_name"])
         self.assertNotIn("agent_name", herdr_relay.protocol.public_agents(agents)[0])
+
+    def test_agent_get_reply_with_agent_info_is_a_ready_exact_match(self):
+        reply = json.dumps({
+            "result": {
+                "type": "agent_info",
+                "agent": {"name": "herdr-mobile-op-1", "pane_id": "pane-1"},
+            },
+        })
+        with patch.object(herdr_relay.herdr, "run_herdr_checked", return_value=(True, reply)):
+            matches, probe = herdr_relay.herdr.get_agent_by_name("herdr-mobile-op-1", self.host)
+
+        self.assertEqual({"ssh_reachable": True, "herdr_ready": True}, probe)
+        self.assertEqual([{"pane_id": "pane-1", "agent_name": "herdr-mobile-op-1"}], matches)
+
+    def test_agent_not_found_proves_herdr_ready_without_a_match(self):
+        reply = json.dumps({"error": {"code": "agent_not_found", "message": "no such agent"}})
+        with patch.object(herdr_relay.herdr, "run_herdr_checked", return_value=(False, reply)):
+            matches, probe = herdr_relay.herdr.get_agent_by_name("herdr-mobile-op-1", self.host)
+
+        self.assertEqual({"ssh_reachable": True, "herdr_ready": True}, probe)
+        self.assertEqual([], matches)
+
+    def test_any_other_agent_get_error_is_not_herdr_ready(self):
+        # Version skew answers every command with protocol_mismatch. That is
+        # not a name-registry answer, so treating it as ready would misfile a
+        # later failure as AGENT_NOT_OBSERVABLE instead of HERDR_UNAVAILABLE.
+        reply = json.dumps({"error": {"code": "protocol_mismatch", "message": "client speaks 19, server 16"}})
+        with patch.object(herdr_relay.herdr, "run_herdr_checked", return_value=(False, reply)):
+            matches, probe = herdr_relay.herdr.get_agent_by_name("herdr-mobile-op-1", self.host)
+
+        self.assertEqual({"ssh_reachable": True, "herdr_ready": False}, probe)
+        self.assertEqual([], matches)
 
     def test_operation_transition_is_not_held_behind_a_blocked_pane_read(self):
         release = threading.Event()
