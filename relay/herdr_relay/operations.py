@@ -27,6 +27,12 @@ MAX_HARNESS_LENGTH = 64
 MAX_MODEL_LENGTH = 256
 DEFAULT_READINESS_TIMEOUT_SECONDS = 180
 POST_START_PROBE_INTERVAL_SECONDS = 0.5
+TAB_CLOSE_TIMEOUT_SECONDS = 15
+# Herdr's own cap on `agent start --timeout`; asking for more is an argument error.
+MAX_AGENT_START_TIMEOUT_MS = 300_000
+# Slack on our side of `agent start --timeout` so the subprocess deadline never
+# fires first — Herdr's own timeout produces a reportable error, ours a silent kill.
+AGENT_START_GRACE_SECONDS = 15
 TERMINAL_RECOVERY_LIMIT = 32
 _worker_lock = threading.Lock()
 _running = set()
@@ -401,6 +407,44 @@ def _readiness_timeout(host):
     return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else DEFAULT_READINESS_TIMEOUT_SECONDS
 
 
+def _harness_kind(host, harness_id):
+    """The `--kind` Herdr 0.8 wants for this harness.
+
+    Herdr names an agent kind after its canonical executable, which is exactly
+    what a configured harness declares in `command`. Falling back to the harness
+    id keeps unconfigured hosts working, since the two agree for every harness
+    the catalog offers. Nothing here validates the value against Herdr's enum:
+    a hardcoded copy of it would drift on the next Herdr release, and Herdr
+    already rejects an unknown kind with an error this operation reports.
+    """
+    for item in host.get("harnesses", []) or []:
+        if isinstance(item, dict) and item.get("id") == harness_id:
+            command = item.get("command")
+            if isinstance(command, list) and command and isinstance(command[0], str) and command[0]:
+                return os.path.basename(command[0])
+            break
+    return harness_id
+
+
+def _close_tab(host, tab_id):
+    """Discard a tab this operation opened but never filled.
+
+    A launch that fails after `tab create` would otherwise leave an empty shell
+    tab on the host for every retry, which the user has to clean up by hand.
+    Deliberately runs without the cancel event: cancelling the operation is the
+    main reason to clean up, so honouring it here would skip the cleanup.
+    """
+    if not tab_id:
+        return
+    herdr.run_herdr_checked(
+        "tab", "close", tab_id,
+        remote=hosts.ssh_target(host),
+        host_id=host["id"],
+        command=hosts.herdr_command(host),
+        timeout=TAB_CLOSE_TIMEOUT_SECONDS,
+    )
+
+
 def _wake_host(host, cancel_event):
     power = host.get("power") or {}
     wake = power.get("wake") if isinstance(power.get("wake"), dict) else None
@@ -530,33 +574,67 @@ def _start_operation(operation_id):
     _transition(store, operation_id, "starting_agent")
     remote = hosts.ssh_target(host)
     command = hosts.herdr_command(host)
-    argv = [operation["harness"]]
-    if operation["model"] != "default":
-        argv.extend(["--model", operation["model"]])
+    timeout = _readiness_timeout(host)
+
+    # Herdr 0.8 split the launch in two: `agent start` no longer creates
+    # anything, it attaches an agent to a pane already sitting at an
+    # interactive shell prompt. The project directory therefore moves to the
+    # tab, which is also the only step that can still take `--cwd`.
     success, output = herdr.run_herdr_checked(
-        "agent", "start", operation["agent_name"],
-        "--cwd", saved["canonical_path"], "--no-focus", "--", *argv,
+        "tab", "create", "--cwd", saved["canonical_path"], "--no-focus",
         remote=remote,
         host_id=host["id"],
         command=command,
-        timeout=_readiness_timeout(host),
+        timeout=timeout,
         cancel_event=cancel_event,
     )
     if _is_cancelled(store, operation_id, cancel_event):
         return
+    pane_id, tab_id = herdr.tab_created_ids(output) if success else (None, None)
+    if pane_id is None:
+        _error(store, operation_id, "LAUNCH_FAILED")
+        return
+
+    start_args = [
+        "agent", "start", operation["agent_name"],
+        "--kind", _harness_kind(host, operation["harness"]),
+        "--pane", pane_id,
+        # Herdr waits for the pane's shell prompt on its own clock; give it this
+        # operation's budget instead of its 30s default, which a cold shell on a
+        # just-woken host can outlast.
+        "--timeout", str(min(max(timeout, 1) * 1000, MAX_AGENT_START_TIMEOUT_MS)),
+    ]
+    if operation["model"] != "default":
+        # The harness is named by `--kind` now, so everything after `--` is an
+        # argument to it rather than the command line itself.
+        start_args.extend(["--", "--model", operation["model"]])
+    success, output = herdr.run_herdr_checked(
+        *start_args,
+        remote=remote,
+        host_id=host["id"],
+        command=command,
+        timeout=timeout + AGENT_START_GRACE_SECONDS,
+        cancel_event=cancel_event,
+    )
+    if _is_cancelled(store, operation_id, cancel_event):
+        _close_tab(host, tab_id)
+        return
     if success:
-        # `agent_started` names the pane it created, so a launch on a ready
+        # `agent_started` names the pane it claimed, so a launch on a ready
         # host is correlated by the reply itself — synchronously, with no
         # window in which the agent runs but the operation cannot see it.
-        pane_id = herdr.agent_started_pane_id(output)
-        if pane_id is not None:
-            session_id = protocol.session_id(host["id"], pane_id)
+        started_pane_id = herdr.agent_started_pane_id(output)
+        if started_pane_id is not None:
+            session_id = protocol.session_id(host["id"], started_pane_id)
             projects.store().mark_launch(operation["project_id"])
             _transition(store, operation_id, "started", session_id=session_id)
             return
-    elif herdr.response_error_code(output) != "agent_name_taken":
-        _error(store, operation_id, "LAUNCH_FAILED")
-        return
+    else:
+        # Nothing is running in the tab we just opened, whatever the reason.
+        _close_tab(host, tab_id)
+        if herdr.response_error_code(output) != "agent_name_taken":
+            _error(store, operation_id, "LAUNCH_FAILED")
+            return
 
     # Two ways here: the start reply was not parseable, or the name was
     # already taken. The taken name is not a failure — this operation is the
