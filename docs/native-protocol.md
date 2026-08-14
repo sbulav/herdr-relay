@@ -1074,9 +1074,9 @@ These are all code and message pairs produced through `command_error`.
 | `LAUNCH_FAILED` | `Herdr did not start the client` | The `herdr agent start` process fails or exits unsuccessfully. Since revision 3 this reaches a client as an operation error only, never as a `command_error`. |
 | `CONFIGURATION_CHANGED` | `The selected project configuration is no longer available` | A durable start no longer has its saved host, root, folder, harness, or model configuration. |
 | `HOST_OFFLINE` | `The selected host is offline` | A durable start cannot reach its configured host. |
-| `HERDR_UNAVAILABLE` | `Herdr is unavailable on the selected host` | SSH responds but the configured Herdr command does not return a usable pane snapshot. |
-| `AGENT_NOT_OBSERVABLE` | `Herdr did not expose a recoverable agent identity` | Herdr accepted the launch, but no pane exposed the exact deterministic start name before the observation deadline. The relay does not guess from cwd, harness, timing, or pane order. |
-| `DUPLICATE_AGENT` | `The host reported more than one matching agent` | More than one pane exposed the operation's deterministic name. |
+| `HERDR_UNAVAILABLE` | `Herdr is unavailable on the selected host` | SSH responds but the configured Herdr command does not answer usably — no pane snapshot for polling, and no name-registry answer (including a `protocol_mismatch` from version skew) for a durable start. |
+| `AGENT_NOT_OBSERVABLE` | `Herdr did not expose a recoverable agent identity` | Herdr accepted the launch, but neither the `agent start` reply nor `agent get` resolved the exact deterministic start name before the observation deadline. The relay does not guess from cwd, harness, timing, or pane order. |
+| `DUPLICATE_AGENT` | `The host reported more than one matching agent` | Legacy terminal error retained for rows written by older relay versions. Herdr rejects a taken name at `agent start`, so a new operation can no longer observe two matching agents. |
 | `READY_TIMEOUT` | `Host did not become ready before the timeout` | A waking host did not expose SSH or Herdr before its configured readiness timeout. Once launch begins, a missing exact agent identity is `AGENT_NOT_OBSERVABLE` instead. |
 | `WAKE_FAILED` | `Wake-on-LAN command failed` | The durable operation's configured Wake-on-LAN process raises or exits unsuccessfully. |
 | `OPERATION_NOT_FOUND` | `Start operation is no longer available` | `cancel_start.operation_id` or `start_session.retry_of_operation_id` does not identify a persisted start operation. |

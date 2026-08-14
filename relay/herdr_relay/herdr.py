@@ -286,6 +286,103 @@ def get_agents_from_host(remote=None, host_id=None, host=None, cancel_event=None
     return agents, probe
 
 
+def _parse_response(raw):
+    """Decode one CLI JSON response object, or None when it is not one."""
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def response_error_code(raw):
+    """The `error.code` of a failed CLI response, or None."""
+    data = _parse_response(raw)
+    if data is None:
+        return None
+    error = data.get("error")
+    return error.get("code") if isinstance(error, dict) else None
+
+
+def agent_started_pane_id(raw):
+    """The pane an `agent start` created, straight from its own response.
+
+    `agent_started` carries the full agent record, so a launch on a ready host
+    is correlated by the reply itself — no window exists in which the agent is
+    running but cannot be observed.
+    """
+    data = _parse_response(raw)
+    if data is None:
+        return None
+    result = data.get("result")
+    if not isinstance(result, dict) or result.get("type") != "agent_started":
+        return None
+    agent = result.get("agent")
+    pane_id = agent.get("pane_id") if isinstance(agent, dict) else None
+    return pane_id if isinstance(pane_id, str) and pane_id else None
+
+
+def get_agent_by_name(name, host, cancel_event=None, timeout=None):
+    """Resolve an exact agent name through `herdr agent get`.
+
+    Returns (matches, probe) shaped like `get_agents_from_host`, but `matches`
+    holds at most one agent: Herdr owns the name registry and refuses a taken
+    name at start (`agent_name_taken`), so two panes cannot answer to one name.
+
+    Readiness is claimed only on the two answers that prove it — the agent
+    record, or `agent_not_found`, which only a running server can rule. Any
+    other error (connection failure, `protocol_mismatch` from a version skew)
+    leaves `herdr_ready` false rather than letting a launch proceed against a
+    server that could not honor the identity contract.
+    """
+    host_id = host["id"]
+    remote = hosts.ssh_target(host)
+    budget = host.get("readiness_timeout_seconds", 180) if timeout is None else timeout
+    deadline = time.monotonic() + max(float(budget), 0.0)
+
+    def remaining():
+        return deadline - time.monotonic()
+
+    if remote:
+        if remaining() <= 0 or not run_ssh_checked(
+            remote,
+            "true",
+            host_id=host_id,
+            timeout=max(remaining(), 0.01),
+            cancel_event=cancel_event,
+        ):
+            return [], {"ssh_reachable": False, "herdr_ready": False}
+
+    probe = {"ssh_reachable": True, "herdr_ready": False}
+    command_timeout = remaining()
+    if command_timeout <= 0:
+        return [], probe
+    # The error JSON lands on stderr with a nonzero exit; run_process_checked
+    # already returns it as the output, so the reply is parsed regardless of
+    # the exit status.
+    _success, raw = run_herdr_checked(
+        "agent", "get", name,
+        remote=remote,
+        host_id=host_id,
+        command=hosts.herdr_command(host),
+        timeout=command_timeout,
+        cancel_event=cancel_event,
+    )
+    data = _parse_response(raw)
+    if data is None:
+        return [], probe
+    if response_error_code(raw) == "agent_not_found":
+        probe["herdr_ready"] = True
+        return [], probe
+    result = data.get("result")
+    agent = result.get("agent") if isinstance(result, dict) else None
+    pane_id = agent.get("pane_id") if isinstance(agent, dict) else None
+    if not isinstance(pane_id, str) or not pane_id:
+        return [], probe
+    probe["herdr_ready"] = True
+    return [{"pane_id": pane_id, "agent_name": name}], probe
+
+
 def configured_host_records():
     """Return host definitions: the configured topology, or a bare fallback.
 

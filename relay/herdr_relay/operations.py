@@ -283,7 +283,10 @@ ERROR_MESSAGES = {
     "READY_TIMEOUT": "Host did not become ready before the timeout",
     "LAUNCH_FAILED": "Herdr did not start the client",
     "AGENT_NOT_OBSERVABLE": "Herdr did not expose a recoverable agent identity",
-    "DUPLICATE_AGENT": "The host reported more than one matching agent",
+    # DUPLICATE_AGENT is gone from this map deliberately: Herdr owns the name
+    # registry and rejects a taken name at start, so the relay can no longer
+    # observe two agents answering to one deterministic name. Rows written by
+    # older relays keep their stored code and message.
 }
 
 
@@ -365,16 +368,19 @@ def _project_context(operation, verify_path=True):
 
 
 def _probe_existing(operation, host, cancel_event=None, timeout=None):
-    result = herdr.get_agents_from_host(host=host, cancel_event=cancel_event, timeout=timeout)
+    """Ask Herdr's name registry for this operation's exact agent.
+
+    `agent get <name>` resolves the deterministic start name directly, so the
+    probe does not depend on `pane list` carrying the name — the deployed
+    Herdr's pane snapshot omits it, which is what turned two healthy ready-host
+    launches into 180-second false READY_TIMEOUTs (herdr-mobile#92).
+    """
+    result = herdr.get_agent_by_name(
+        operation["agent_name"], host, cancel_event=cancel_event, timeout=timeout
+    )
     if not isinstance(result, tuple) or len(result) != 2:
         return [], {"ssh_reachable": False, "herdr_ready": False}
-    agents, probe = result
-    matches = [
-        agent for agent in agents
-        if agent.get("agent_name") == operation["agent_name"]
-        or agent.get("name") == operation["agent_name"]
-    ]
-    return matches, probe
+    return result
 
 
 def _operation_event(operation_id):
@@ -431,9 +437,6 @@ def _start_operation(operation_id):
     matches, probe = _probe_existing(operation, host, cancel_event)
     if _is_cancelled(store, operation_id, cancel_event):
         return
-    if len(matches) > 1:
-        _error(store, operation_id, "DUPLICATE_AGENT")
-        return
     if len(matches) == 1:
         if _project_context(operation) is None:
             _error(store, operation_id, "CONFIGURATION_CHANGED")
@@ -467,9 +470,6 @@ def _start_operation(operation_id):
                 return
             matches, probe = _probe_existing(operation, host, cancel_event, timeout=remaining)
             if _is_cancelled(store, operation_id, cancel_event):
-                return
-            if len(matches) > 1:
-                _error(store, operation_id, "DUPLICATE_AGENT")
                 return
             if len(matches) == 1:
                 if _project_context(operation) is None:
@@ -505,9 +505,6 @@ def _start_operation(operation_id):
             matches, probe = _probe_existing(operation, host, cancel_event, timeout=remaining)
             if _is_cancelled(store, operation_id, cancel_event):
                 return
-            if len(matches) > 1:
-                _error(store, operation_id, "DUPLICATE_AGENT")
-                return
             if len(matches) == 1:
                 if _project_context(operation) is None:
                     _error(store, operation_id, "CONFIGURATION_CHANGED")
@@ -536,7 +533,7 @@ def _start_operation(operation_id):
     argv = [operation["harness"]]
     if operation["model"] != "default":
         argv.extend(["--model", operation["model"]])
-    success, _output = herdr.run_herdr_checked(
+    success, output = herdr.run_herdr_checked(
         "agent", "start", operation["agent_name"],
         "--cwd", saved["canonical_path"], "--no-focus", "--", *argv,
         remote=remote,
@@ -545,15 +542,27 @@ def _start_operation(operation_id):
         timeout=_readiness_timeout(host),
         cancel_event=cancel_event,
     )
-    if not success:
-        if _is_cancelled(store, operation_id, cancel_event):
+    if _is_cancelled(store, operation_id, cancel_event):
+        return
+    if success:
+        # `agent_started` names the pane it created, so a launch on a ready
+        # host is correlated by the reply itself — synchronously, with no
+        # window in which the agent runs but the operation cannot see it.
+        pane_id = herdr.agent_started_pane_id(output)
+        if pane_id is not None:
+            session_id = protocol.session_id(host["id"], pane_id)
+            projects.store().mark_launch(operation["project_id"])
+            _transition(store, operation_id, "started", session_id=session_id)
             return
+    elif herdr.response_error_code(output) != "agent_name_taken":
         _error(store, operation_id, "LAUNCH_FAILED")
         return
 
-    # A successful process exit is not enough. The pane must expose the
-    # deterministic name before the operation can become started; otherwise a
-    # relay restart could not tell an existing agent from a second one.
+    # Two ways here: the start reply was not parseable, or the name was
+    # already taken. The taken name is not a failure — this operation is the
+    # name's only writer, so the agent exists from an earlier attempt that a
+    # relay restart interrupted after launch. Both cases resolve the same
+    # way the restart path does: by asking for the exact name.
     deadline = time.monotonic() + _readiness_timeout(host)
     while True:
         if _is_cancelled(store, operation_id, cancel_event):
@@ -564,22 +573,19 @@ def _start_operation(operation_id):
         matches, _probe = _probe_existing(operation, host, cancel_event, timeout=remaining)
         if _is_cancelled(store, operation_id, cancel_event):
             return
-        if len(matches) > 1:
-            _error(store, operation_id, "DUPLICATE_AGENT")
-            return
         if len(matches) == 1:
             session_id = protocol.session_id(host["id"], matches[0]["pane_id"])
             projects.store().mark_launch(operation["project_id"])
             _transition(store, operation_id, "started", session_id=session_id)
             return
-        # Each probe may open SSH and invoke `herdr pane list`; keep the
+        # Each probe may open SSH and invoke `herdr agent get`; keep the
         # readiness check responsive without hammering sshd on a remote host.
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             break
         if _wait_for_probe(cancel_event, min(POST_START_PROBE_INTERVAL_SECONDS, max(remaining, 0))):
             return
-    # The host and Herdr were ready before launch. What timed out here is the
+    # The host and Herdr were ready before launch. What ran out here is the
     # exact-name contract needed to recover this operation without ever
     # creating a duplicate, not host readiness.
     _error(store, operation_id, "AGENT_NOT_OBSERVABLE")

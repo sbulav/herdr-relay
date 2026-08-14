@@ -145,9 +145,11 @@ picks up the in-flight set from `server_info` rather than guessing. A start aime
 at a host that is asleep — and whose host configuration grants wake — wakes it
 first and reports each readiness transition.
 
-Durable recovery requires the configured Herdr build to return the exact name
-supplied to `herdr agent start <name>` as `agent_name` in `herdr pane list`.
-The relay never substitutes cwd, harness, pane order, or timing for that identity.
+A launch is correlated by exact identity, never by guessing: the `agent start`
+reply names the pane it created, and recovery — before launch, after a relay
+restart, or when the reply is lost — resolves the deterministic start name
+through `herdr agent get <name>`. The relay never substitutes cwd, harness,
+pane order, or timing for that identity.
 
 The harness and model a client may pick come from `catalog_refresh`, which probes
 a host off the launch path and caches the result per host. A client selects a
@@ -185,6 +187,6 @@ UPDATE_CONTRACT=1 make test
 ## Requirements
 
 - Python 3.10+ with [uv](https://docs.astral.sh/uv/), or Nix
-- a Herdr build whose `pane list` exposes durable `agent_name` values
+- herdr 0.7+
 - A TLS-terminating reverse proxy, for access from outside the LAN —
   [`docs/deployment.md`](docs/deployment.md) says what it has to do
