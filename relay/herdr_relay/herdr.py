@@ -1,12 +1,13 @@
 """Every call out to the herdr CLI, local or over SSH.
 
 `run_herdr_checked` is the only place a subprocess is built, so the shape of a
-remote invocation — BatchMode, the timeouts, no client-supplied argument — is
-stated once.
+remote invocation — BatchMode, the timeouts, the quoting that keeps client text
+a single argument — is stated once.
 """
 import asyncio
 import json
 import os
+import shlex
 import signal
 import subprocess
 import time
@@ -177,7 +178,13 @@ def run_herdr_checked(*args, remote=None, host_id=None, command=None, timeout=15
     try:
         command = list(command or [config.HERDR])
         if remote:
-            cmd = ["ssh", *ssh_options(), remote, *command, *args]
+            # ssh hands the remote side one string and the login shell re-splits
+            # it, so argument boundaries only survive quoting here. `args` is
+            # where client text rides (`pane send-text`, `respond`), which makes
+            # this quoting also the line between a prompt containing `; id` and
+            # that command running on the host. `command` stays unquoted: it is
+            # operator configuration and may rely on the shell (`~/bin/herdr`).
+            cmd = ["ssh", *ssh_options(), remote, *command, *(shlex.quote(arg) for arg in args)]
         else:
             cmd = [*command, *args]
         return run_process_checked(cmd, timeout=timeout, cancel_event=cancel_event)

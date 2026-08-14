@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import json
 import os
+import shlex
 import sqlite3
 import subprocess
 import tempfile
@@ -603,6 +604,51 @@ class HostPowerTests(unittest.TestCase):
         self.assertEqual(wake["code"], "HOST_NOT_ALLOWED")
         self.assertEqual(shutdown["code"], "HOST_NOT_ALLOWED")
         run.assert_not_called()
+
+
+class RemoteArgumentQuotingTests(unittest.TestCase):
+    """A remote argument must reach `herdr` as the one argument it left as.
+
+    ssh flattens the remote command into a single string and the login shell
+    re-splits it. Unquoted, a `send_text` containing a space fell apart into
+    extra arguments the CLI refused — silently, since `run_herdr` drops the
+    exit code — and shell metacharacters in a prompt executed on the host.
+    """
+
+    @patch.object(herdr_relay.herdr, "run_process_checked", return_value=(True, ""))
+    def test_remote_arguments_survive_the_login_shell(self, run):
+        text = "fix the login bug; echo $(uname)"
+        herdr_relay.herdr.run_herdr_checked(
+            "pane", "send-text", "%5", text, remote="user@host",
+        )
+
+        cmd = run.call_args.args[0]
+        # What ssh does: join to one string, then let the remote shell split it.
+        remote_command = " ".join(cmd[cmd.index("user@host") + 1:])
+        self.assertEqual(
+            shlex.split(remote_command),
+            [herdr_relay.config.HERDR, "pane", "send-text", "%5", text],
+        )
+
+    @patch.object(herdr_relay.herdr, "run_process_checked", return_value=(True, ""))
+    def test_the_configured_command_is_left_to_the_shell(self, run):
+        # The wrapper and binary are operator configuration, not client input;
+        # quoting them would break a path that leans on expansion (`~/bin/herdr`).
+        herdr_relay.herdr.run_herdr_checked(
+            "pane", "read", "%5", remote="user@host", command=["~/bin/herdr"],
+        )
+
+        cmd = run.call_args.args[0]
+        self.assertIn("~/bin/herdr", cmd)
+
+    @patch.object(herdr_relay.herdr, "run_process_checked", return_value=(True, ""))
+    def test_local_arguments_are_passed_exec_style(self, run):
+        herdr_relay.herdr.run_herdr_checked("pane", "send-text", "%5", "two words")
+
+        self.assertEqual(
+            run.call_args.args[0],
+            [herdr_relay.config.HERDR, "pane", "send-text", "%5", "two words"],
+        )
 
 
 class SshMultiplexingTests(unittest.TestCase):
