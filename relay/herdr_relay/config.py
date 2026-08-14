@@ -79,7 +79,7 @@ SSH_CONTROL_DIR = os.environ.get(
 # a backed-off poll loop still finds the connection it opened last cycle.
 SSH_CONTROL_PERSIST = os.environ.get("HERDR_SSH_CONTROL_PERSIST", "60")
 
-RELAY_VERSION = "0.8.2"  # this relay's own version; shown to a client that must update
+RELAY_VERSION = "0.8.3"  # this relay's own version; shown to a client that must update
 # The oldest client protocol revision this relay will work with. Deliberately not
 # an app version: a client's protocol revision changes only when the wire changes,
 # so a routine release never has to touch it, and a breaking change bumps it in

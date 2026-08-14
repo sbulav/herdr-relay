@@ -283,6 +283,50 @@ class StartOperationTests(unittest.TestCase):
         # `--kind` names the harness now, so everything past `--` is its own.
         self.assertEqual(["--", "--model", "opus"], list(start[-3:]))
 
+    def test_the_deterministic_name_fits_what_herdr_accepts(self):
+        """Herdr refuses a name over 32 characters, which failed every launch.
+
+        `herdr-mobile-` plus a full 32-hex operation id is 44 characters, and
+        Herdr answered `invalid_agent_name` before it looked at anything else.
+        The name is this operation's only recovery key, so it has to be both
+        legal and derived from the id alone.
+        """
+        operation = self.begin_operation()
+        name = operation["agent_name"]
+        self.assertLessEqual(len(name), 32)
+        self.assertRegex(name, r"^[a-z][a-z0-9_-]{0,31}$")
+        self.assertTrue(name.startswith("herdr-mobile-"))
+        self.assertEqual(
+            name, herdr_relay.operations.deterministic_agent_name(operation["operation_id"])
+        )
+        # Distinct operations still get distinct names.
+        self.assertNotEqual(name, self.begin_operation("start-2")["agent_name"])
+
+    def test_an_invalid_name_is_reported_with_herdr_s_own_code(self):
+        """A refused launch has to say which call refused it and why.
+
+        `LAUNCH_FAILED` alone is the same row whether Herdr rejected the name,
+        the kind, or the pane — the code is what makes the next breakage one log
+        line to diagnose instead of a bisect.
+        """
+        operation = self.begin_operation()
+        ready = {"ssh_reachable": True, "herdr_ready": True}
+        refused = json.dumps({
+            "error": {"code": "invalid_agent_name", "message": "agent name must start with..."},
+        })
+        with (
+            patch.object(herdr_relay.state, "event_queue", queue.Queue()),
+            patch.object(herdr_relay.herdr, "get_agent_by_name", return_value=([], ready)),
+            patch.object(herdr_relay.herdr, "run_herdr_checked", side_effect=herdr_cli((False, refused))),
+            self.assertLogs(herdr_relay.config.log, level="WARNING") as logs,
+        ):
+            herdr_relay.operations._start_operation(operation["operation_id"])
+
+        self.assertTrue(
+            any("agent start on host workstation refused: invalid_agent_name" in line for line in logs.output),
+            logs.output,
+        )
+
     def test_harness_kind_follows_the_configured_command(self):
         """A configured harness declares the executable Herdr names its kind after."""
         self.host["harnesses"] = [{"id": "claude", "command": ["/usr/local/bin/claude"]}]

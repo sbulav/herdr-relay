@@ -25,6 +25,9 @@ TERMINAL_STAGES = {"started", "failed", "cancelled"}
 RETRYABLE_STAGES = {"failed", "cancelled"}
 MAX_HARNESS_LENGTH = 64
 MAX_MODEL_LENGTH = 256
+# Herdr's own limit on an agent name; it refuses a longer one outright.
+MAX_AGENT_NAME_LENGTH = 32
+AGENT_NAME_PREFIX = "herdr-mobile-"
 DEFAULT_READINESS_TIMEOUT_SECONDS = 180
 POST_START_PROBE_INTERVAL_SECONDS = 0.5
 TAB_CLOSE_TIMEOUT_SECONDS = 15
@@ -228,8 +231,16 @@ def _now_ms():
 
 
 def deterministic_agent_name(operation_id):
-    """Return the only Herdr name an operation is ever allowed to use."""
-    return f"herdr-mobile-{operation_id}"
+    """Return the only Herdr name an operation is ever allowed to use.
+
+    Herdr accepts 1-32 characters of `[a-z0-9_-]` after a lowercase letter, and
+    a full 32-hex operation id behind a readable prefix is 44 — every launch was
+    refused with `invalid_agent_name`. The prefix earns its keep by saying where
+    an agent came from in Herdr's own UI, so the id is what gets truncated: the
+    remaining 19 hex characters still name one operation in 2^76, and the name
+    is only ever compared for equality against the value stored on the row.
+    """
+    return f"{AGENT_NAME_PREFIX}{operation_id}"[:MAX_AGENT_NAME_LENGTH]
 
 
 def public_operation(row):
@@ -426,6 +437,14 @@ def _harness_kind(host, harness_id):
     return harness_id
 
 
+def _log_herdr_refusal(host, step, output):
+    """Record which Herdr call refused a launch, and with which code."""
+    config.log.warning(
+        "%s on host %s refused: %s",
+        step, host["id"], herdr.response_error_code(output) or "no parseable error",
+    )
+
+
 def _close_tab(host, tab_id):
     """Discard a tab this operation opened but never filled.
 
@@ -592,6 +611,11 @@ def _start_operation(operation_id):
         return
     pane_id, tab_id = herdr.tab_created_ids(output) if success else (None, None)
     if pane_id is None:
+        # Herdr's own error code is the only thing that says *why* a launch was
+        # refused, and it never reaches the client — a LAUNCH_FAILED row alone
+        # is indistinguishable from every other cause. Codes are fixed enum
+        # strings, so logging one exposes nothing a path or an argument would.
+        _log_herdr_refusal(host, "tab create", output)
         _error(store, operation_id, "LAUNCH_FAILED")
         return
 
@@ -633,6 +657,7 @@ def _start_operation(operation_id):
         # Nothing is running in the tab we just opened, whatever the reason.
         _close_tab(host, tab_id)
         if herdr.response_error_code(output) != "agent_name_taken":
+            _log_herdr_refusal(host, "agent start", output)
             _error(store, operation_id, "LAUNCH_FAILED")
             return
 
