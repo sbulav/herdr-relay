@@ -14,7 +14,7 @@ from .. import config
 from . import claude
 
 OPENCODE_PART_QUERY = """
-SELECT json_extract(m.data, '$.role'), p.data
+SELECT json_extract(m.data, '$.role'), m.id, m.time_created, p.id, p.data
 FROM message m
 JOIN part p ON p.message_id = m.id
 WHERE m.session_id = ?
@@ -95,14 +95,21 @@ def opencode_to_blocks(document, limit=config.TRANSCRIPT_BLOCK_LIMIT):
     blocks = []
 
     def add(kind, **kw):
-        kw["id"] = f"o{len(blocks)}"
+        stable_id = kw.pop("_stable_id", None)
+        kw = {key: value for key, value in kw.items() if value is not None}
+        kw["id"] = stable_id or f"o{len(blocks)}"
         kw["kind"] = kind
         blocks.append(kw)
 
     for row in document.get("rows") or []:
-        if not isinstance(row, (list, tuple)) or len(row) != 2:
+        if not isinstance(row, (list, tuple)) or len(row) not in (2, 5):
             continue
-        role, raw_part = row
+        if len(row) == 5:
+            role, message_id, timestamp, part_id, raw_part = row
+        else:
+            role, raw_part = row
+            message_id = timestamp = part_id = None
+        timestamp = claude._timestamp(timestamp)
         try:
             part = json.loads(raw_part) if isinstance(raw_part, str) else raw_part
         except Exception:
@@ -112,14 +119,21 @@ def opencode_to_blocks(document, limit=config.TRANSCRIPT_BLOCK_LIMIT):
         part_type = part.get("type")
         text = part.get("text")
         if role == "user" and part_type == "text" and isinstance(text, str) and text.strip():
-            add("status", label="You", text=text.strip()[:2000])
+            add("status", label="You", text=text.strip()[:2000], role="user",
+                message_id=message_id, timestamp=timestamp,
+                _stable_id=f"o:{part_id}" if part_id else None)
         elif role == "assistant" and part_type == "text" and isinstance(text, str) and text.strip():
-            add("assistant_text", markdown=text)
+            add("assistant_text", markdown=text, role="assistant", message_id=message_id,
+                timestamp=timestamp, _stable_id=f"o:{part_id}" if part_id else None)
         elif role == "assistant" and part_type == "reasoning" and isinstance(text, str) and text.strip():
-            add("status", label="Thought", text=text.strip().splitlines()[0][:200])
+            add("status", label="Thought", text=text.strip().splitlines()[0][:200], role="reasoning",
+                message_id=message_id, timestamp=timestamp,
+                _stable_id=f"o:{part_id}" if part_id else None)
         elif role == "assistant" and part_type == "tool":
             tool_state = part.get("state") if isinstance(part.get("state"), dict) else {}
             # OpenCode tool parts carry the same input dict shape as Claude's tool_use.
             summary = claude.summarize_tool(tool_state.get("input")) or str(tool_state.get("title") or "")[:200]
-            add("tool", label=part.get("tool") or "tool", text=summary)
+            add("tool", label=part.get("tool") or "tool", text=summary, role="tool",
+                message_id=message_id, timestamp=timestamp,
+                _stable_id=f"o:{part_id}" if part_id else None)
     return blocks[-limit:]

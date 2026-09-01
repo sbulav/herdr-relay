@@ -422,7 +422,11 @@ subscription updates contain `output_blocks` without `content`.
 | `type` | string | Required | Always `"pane_content"`. |
 | `pane_id` | string | Required | Pane whose content is represented. |
 | `content` | string | `read_pane` responses only | Output of `herdr pane read`. |
-| `output_blocks` | array of output block objects | Optional | At most 200 recent structured Claude or OpenCode transcript blocks. |
+| `output_blocks` | array of output block objects | Optional | At most the requested bounded page of structured Claude or OpenCode transcript blocks. |
+| `output_total` | integer | Optional | Number of parsed blocks available to the current bounded history window. |
+| `output_has_more` | boolean | Optional | Whether older blocks can be requested with `before`. |
+| `output_next_cursor` | string | Optional | ID of the oldest block in this page; send it as `before` to fetch older blocks. |
+| `output_truncated` | boolean | Optional | The transcript source exceeded the configured history byte window. |
 | `attention_state` | string | Optional | Additive explicit attention state: `"working"`, `"waiting"`, `"done"`, or `"idle"`. `"waiting"` means the agent is waiting on the user. Unknown statuses are omitted rather than guessed. |
 | `updated_at` | integer | Optional | Additive epoch milliseconds when this pane's status or output revision last changed. |
 | `output_revision` | integer | Optional | Additive monotonic per-pane output revision reported by `herdr`; omitted when unavailable or invalid. |
@@ -435,11 +439,18 @@ Every output block has `id` and `kind`. Fields after those depend on `kind`.
 
 | Block field | Type | Presence | Meaning |
 | --- | --- | --- | --- |
-| `id` | string | Required | Relay-generated block ID such as `b0` or `o0`. |
-| `kind` | string | Required | `"assistant_text"`, `"status"`, or `"tool"`. |
-| `markdown` | string | `assistant_text` only | Assistant response text. |
-| `label` | string | `status` and `tool` only | Status source such as `"You"` or `"Thought"`, or tool name. |
-| `text` | string | `status` and `tool` only | Status text or a one-line tool summary. |
+| `id` | string | Required | Stable ID derived from the provider message and content/tool identifier when available; legacy `b0`/`o0` fallback otherwise. |
+| `kind` | string | Required | `"assistant_text"`, `"status"`, `"tool"`, or `"diff"`. |
+| `markdown` | string | `assistant_text` and `diff` | Assistant response text or bounded unified diff content. |
+| `label` | string | `status`, `tool`, and `diff` | Status source such as `"You"` or `"Thought"`, tool name, or edit tool name. |
+| `text` | string | `status`, `tool`, and `diff` | Status text, one-line tool summary, or edited path. |
+| `role` | string | Optional | Provider role: `user`, `assistant`, `tool`, or `reasoning`. |
+| `message_id` | string | Optional | Provider message identity, used by native clients to group blocks into turns. |
+| `turn_id` | string | Optional | Coarser provider turn/request identity. |
+| `timestamp` | integer | Optional | Provider event time as epoch milliseconds. |
+| `result` | string | Optional | Bounded folded tool-result text. |
+| `diff_revision` | string | Optional | Stable identity for the file-edit diff rendering. |
+| `diff_clipped` | boolean | Optional | The diff body was clipped by the relay's block budget. |
 
 ```json
 {
@@ -906,12 +917,20 @@ Requests recent terminal output and, when available, structured blocks.
 | `type` | string | Required | Always `"read_pane"`. |
 | `pane_id` | string | Required | Must identify a pane from the latest poll. |
 | `lines` | integer, or a string parseable as one | Optional | Line count for `herdr pane read --lines`. Defaults to `30`, floors at `1`, caps at `2000`. |
+| `before` | string | Optional | When present, return an older structured-output page ending before this block ID. |
+| `block_limit` | integer | Optional | Maximum structured blocks in the page. Defaults to `200`, caps at `2000`. |
+| `max_bytes` | integer | Optional | UTF-8 JSON byte budget for the structured page. Defaults to `65536`, capped by `HERDR_TRANSCRIPT_PAGE_MAX_BYTES`. |
 
 Anything unparseable, zero, or negative falls back to the default instead of
 reaching herdr, which reports a bad `--lines` as an error string on stdout with
 exit code 0 — a client that sent `"lines": "abc"` used to get
 `Error: Custom { kind: Other, error: "invalid value for --lines: abc" }`
 delivered as `pane_content.content`. The relay requests `--source recent`.
+Supplying `before`, `block_limit`, or `max_bytes` also makes the structured
+output cursor-aware: the page is bounded by both block count and UTF-8 byte
+budget, and `output_next_cursor` can be sent back as `before`.
+An unknown or stale `before` cursor returns an empty page with
+`output_has_more: false`; it never restarts at the newest page.
 
 ```json
 {

@@ -309,7 +309,33 @@ async def handle_client(ws):
                 except Exception:
                     blocks, sig = None, None
                 if blocks is not None:
-                    payload["output_blocks"] = blocks
+                    if any(key in msg for key in ("before", "block_limit", "max_bytes")):
+                        before = msg.get("before")
+                        if before is not None and not isinstance(before, str):
+                            await ws.send(json.dumps(protocol.error("invalid transcript cursor")))
+                            continue
+                        try:
+                            block_limit = int(msg.get("block_limit", config.TRANSCRIPT_BLOCK_LIMIT))
+                            max_bytes = int(msg.get("max_bytes", config.TRANSCRIPT_PAGE_MAX_BYTES))
+                        except (TypeError, ValueError):
+                            await ws.send(json.dumps(protocol.error("invalid transcript page limits")))
+                            continue
+                        page, _page_sig, page_meta = await asyncio.to_thread(
+                            transcripts.blocks.pane_block_page,
+                            pane_id,
+                            limit=block_limit,
+                            before=before,
+                            max_bytes=max_bytes,
+                        )
+                        payload["output_blocks"] = page or []
+                        payload["output_total"] = page_meta["total"]
+                        payload["output_has_more"] = page_meta["has_more"]
+                        if page_meta.get("next_cursor") is not None:
+                            payload["output_next_cursor"] = page_meta["next_cursor"]
+                        if page_meta.get("truncated"):
+                            payload["output_truncated"] = True
+                    else:
+                        payload["output_blocks"] = blocks
                     if state.subscriptions.get(ws) == pane_id:
                         state.stream_sigs[(id(ws), pane_id)] = sig
                 await ws.send(json.dumps(payload))

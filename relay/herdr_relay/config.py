@@ -120,6 +120,17 @@ CLAUDE_PROJECTS = os.environ.get("HERDR_CLAUDE_PROJECTS", "~/.claude/projects")
 OPENCODE_DB = os.environ.get("HERDR_OPENCODE_DB", "~/.local/share/opencode/opencode-stable.db")
 TRANSCRIPT_MAX_BYTES = 262144  # tail window read per poll — bounds ssh transfer
 TRANSCRIPT_BLOCK_LIMIT = 200   # most recent blocks kept per session
+def _positive_int_env(name, default):
+    try:
+        value = int(os.environ.get(name, str(default)))
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+TRANSCRIPT_HISTORY_MAX_BYTES = _positive_int_env("HERDR_TRANSCRIPT_HISTORY_MAX_BYTES", 8 * 1024 * 1024)
+TRANSCRIPT_HISTORY_BLOCK_LIMIT = _positive_int_env("HERDR_TRANSCRIPT_HISTORY_BLOCK_LIMIT", 2000)
+TRANSCRIPT_PAGE_MAX_BYTES = _positive_int_env("HERDR_TRANSCRIPT_PAGE_MAX_BYTES", 64 * 1024)
 
 # VAPID Web Push
 VAPID_PUBLIC_KEY = os.environ.get("HERDR_VAPID_PUBLIC", "")

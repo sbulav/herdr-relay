@@ -1017,6 +1017,15 @@ class StructuredOutputTests(unittest.TestCase):
         self.assertEqual(blocks[2]["markdown"], "I'll inspect it.")
         self.assertEqual(blocks[3]["text"], "auth.py")
 
+    def test_claude_assistant_string_content_is_preserved(self):
+        fixture = json.dumps({
+            "type": "assistant", "uuid": "assistant-string",
+            "message": {"role": "assistant", "content": "plain assistant text"},
+        })
+        blocks = herdr_relay.transcripts.claude.transcript_to_blocks(fixture)
+        self.assertEqual(blocks[0]["kind"], "assistant_text")
+        self.assertEqual(blocks[0]["markdown"], "plain assistant text")
+
     def test_claude_transcript_tolerates_partial_tail(self):
         fixture = "partial-json\n" + json.dumps(
             {
@@ -1048,6 +1057,158 @@ class StructuredOutputTests(unittest.TestCase):
             [block["markdown"] for block in blocks],
             [str(index) for index in range(240, 250)],
         )
+
+    def test_claude_ids_and_metadata_survive_appends(self):
+        first = {
+            "type": "assistant", "uuid": "assistant-1",
+            "timestamp": "2026-09-01T00:00:00Z",
+            "message": {"id": "provider-message-1", "content": [{"type": "text", "text": "first"}]},
+        }
+        appended = {
+            "type": "assistant", "uuid": "assistant-2",
+            "timestamp": "2026-09-01T00:00:01Z",
+            "message": {"content": [{"type": "text", "text": "second"}]},
+        }
+        before = herdr_relay.transcripts.claude.transcript_to_blocks(json.dumps(first))
+        after = herdr_relay.transcripts.claude.transcript_to_blocks(
+            "\n".join((json.dumps(first), json.dumps(appended)))
+        )
+        self.assertEqual(before[0]["id"], "b:assistant-1:0")
+        self.assertEqual(after[0]["id"], before[0]["id"])
+        self.assertEqual(after[0]["role"], "assistant")
+        self.assertEqual(after[0]["message_id"], "provider-message-1")
+        self.assertEqual(after[0]["timestamp"], 1788220800000)
+
+    def test_uuid_block_ids_survive_an_older_tail_window_record_disappearing(self):
+        older = {
+            "type": "assistant", "uuid": "older-row",
+            "message": {"content": [{"type": "text", "text": "old"}]},
+        }
+        survivor = {
+            "type": "assistant", "uuid": "survivor-row",
+            "message": {"content": [{"type": "text", "text": "survives"}]},
+        }
+        newer = {
+            "type": "assistant", "uuid": "newer-row",
+            "message": {"content": [{"type": "text", "text": "newer"}]},
+        }
+        full = herdr_relay.transcripts.claude.transcript_to_blocks(
+            "\n".join((json.dumps(older), json.dumps(survivor), json.dumps(newer))), limit=2
+        )
+        tail = herdr_relay.transcripts.claude.transcript_to_blocks(
+            "\n".join((json.dumps(survivor), json.dumps(newer))), limit=2
+        )
+        self.assertEqual([block["id"] for block in full], ["b:survivor-row:0", "b:newer-row:0"])
+        self.assertEqual([block["id"] for block in tail], [block["id"] for block in full])
+        full_page = herdr_relay.transcripts.blocks.paginate_blocks(full, limit=1, max_bytes=10000)
+        tail_page = herdr_relay.transcripts.blocks.paginate_blocks(tail, limit=1, max_bytes=10000)
+        self.assertEqual(full_page[0], tail_page[0])
+        self.assertEqual(full_page[3], tail_page[3])
+        self.assertEqual(
+            herdr_relay.transcripts.blocks.paginate_blocks(full, before="stale"),
+            ([], 2, False, None),
+        )
+
+    def test_claude_tool_result_and_edit_are_structured_and_bounded(self):
+        fixture = "\n".join(json.dumps(record) for record in [
+            {"type": "assistant", "uuid": "a1", "message": {"content": [{
+                "type": "tool_use", "id": "tool-1", "name": "Edit",
+                "input": {"file_path": "app.py", "old_string": "old\n", "new_string": "new\n"},
+            }]}},
+            {"type": "user", "uuid": "u1", "message": {"content": [{
+                "type": "tool_result", "tool_use_id": "tool-1", "content": "result\nmore",
+            }]}},
+        ])
+        blocks = herdr_relay.transcripts.claude.transcript_to_blocks(fixture)
+        self.assertEqual(len(blocks), 1)
+        self.assertEqual(blocks[0]["kind"], "diff")
+        self.assertEqual(blocks[0]["role"], "tool")
+        self.assertRegex(blocks[0]["markdown"], r"^--- a/app\.py\n\+\+\+ b/app\.py\n@@ ")
+        self.assertIn("-old", blocks[0]["markdown"])
+        self.assertIn("+new", blocks[0]["markdown"])
+        self.assertEqual(blocks[0]["result"], "result\nmore")
+
+    def test_claude_write_diff_has_a_consumable_hunk_header(self):
+        fixture = json.dumps({
+            "type": "assistant", "uuid": "write-row", "message": {"content": [{
+                "type": "tool_use", "id": "write-1", "name": "Write",
+                "input": {"file_path": "new.py", "content": "one\ntwo\n"},
+            }]},
+        })
+        block = herdr_relay.transcripts.claude.transcript_to_blocks(fixture)[0]
+        self.assertEqual(block["kind"], "diff")
+        self.assertIn("@@ -0,0 +1,2 @@", block["markdown"])
+
+    def test_orphan_tool_result_is_not_dropped(self):
+        fixture = json.dumps({
+            "type": "user", "uuid": "result-row", "message": {"content": [{
+                "type": "tool_result", "tool_use_id": "outside-tail",
+                "content": "orphan result",
+            }]},
+        })
+        blocks = herdr_relay.transcripts.claude.transcript_to_blocks(fixture)
+        self.assertEqual(blocks[0]["kind"], "tool")
+        self.assertEqual(blocks[0]["label"], "Tool result")
+        self.assertEqual(blocks[0]["result"], "orphan result")
+
+    def test_opencode_part_ids_are_stable_without_changing_legacy_kinds(self):
+        document = {
+            "rows": [
+                ["user", "message-1", 1700000000000, "part-1",
+                 json.dumps({"type": "text", "text": "hello"})],
+                ["assistant", "message-2", 1700000001000, "part-2",
+                 json.dumps({"type": "text", "text": "world"})],
+            ],
+        }
+        blocks = herdr_relay.transcripts.opencode.opencode_to_blocks(document)
+        self.assertEqual([block["id"] for block in blocks], ["o:part-1", "o:part-2"])
+        self.assertEqual([block["kind"] for block in blocks], ["status", "assistant_text"])
+        self.assertEqual(blocks[1]["message_id"], "message-2")
+        self.assertEqual(blocks[1]["timestamp"], 1700000001000)
+
+    def test_transcript_cache_skips_unchanged_parse(self):
+        herdr_relay.transcripts.claude.clear_parse_cache()
+        with patch.object(
+            herdr_relay.transcripts.claude,
+            "transcript_to_blocks",
+            wraps=herdr_relay.transcripts.claude.transcript_to_blocks,
+        ) as parse:
+            body = json.dumps({
+                "type": "assistant", "uuid": "a1",
+                "message": {"content": [{"type": "text", "text": "cached"}]},
+            })
+            first = herdr_relay.transcripts.claude.cached_transcript_to_blocks("x", body)
+            second = herdr_relay.transcripts.claude.cached_transcript_to_blocks("x", body)
+        self.assertIs(first, second)
+        parse.assert_called_once()
+
+    def test_structured_pagination_is_cursor_and_utf8_byte_bounded(self):
+        blocks = [
+            {"id": f"b:{index}", "kind": "status", "text": "я" * 20}
+            for index in range(5)
+        ]
+        page, total, has_more, cursor = herdr_relay.transcripts.blocks.paginate_blocks(
+            blocks, limit=5, max_bytes=150
+        )
+        self.assertEqual(total, 5)
+        self.assertTrue(has_more)
+        self.assertEqual(cursor, page[0]["id"])
+        self.assertLessEqual(
+            sum(len(json.dumps(block, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) for block in page),
+            150,
+        )
+        older, _, _, _ = herdr_relay.transcripts.blocks.paginate_blocks(
+            blocks, limit=5, before=cursor, max_bytes=10000
+        )
+        self.assertNotIn(cursor, [block["id"] for block in older])
+        self.assertLess(int(older[-1]["id"].split(":")[-1]), int(cursor.split(":")[-1]))
+
+    def test_unknown_structured_cursor_returns_end_without_restarting(self):
+        blocks = [{"id": "b:1", "kind": "status", "text": "one"}]
+        page, total, has_more, cursor = herdr_relay.transcripts.blocks.paginate_blocks(
+            blocks, before="stale-cursor"
+        )
+        self.assertEqual((page, total, has_more, cursor), ([], 1, False, None))
 
     def test_ambiguous_claude_panes_stream_their_own_path_refs(self):
         def transcript(text):

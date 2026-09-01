@@ -404,9 +404,17 @@ class NativeContractTests(unittest.TestCase):
             "output_revision": 7,
         }]
         blocks = [
-            {"id": "b0", "kind": "status", "label": "You", "text": "Run tests"},
-            {"id": "b1", "kind": "tool", "label": "Bash", "text": "pytest"},
-            {"id": "b2", "kind": "assistant_text", "markdown": "All tests pass."},
+            {"id": "b0", "kind": "status", "label": "You", "text": "Run tests",
+             "message_id": "user-1", "role": "user", "timestamp": 1700000000000},
+            {"id": "b1", "kind": "tool", "label": "Bash", "text": "pytest",
+             "message_id": "assistant-1", "role": "tool", "turn_id": "turn-1",
+             "timestamp": 1700000001000, "result": "3 passed"},
+            {"id": "b2", "kind": "assistant_text", "markdown": "All tests pass.",
+             "message_id": "assistant-1", "role": "assistant", "timestamp": 1700000002000},
+            {"id": "b3", "kind": "diff", "label": "Edit", "text": "app.py",
+             "markdown": "--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-old\n+new",
+             "message_id": "assistant-1", "role": "tool", "turn_id": "turn-1",
+             "timestamp": 1700000003000, "diff_revision": "tool-1"},
         ]
 
         async def broadcast(_frame):

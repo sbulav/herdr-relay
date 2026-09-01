@@ -5,18 +5,41 @@
       "id": "b0",
       "kind": "status",
       "label": "You",
-      "text": "Run tests"
+      "message_id": "user-1",
+      "role": "user",
+      "text": "Run tests",
+      "timestamp": 1700000000000
     },
     {
       "id": "b1",
       "kind": "tool",
       "label": "Bash",
-      "text": "pytest"
+      "message_id": "assistant-1",
+      "result": "3 passed",
+      "role": "tool",
+      "text": "pytest",
+      "timestamp": 1700000001000,
+      "turn_id": "turn-1"
     },
     {
       "id": "b2",
       "kind": "assistant_text",
-      "markdown": "All tests pass."
+      "markdown": "All tests pass.",
+      "message_id": "assistant-1",
+      "role": "assistant",
+      "timestamp": 1700000002000
+    },
+    {
+      "diff_revision": "tool-1",
+      "id": "b3",
+      "kind": "diff",
+      "label": "Edit",
+      "markdown": "--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-old\n+new",
+      "message_id": "assistant-1",
+      "role": "tool",
+      "text": "app.py",
+      "timestamp": 1700000003000,
+      "turn_id": "turn-1"
     }
   ],
   "output_revision": 7,
