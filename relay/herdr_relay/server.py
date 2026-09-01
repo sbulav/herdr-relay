@@ -295,11 +295,22 @@ async def handle_client(ws):
                 if pane_id not in state.known_panes:
                     await ws.send(json.dumps(protocol.error("unknown pane_id")))
                     continue
+                try:
+                    source = herdr._read_pane_source(msg.get("source"))
+                except ValueError:
+                    await ws.send(json.dumps(protocol.error("invalid pane source")))
+                    continue
                 # herdr rejects a non-numeric --lines by printing an error and
                 # exiting 0, which would reach the client as pane content.
                 lines = herdr._read_pane_lines(msg.get("lines"))
                 remote = state.pane_remote_map.get(pane_id)
-                content = await asyncio.to_thread(herdr.run_herdr, "pane", "read", pane_id, "--lines", str(lines), "--source", "recent", remote=remote)
+                content = await asyncio.to_thread(
+                    herdr.read_pane,
+                    pane_id,
+                    remote=remote,
+                    lines=lines,
+                    source=source,
+                )
                 payload = {"type": "pane_content", "pane_id": pane_id, "content": content}
                 protocol.add_pane_metadata(payload, pane_id)
                 # Include structured blocks on demand without changing which pane

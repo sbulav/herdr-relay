@@ -271,7 +271,7 @@ class PollLoopBlockingTests(unittest.TestCase):
         release = threading.Event()
         finished = threading.Event()
 
-        def blocking_read(pane_id, remote=None):
+        def blocking_read(pane_id, remote=None, source=None):
             started.set()
             release.wait(timeout=1)
             finished.set()
@@ -317,7 +317,7 @@ class PollLoopBlockingTests(unittest.TestCase):
         release = threading.Event()
         finished = threading.Event()
 
-        def blocking_read(pane_id, remote=None):
+        def blocking_read(pane_id, remote=None, source=None):
             started.set()
             release.wait(timeout=1)
             finished.set()
@@ -905,6 +905,26 @@ class PaneChromeTests(unittest.TestCase):
         line = "┃ ┃ Build · GPT-5.6 Sol OpenAI ~/src:main ╹▀▀ ⬝⬝ esc interrupt"
 
         self.assertIsNone(herdr_relay.panes.CHROME_RE.search(line))
+
+    @patch.object(herdr_relay.herdr, "run_herdr", return_value="first\nsecond\nthird")
+    def test_read_pane_uses_visible_by_default_and_honors_recent(self, run_herdr):
+        self.assertEqual("first\nsecond\nthird", herdr_relay.herdr.read_pane("pane-1"))
+        run_herdr.assert_called_once_with(
+            "pane", "read", "pane-1", "--lines", "30", "--source", "visible", remote=None
+        )
+
+        run_herdr.reset_mock()
+        self.assertEqual(
+            "second\nthird",
+            herdr_relay.herdr.read_pane("pane-1", lines=2, source="recent"),
+        )
+        run_herdr.assert_called_once_with(
+            "pane", "read", "pane-1", "--lines", "2", "--source", "recent", remote=None
+        )
+
+    def test_read_pane_rejects_unknown_source(self):
+        with self.assertRaisesRegex(ValueError, "invalid pane source"):
+            herdr_relay.herdr.read_pane("pane-1", source="all")
 
 
 class StructuredOutputTests(unittest.TestCase):
@@ -1787,11 +1807,47 @@ class RelayInputValidationTests(unittest.TestCase):
         # "abc" would make herdr print an error on stdout and exit 0, which the
         # relay would then serve to the client as terminal content.
         run_herdr.assert_called_once_with(
-            "pane", "read", "pane-1", "--lines", "30", "--source", "recent", remote=None
+            "pane", "read", "pane-1", "--lines", "30", "--source", "visible", remote=None
         )
         self.assertEqual(
             ["pane_content"], [frame["type"] for frame in after_handshake(socket.sent)]
         )
+
+    def test_read_pane_rejects_invalid_source_before_running_herdr(self):
+        class Socket:
+            def __init__(self):
+                self.requests = iter([
+                    json.dumps({
+                        "type": "read_pane",
+                        "pane_id": "pane-1",
+                        "source": "all",
+                    })
+                ])
+                self.sent = []
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                try:
+                    return next(self.requests)
+                except StopIteration:
+                    raise StopAsyncIteration
+
+            async def send(self, message):
+                self.sent.append(json.loads(message))
+
+        socket = Socket()
+        with (
+            patch.object(herdr_relay.state, "known_panes", {"pane-1"}),
+            patch.object(herdr_relay.herdr, "run_herdr") as run_herdr,
+        ):
+            asyncio.run(herdr_relay.handle_client(socket))
+
+        frames = after_handshake(socket.sent)
+        self.assertEqual(["error"], [frame["type"] for frame in frames])
+        self.assertEqual("invalid pane source", frames[0]["message"])
+        run_herdr.assert_not_called()
 
     @patch.object(herdr_relay.herdr, "run_herdr")
     def test_detected_dynamic_response_uses_its_safe_key_mapping(self, run_herdr):

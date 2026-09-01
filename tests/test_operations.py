@@ -682,7 +682,7 @@ class StartOperationTests(unittest.TestCase):
         operation = {"operation_id": "op-1", "stage": "starting"}
         frames = []
 
-        def blocking_read(_pane_id, remote=None):
+        def blocking_read(_pane_id, remote=None, source=None):
             release.wait(timeout=1)
             return "Approve?"
 

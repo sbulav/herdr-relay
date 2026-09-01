@@ -46,7 +46,14 @@ async def read_pane(pane_id: str, lines: int = 15) -> str:
     import websockets
     try:
         async with websockets.connect(RELAY_WS) as ws:
-            await ws.send(json.dumps({"type": "read_pane", "pane_id": pane_id, "lines": lines}))
+            # Telegram reads are explicit/manual history requests. Keep them
+            # separate from the relay's visible-screen default used for polling.
+            await ws.send(json.dumps({
+                "type": "read_pane",
+                "pane_id": pane_id,
+                "lines": lines,
+                "source": "recent",
+            }))
             raw = await asyncio.wait_for(ws.recv(), timeout=5)
             msg = json.loads(raw)
             # Might get an agents broadcast first, skip to pane_content

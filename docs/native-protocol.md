@@ -910,13 +910,17 @@ when the pane maps to a remote or `host` is `"local"`.
 
 ### `read_pane`
 
-Requests recent terminal output and, when available, structured blocks.
+Requests terminal output and, when available, structured blocks. The relay uses
+the non-invasive `visible` source by default so automatic/mobile polling does
+not make alternate-screen agents scroll. Clients that explicitly need a
+history/recovery read may request `recent`.
 
 | Name | Type | Presence | Meaning |
 | --- | --- | --- | --- |
 | `type` | string | Required | Always `"read_pane"`. |
 | `pane_id` | string | Required | Must identify a pane from the latest poll. |
 | `lines` | integer, or a string parseable as one | Optional | Line count for `herdr pane read --lines`. Defaults to `30`, floors at `1`, caps at `2000`. |
+| `source` | string | Optional | Terminal source: `visible` (default, safe for live polling) or `recent` (explicit history/recovery). Other values receive an `error` response. |
 | `before` | string | Optional | When present, return an older structured-output page ending before this block ID. |
 | `block_limit` | integer | Optional | Maximum structured blocks in the page. Defaults to `200`, caps at `2000`. |
 | `max_bytes` | integer | Optional | UTF-8 JSON byte budget for the structured page. Defaults to `65536`, capped by `HERDR_TRANSCRIPT_PAGE_MAX_BYTES`. |
@@ -925,7 +929,9 @@ Anything unparseable, zero, or negative falls back to the default instead of
 reaching herdr, which reports a bad `--lines` as an error string on stdout with
 exit code 0 — a client that sent `"lines": "abc"` used to get
 `Error: Custom { kind: Other, error: "invalid value for --lines: abc" }`
-delivered as `pane_content.content`. The relay requests `--source recent`.
+delivered as `pane_content.content`. The relay requests `--source visible` by
+default. A request with `source: "recent"` explicitly requests history/recovery
+output. Both sources use the same line bound and terminal-chrome filtering.
 Supplying `before`, `block_limit`, or `max_bytes` also makes the structured
 output cursor-aware: the page is bounded by both block count and UTF-8 byte
 budget, and `output_next_cursor` can be sent back as `before`.

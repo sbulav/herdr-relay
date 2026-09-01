@@ -177,7 +177,12 @@ async def _poll_once():
     blocked_content = dict(zip(
         (a["pane_id"] for a in newly_blocked),
         await asyncio.gather(*(
-            asyncio.to_thread(herdr.read_pane, a["pane_id"], remote=a.get("remote"))
+            asyncio.to_thread(
+                herdr.read_pane,
+                a["pane_id"],
+                remote=a.get("remote"),
+                source="visible",
+            )
             for a in newly_blocked
         )),
     ))
@@ -253,7 +258,12 @@ async def _handle_pushed_event(event):
         if remote or host == "local":
             # Same 15s ssh-backed call the poll loop offloads (#26). Handle it
             # in a child task so it cannot delay operation transitions behind it.
-            content = await asyncio.to_thread(herdr.read_pane, pane_id, remote=remote)
+            content = await asyncio.to_thread(
+                herdr.read_pane,
+                pane_id,
+                remote=remote,
+                source="visible",
+            )
         else:
             content = event.get("prompt", "Agent is blocked")
         options = panes.detect_options(content)

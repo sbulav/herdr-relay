@@ -499,7 +499,34 @@ def _read_pane_lines(value, default=30, maximum=2000):
     return min(count, maximum)
 
 
-def read_pane(pane_id, remote=None):
-    raw = run_herdr("pane", "read", pane_id, "--lines", "50", "--source", "recent", remote=remote)
-    lines = [l for l in raw.splitlines() if l.strip() and not panes.CHROME_RE.search(l)]
-    return "\n".join(lines[-20:])
+READ_PANE_SOURCES = frozenset(("visible", "recent"))
+DEFAULT_READ_PANE_SOURCE = "visible"
+
+
+def _read_pane_source(value, default=DEFAULT_READ_PANE_SOURCE):
+    """Return a documented pane source or raise for an ambiguous request."""
+    if value is None:
+        return default
+    if not isinstance(value, str) or value not in READ_PANE_SOURCES:
+        raise ValueError("invalid pane source")
+    return value
+
+
+def read_pane(pane_id, remote=None, lines=30, source=DEFAULT_READ_PANE_SOURCE):
+    """Read and normalize pane output without changing the operator's screen.
+
+    ``visible`` is the safe default for automatic reads. ``recent`` remains
+    available to explicit/manual history requests. Source validation lives here
+    as well as at the protocol boundary so internal consumers cannot silently
+    reintroduce an unsafe or misspelled source.
+    """
+    source = _read_pane_source(source)
+    count = _read_pane_lines(lines)
+    raw = run_herdr(
+        "pane", "read", pane_id, "--lines", str(count), "--source", source, remote=remote
+    )
+    meaningful_lines = [
+        line for line in raw.splitlines()
+        if line.strip() and not panes.CHROME_RE.search(line)
+    ]
+    return "\n".join(meaningful_lines[-count:])
