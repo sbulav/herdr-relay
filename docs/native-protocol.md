@@ -456,6 +456,9 @@ Every output block has `id` and `kind`. Fields after those depend on `kind`.
 
 This frame is point-to-point. Live updates are sent only to WebSockets that
 subscribed to that `pane_id`, and only when the transcript signature changes.
+Internal Herdr session references are never exposed. The relay binds them to the
+pane harness, validates Claude UUIDs, constrains explicit transcript paths to the
+configured store root, and returns no blocks when an exact reference is missing.
 
 ### `command_ack`
 

@@ -15,6 +15,20 @@ import subprocess
 
 from .. import config
 
+
+def _local_transcript_path(path):
+    """Resolve an explicit transcript only when it stays below the configured root."""
+    expanded = os.path.abspath(os.path.expanduser(path))
+    root = os.path.realpath(os.path.expanduser(config.CLAUDE_PROJECTS))
+    resolved = os.path.realpath(expanded)
+    try:
+        contained = os.path.commonpath((root, resolved)) == root
+    except ValueError:
+        contained = False
+    if not contained or os.path.islink(expanded) or not resolved.endswith(".jsonl"):
+        return None
+    return resolved
+
 def claude_project_dir(cwd):
     """Escape a cwd the way Claude Code names its per-project transcript dir."""
     return re.sub(r"[/._]", "-", cwd)
@@ -31,12 +45,22 @@ def read_transcript(cwd, remote=None, path=None):
     if remote:
         if path:
             script = (
-                'f=$1; case "$f" in "~/"*) f="$HOME/${f#~/}" ;; esac; '
+                'f=$1; root=$2; '
+                'case "$f" in "~/"*) f="$HOME/${f#~/}" ;; esac; '
+                'case "$root" in "~/"*) root="$HOME/${root#~/}" ;; esac; '
+                'case "$f" in *.jsonl) ;; *) exit 0 ;; esac; '
+                'root=$(cd -P "$root" 2>/dev/null && pwd -P) || exit 0; '
+                'dir=$(cd -P "$(dirname "$f")" 2>/dev/null && pwd -P) || exit 0; '
+                'case "$dir/" in "$root/"*) ;; *) exit 0 ;; esac; '
+                'f="$dir/$(basename "$f")"; [ ! -L "$f" ] || exit 0; '
                 '[ -f "$f" ] || exit 0; '
                 'printf "%s\\n" "$f"; '
                 f'tail -c {config.TRANSCRIPT_MAX_BYTES} "$f"'
             )
-            remote_cmd = "sh -c " + shlex.quote(script) + " sh " + shlex.quote(path)
+            remote_cmd = (
+                "sh -c " + shlex.quote(script) + " sh "
+                + shlex.quote(path) + " " + shlex.quote(config.CLAUDE_PROJECTS)
+            )
         else:
             proj = claude_project_dir(cwd)
             root = config.CLAUDE_PROJECTS.replace("~", "$HOME")
@@ -61,7 +85,9 @@ def read_transcript(cwd, remote=None, path=None):
     # local
     try:
         if path:
-            path = os.path.expanduser(path)
+            path = _local_transcript_path(path)
+            if path is None:
+                return None, None
         else:
             proj = claude_project_dir(cwd)
             d = os.path.join(os.path.expanduser(config.CLAUDE_PROJECTS), proj)

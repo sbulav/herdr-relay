@@ -13,6 +13,7 @@ import subprocess
 import time
 
 from . import config, hosts, panes, state
+from .transcripts import refs
 
 
 SSH_OPTIONS = [
@@ -254,16 +255,17 @@ def get_agents_from_host(remote=None, host_id=None, host=None, cancel_event=None
         for p in pane_list:
             if not p.get("agent"):
                 continue
-            ref = p.get("agent_session")
-            if (
-                isinstance(ref, dict)
-                and ref.get("kind") in ("id", "path")
-                and isinstance(ref.get("value"), str)
-                and ref["value"]
-            ):
-                state.pane_session_refs[(remote, p["pane_id"])] = {
-                    "kind": ref["kind"], "value": ref["value"]
-                }
+            # A pane can relaunch under another harness, or stop reporting a
+            # session altogether. Do not let a previous poll's ref survive
+            # either transition when this helper is called directly.
+            state.pane_session_refs.pop((remote, p["pane_id"]), None)
+            raw_ref = p.get("agent_session")
+            ref = refs.from_pane(p.get("agent"), raw_ref)
+            if raw_ref is not None:
+                # Preserve the distinction between an omitted ref (where an
+                # unambiguous cwd fallback is safe) and an invalid supplied
+                # ref (which must never silently select another transcript).
+                state.pane_session_refs[(remote, p["pane_id"])] = ref
             agent = {
                 "pane_id": p["pane_id"],
                 "agent": p.get("agent", ""),

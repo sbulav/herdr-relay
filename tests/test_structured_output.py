@@ -1074,6 +1074,7 @@ class StructuredOutputTests(unittest.TestCase):
                 },
             ]}})
             with (
+                patch.object(herdr_relay.config, "CLAUDE_PROJECTS", directory),
                 patch.dict(herdr_relay.state.pane_session_refs, {}, clear=True),
                 patch.dict(
                     herdr_relay.state.pane_cwd_map,
@@ -1107,7 +1108,7 @@ class StructuredOutputTests(unittest.TestCase):
 
     def test_claude_id_ref_uses_project_transcript_path(self):
         cwd = "/work/repo"
-        session_id = "session-123"
+        session_id = "123e4567-e89b-42d3-a456-426614174000"
         with tempfile.TemporaryDirectory() as projects:
             project = os.path.join(projects, herdr_relay.transcripts.claude.claude_project_dir(cwd))
             os.mkdir(project)
@@ -1125,13 +1126,62 @@ class StructuredOutputTests(unittest.TestCase):
                 ),
                 patch.dict(
                     herdr_relay.state.pane_session_refs,
-                    {(None, "pane-id"): {"kind": "id", "value": session_id}},
+                    {(None, "pane-id"): {
+                        "agent": "claude", "kind": "id", "value": session_id,
+                    }},
                     clear=True,
                 ),
             ):
                 blocks, _signature = herdr_relay.transcripts.blocks.pane_blocks("pane-id")
 
-        self.assertEqual(blocks[0]["markdown"], "id conversation")
+                self.assertEqual(blocks[0]["markdown"], "id conversation")
+
+    def test_claude_id_ref_with_newer_uuid_version_is_accepted(self):
+        cwd = "/work/repo"
+        session_id = "123e4567-e89b-62d3-a456-426614174000"
+        with tempfile.TemporaryDirectory() as projects:
+            project = os.path.join(projects, herdr_relay.transcripts.claude.claude_project_dir(cwd))
+            os.mkdir(project)
+            with open(os.path.join(project, session_id + ".jsonl"), "w") as transcript:
+                transcript.write(json.dumps({
+                    "type": "assistant",
+                    "message": {"content": [{"type": "text", "text": "new UUID"}]},
+                }))
+            with (
+                patch.object(herdr_relay.config, "CLAUDE_PROJECTS", projects),
+                patch.dict(
+                    herdr_relay.state.pane_cwd_map,
+                    {"pane-id": (cwd, "claude", None, True)},
+                    clear=True,
+                ),
+                patch.dict(
+                    herdr_relay.state.pane_session_refs,
+                    {(None, "pane-id"): {
+                        "agent": "claude", "kind": "id", "value": session_id,
+                    }},
+                    clear=True,
+                ),
+            ):
+                blocks, _signature = herdr_relay.transcripts.blocks.pane_blocks("pane-id")
+                self.assertEqual(blocks[0]["markdown"], "new UUID")
+
+    def test_unknown_cwd_with_exact_claude_id_returns_no_blocks(self):
+        with (
+            patch.dict(
+                herdr_relay.state.pane_cwd_map,
+                {"pane-id": ("", "claude", None, False)},
+                clear=True,
+            ),
+            patch.dict(
+                herdr_relay.state.pane_session_refs,
+                {(None, "pane-id"): {
+                    "agent": "claude", "kind": "id",
+                    "value": "123e4567-e89b-62d3-a456-426614174000",
+                }},
+                clear=True,
+            ),
+        ):
+            self.assertEqual(herdr_relay.transcripts.blocks.pane_blocks("pane-id"), (None, None))
 
     def test_malformed_agent_session_refs_are_ignored(self):
         pane_list = json.dumps({"result": {"panes": [
@@ -1144,6 +1194,14 @@ class StructuredOutputTests(unittest.TestCase):
                 "agent_session": {"kind": "id", "value": ""},
             },
             {
+                "pane_id": "invalid-id", "agent": "claude", "cwd": "/work/repo",
+                "agent_session": {"kind": "id", "value": "session-1"},
+            },
+            {
+                "pane_id": "wrong-agent", "agent": "claude", "cwd": "/work/repo",
+                "agent_session": {"agent": "opencode", "kind": "id", "value": "ses_1"},
+            },
+            {
                 "pane_id": "null", "agent": "claude", "cwd": "/work/repo",
                 "agent_session": None,
             },
@@ -1153,15 +1211,185 @@ class StructuredOutputTests(unittest.TestCase):
             patch.dict(
                 herdr_relay.state.pane_cwd_map,
                 {pane_id: ("/work/repo", "claude", None, True)
-                 for pane_id in ("bad-kind", "empty", "null")},
+                 for pane_id in ("bad-kind", "empty", "invalid-id", "wrong-agent", "null")},
                 clear=True,
             ),
             patch.object(herdr_relay.herdr, "run_herdr_checked", return_value=(True, pane_list)),
         ):
             herdr_relay.herdr.get_agents_from_host()
-            self.assertEqual(herdr_relay.state.pane_session_refs, {})
-            for pane_id in ("bad-kind", "empty", "null"):
+            self.assertEqual(
+                set(herdr_relay.state.pane_session_refs),
+                {(None, pane_id) for pane_id in
+                 ("bad-kind", "empty", "invalid-id", "wrong-agent")},
+            )
+            self.assertTrue(all(
+                ref is None for ref in herdr_relay.state.pane_session_refs.values()
+            ))
+            for pane_id in ("bad-kind", "empty", "invalid-id", "wrong-agent", "null"):
                 self.assertEqual(herdr_relay.transcripts.blocks.pane_blocks(pane_id), (None, None))
+
+    def test_invalid_ref_does_not_fall_back_to_unambiguous_cwd(self):
+        cwd = "/work/repo"
+        with tempfile.TemporaryDirectory() as projects:
+            project = os.path.join(projects, herdr_relay.transcripts.claude.claude_project_dir(cwd))
+            os.mkdir(project)
+            transcript_path = os.path.join(project, "latest.jsonl")
+            with open(transcript_path, "w") as transcript:
+                transcript.write(json.dumps({
+                    "type": "assistant",
+                    "message": {"content": [{"type": "text", "text": "must not leak"}]},
+                }))
+            with (
+                patch.object(herdr_relay.config, "CLAUDE_PROJECTS", projects),
+                patch.dict(
+                    herdr_relay.state.pane_cwd_map,
+                    {"pane-id": (cwd, "claude", None, False)},
+                    clear=True,
+                ),
+                patch.dict(
+                    herdr_relay.state.pane_session_refs,
+                    {(None, "pane-id"): None},
+                    clear=True,
+                ),
+            ):
+                self.assertEqual(herdr_relay.transcripts.blocks.pane_blocks("pane-id"), (None, None))
+
+    def test_refresh_drops_a_previous_session_ref_when_pane_omits_it(self):
+        pane_id = "pane-id"
+        pane_list = json.dumps({"result": {"panes": [{
+            "pane_id": pane_id, "agent": "claude", "cwd": "/work/repo",
+        }]}})
+        with (
+            patch.dict(
+                herdr_relay.state.pane_session_refs,
+                {(None, pane_id): {
+                    "agent": "claude", "kind": "id",
+                    "value": "123e4567-e89b-42d3-a456-426614174000",
+                }},
+                clear=True,
+            ),
+            patch.object(herdr_relay.herdr, "run_herdr_checked", return_value=(True, pane_list)),
+        ):
+            herdr_relay.herdr.get_agents_from_host()
+            self.assertNotIn((None, pane_id), herdr_relay.state.pane_session_refs)
+
+    def test_claude_ref_must_match_pane_agent(self):
+        with (
+            patch.dict(
+                herdr_relay.state.pane_cwd_map,
+                {"pane-id": ("/work/repo", "claude", None, True)},
+                clear=True,
+            ),
+            patch.dict(
+                herdr_relay.state.pane_session_refs,
+                {(None, "pane-id"): {
+                    "agent": "opencode", "kind": "id", "value": "ses_target",
+                }},
+                clear=True,
+            ),
+        ):
+            self.assertEqual(herdr_relay.transcripts.blocks.pane_blocks("pane-id"), (None, None))
+
+    def test_missing_exact_claude_ref_does_not_fall_back_to_newest(self):
+        cwd = "/work/repo"
+        missing_id = "123e4567-e89b-42d3-a456-426614174000"
+        other_id = "123e4567-e89b-42d3-a456-426614174001"
+        with tempfile.TemporaryDirectory() as projects:
+            project = os.path.join(projects, herdr_relay.transcripts.claude.claude_project_dir(cwd))
+            os.mkdir(project)
+            with open(os.path.join(project, other_id + ".jsonl"), "w") as transcript:
+                transcript.write(json.dumps({
+                    "type": "assistant",
+                    "message": {"content": [{"type": "text", "text": "wrong conversation"}]},
+                }))
+            with (
+                patch.object(herdr_relay.config, "CLAUDE_PROJECTS", projects),
+                patch.dict(
+                    herdr_relay.state.pane_cwd_map,
+                    {"pane-id": (cwd, "claude", None, True)},
+                    clear=True,
+                ),
+                patch.dict(
+                    herdr_relay.state.pane_session_refs,
+                    {(None, "pane-id"): {
+                        "agent": "claude", "kind": "id", "value": missing_id,
+                    }},
+                    clear=True,
+                ),
+            ):
+                self.assertEqual(herdr_relay.transcripts.blocks.pane_blocks("pane-id"), (None, None))
+
+    def test_explicit_claude_path_stays_inside_configured_root(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = os.path.join(directory, "root")
+            os.mkdir(root)
+            outside = os.path.join(directory, "outside.jsonl")
+            with open(outside, "w") as transcript:
+                transcript.write("outside")
+            symlink = os.path.join(root, "linked.jsonl")
+            os.symlink(outside, symlink)
+            with patch.object(herdr_relay.config, "CLAUDE_PROJECTS", root):
+                self.assertEqual(
+                    herdr_relay.transcripts.claude.read_transcript("/work/repo", path=outside),
+                    (None, None),
+                )
+                self.assertEqual(
+                    herdr_relay.transcripts.claude.read_transcript(
+                        "/work/repo", path=os.path.join(root, "..", "outside.jsonl")
+                    ),
+                    (None, None),
+                )
+                self.assertEqual(
+                    herdr_relay.transcripts.claude.read_transcript("/work/repo", path=symlink),
+                    (None, None),
+                )
+
+    def test_remote_claude_path_stays_inside_configured_root(self):
+        real_run = subprocess.run
+
+        def run_remote_locally(argv, **_kwargs):
+            return real_run(["sh", "-c", argv[-1]], capture_output=True, text=True, timeout=5)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = os.path.join(directory, "root")
+            os.mkdir(root)
+            allowed = os.path.join(root, "allowed.jsonl")
+            outside = os.path.join(directory, "outside.jsonl")
+            with open(allowed, "w") as transcript:
+                transcript.write("allowed")
+            with open(outside, "w") as transcript:
+                transcript.write("outside")
+            remote_symlink = os.path.join(root, "remote-linked.jsonl")
+            os.symlink(outside, remote_symlink)
+            with (
+                patch.object(herdr_relay.config, "CLAUDE_PROJECTS", root),
+                patch.object(herdr_relay.transcripts.claude.subprocess, "run", run_remote_locally),
+            ):
+                self.assertEqual(
+                    herdr_relay.transcripts.claude.read_transcript(
+                        "/work/repo", remote="host", path=allowed
+                    ),
+                    (os.path.realpath(allowed), "allowed"),
+                )
+                self.assertEqual(
+                    herdr_relay.transcripts.claude.read_transcript(
+                        "/work/repo", remote="host", path=outside
+                    ),
+                    (None, None),
+                )
+                self.assertEqual(
+                    herdr_relay.transcripts.claude.read_transcript(
+                        "/work/repo", remote="host",
+                        path=os.path.join(root, "..", "outside.jsonl"),
+                    ),
+                    (None, None),
+                )
+                self.assertEqual(
+                    herdr_relay.transcripts.claude.read_transcript(
+                        "/work/repo", remote="host", path=remote_symlink,
+                    ),
+                    (None, None),
+                )
 
     def test_opencode_id_ref_selects_session_instead_of_cwd(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1197,7 +1425,9 @@ class StructuredOutputTests(unittest.TestCase):
                 ),
                 patch.dict(
                     herdr_relay.state.pane_session_refs,
-                    {(None, "opencode"): {"kind": "id", "value": "target-session"}},
+                    {(None, "opencode"): {
+                        "agent": "opencode", "kind": "id", "value": "target-session",
+                    }},
                     clear=True,
                 ),
             ):

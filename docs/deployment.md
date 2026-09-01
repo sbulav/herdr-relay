@@ -156,7 +156,7 @@ Everything the relay reads. Only the first is mandatory.
 | `HERDR_POLL_BACKOFF_FACTOR` | `1.5` | Geometric step from the 2s floor toward that ceiling, one factor per consecutive quiet cycle |
 | `HERDR_SSH_CONTROL_DIR` | `~/.local/state/herdr-relay/ssh` | Directory holding SSH multiplexing sockets (#19). Created `0700`. Keep it short: the socket path must fit `sockaddr_un` (104 bytes on macOS) or multiplexing is skipped |
 | `HERDR_SSH_CONTROL_PERSIST` | `60` | `ControlPersist` seconds — how long an idle master connection lingers. Keep it above `HERDR_POLL_INTERVAL_MAX` |
-| `HERDR_CLAUDE_PROJECTS` | `~/.claude/projects` | Claude Code session store, for transcript blocks |
+| `HERDR_CLAUDE_PROJECTS` | `~/.claude/projects` | Root of the Claude Code session store. Explicit session paths are accepted only below this root |
 | `HERDR_OPENCODE_DB` | `~/.local/share/opencode/opencode-stable.db` | OpenCode session store |
 | `HERDR_VAPID_PUBLIC` | — | Web Push key; the browser client subscribes, herdr-mobile does not |
 | `HERDR_VAPID_PRIVATE` | — | Web Push key; browser client only |
@@ -279,6 +279,12 @@ come back empty even though pane state still works. Either point
 `ProtectHome` deliberately — `systemd.services.herdr-relay.serviceConfig
 .ProtectHome = lib.mkForce "read-only"` — and grant access on purpose. Remotes
 are unaffected: those transcripts are read over SSH as the remote user.
+
+Herdr session references are treated as untrusted correlation hints. Claude IDs
+must be UUIDs, references are bound to the pane's harness, and explicit local or
+remote paths must resolve below `HERDR_CLAUDE_PROJECTS`. A missing exact session
+returns no structured blocks; it is never replaced with the newest transcript
+from the same working directory.
 
 ## What this repo does not contain
 

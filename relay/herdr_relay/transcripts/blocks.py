@@ -8,7 +8,7 @@ import json
 import os
 
 from .. import config, state
-from . import claude, opencode
+from . import claude, opencode, refs
 
 def pane_blocks(pane_id):
     """(blocks, signature) for a Claude pane's transcript, else (None, None)."""
@@ -16,16 +16,16 @@ def pane_blocks(pane_id):
     if not info:
         return None, None
     cwd, agent, remote, ambiguous = info
-    ref = state.pane_session_refs.get((remote, pane_id))
-    if agent == "claude" and ref and ref["kind"] in ("id", "path"):
-        usable_ref = ref
-    elif agent == "opencode" and ref and ref["kind"] == "id":
-        usable_ref = ref
-    else:
-        usable_ref = None
+    ref_key = (remote, pane_id)
+    ref = state.pane_session_refs.get(ref_key)
+    usable_ref = refs.validated(agent, ref)
     # A session ref correlates a pane directly; without one cwd remains the
     # fallback and ambiguous same-agent panes must not stream each other's output.
-    if agent not in ("claude", "opencode") or (not usable_ref and (not cwd or ambiguous)):
+    if (
+        agent not in ("claude", "opencode")
+        or (ref_key in state.pane_session_refs and not usable_ref)
+        or (ref_key not in state.pane_session_refs and (not cwd or ambiguous))
+    ):
         return None, None
     if agent == "claude":
         try:
@@ -36,8 +36,6 @@ def pane_blocks(pane_id):
                     config.CLAUDE_PROJECTS, claude.claude_project_dir(cwd), usable_ref["value"] + ".jsonl"
                 ) if cwd else None
                 path, body = claude.read_transcript(cwd, remote, path=transcript_path)
-                if path is None:
-                    path, body = claude.read_transcript(cwd, remote)
             else:
                 path, body = claude.read_transcript(cwd, remote)
         except Exception:
