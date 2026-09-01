@@ -1,0 +1,6 @@
+{
+  "code": "HERDR_FAILED",
+  "message": "Herdr did not submit the prompt",
+  "request_id": "req-prompt-1",
+  "type": "command_error"
+}

@@ -408,6 +408,52 @@ async def handle_client(ws):
                 log.info("Text from %s (%s): pane=%s text=%r", ip, device, pane_id, text)
                 audit("send_text", ip, device, pane_id, f"text={text!r}")
                 await asyncio.to_thread(herdr.run_herdr, "pane", "send-text", pane_id, text, remote=remote)
+            elif msg_type == "send_prompt":
+                # Unlike the legacy send_text/send_keys pair, this is one Herdr
+                # operation: `agent prompt` owns both typing and submission.
+                # Keep this additive so existing clients retain their exact
+                # legacy semantics.
+                if not isinstance(request_id, str) or not projects.REQUEST_ID_RE.fullmatch(request_id):
+                    response = protocol.command_error(None, "INVALID_REQUEST", "request_id is required")
+                else:
+                    host_id = msg.get("host_id")
+                    configured_host_ids = {host["id"] for host in herdr.configured_host_records()}
+                    if host_id is not None and (
+                        not isinstance(host_id, str)
+                        or not projects.HOST_ID_RE.fullmatch(host_id)
+                        or host_id not in configured_host_ids
+                    ):
+                        response = protocol.command_error(request_id, "UNKNOWN_HOST", "Unknown host")
+                    else:
+                        pane_id = msg.get("pane_id")
+                        if not isinstance(pane_id, str) or pane_id not in state.known_panes:
+                            response = protocol.command_error(request_id, "UNKNOWN_PANE", "Unknown pane")
+                        else:
+                            text = msg.get("text", "")
+                            if not isinstance(text, str) or not text or len(text) > 1000:
+                                response = protocol.command_error(
+                                    request_id, "INVALID_REQUEST", "text empty or too long"
+                                )
+                            else:
+                                remote = state.pane_remote_map.get(pane_id)
+                                log.info("Prompt from %s (%s): pane=%s text=%r", ip, device, pane_id, text)
+                                audit("send_prompt", ip, device, pane_id, f"text={text!r}")
+                                success, _output = await asyncio.to_thread(
+                                    herdr.run_herdr_checked,
+                                    "agent", "prompt", pane_id, text,
+                                    remote=remote,
+                                    host_id=host_id,
+                                )
+                                if success:
+                                    response = protocol.command_ack(
+                                        request_id, {"pane_id": pane_id}
+                                    )
+                                else:
+                                    response = protocol.command_error(
+                                        request_id, "HERDR_FAILED", "Herdr did not submit the prompt"
+                                    )
+                _remember_response(request_results, request_id, response)
+                await ws.send(json.dumps(response))
             elif msg_type == "create_tab":
                 workspace_id = msg.get("workspace_id", "")
                 if workspace_id:

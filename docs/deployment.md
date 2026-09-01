@@ -142,7 +142,7 @@ Everything the relay reads. Only the first is mandatory.
 |----------|---------|---------|
 | `HERDR_RELAY_TOKEN` | — | **Required.** Shared secret; the relay exits without it |
 | `HERDR_RELAY_PORT` | `8375` | TCP port for WebSocket + HTTP |
-| `HERDR_RATE_INPUT_BURST` | `10` | Per-connection burst for `respond`, `send_keys`, `send_text`. `0` disables the tier |
+| `HERDR_RATE_INPUT_BURST` | `10` | Per-connection burst for `respond`, `send_keys`, `send_text`, `send_prompt`. `0` disables the tier |
 | `HERDR_RATE_INPUT_PER_SECOND` | `2` | Sustained refill for the same tier |
 | `HERDR_RATE_HOST_BURST` | `30` | Per-connection burst for the other host-reaching commands. `0` disables the tier |
 | `HERDR_RATE_HOST_PER_SECOND` | `10` | Sustained refill for the same tier |

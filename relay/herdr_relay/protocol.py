@@ -81,6 +81,11 @@ def command_error(request_id, code, message):
     return {"type": "command_error", "request_id": request_id, "code": code, "message": message}
 
 
+def command_ack(request_id, result=None):
+    """Build a point-to-point acknowledgement for a typed command."""
+    return {"type": "command_ack", "request_id": request_id, "result": result or {}}
+
+
 def error(message):
     """A refusal in the dialect the pane commands speak.
 

@@ -454,6 +454,20 @@ class NativeContractTests(unittest.TestCase):
 
         self.assert_contract("command_ack_terminate_session", frame)
 
+    def test_send_prompt_ack(self):
+        self.assert_contract(
+            "command_ack_send_prompt",
+            herdr_relay.protocol.command_ack("req-prompt-1", {"pane_id": "pane-7"}),
+        )
+
+    def test_send_prompt_error(self):
+        self.assert_contract(
+            "command_error_send_prompt",
+            herdr_relay.protocol.command_error(
+                "req-prompt-1", "HERDR_FAILED", "Herdr did not submit the prompt"
+            ),
+        )
+
     def test_rate_limited_command_error(self):
         """RATE_LIMITED goes on the wire like any other code, so it is pinned too.
 

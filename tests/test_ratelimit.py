@@ -103,7 +103,7 @@ class ConnectionLimitsTests(unittest.TestCase):
 
     def test_every_terminal_write_is_metered_by_the_strict_tier(self):
         limits = herdr_relay.ratelimit.ConnectionLimits(Clock())
-        for msg_type in ("respond", "send_keys", "send_text"):
+        for msg_type in ("respond", "send_keys", "send_text", "send_prompt"):
             self.assertIs(limits.input, limits.bucket_for(msg_type), msg_type)
 
 
@@ -113,6 +113,15 @@ class RejectionDialectTests(unittest.TestCase):
         self.assertEqual("command_error", frame["type"])
         self.assertEqual("RATE_LIMITED", frame["code"])
         self.assertEqual("req-7", frame["request_id"])
+
+    def test_send_prompt_is_refused_with_a_correlated_code(self):
+        frame = herdr_relay.ratelimit.rejection("send_prompt", "req-prompt")
+        self.assertEqual({
+            "type": "command_error",
+            "request_id": "req-prompt",
+            "code": "RATE_LIMITED",
+            "message": "Too many requests, slow down",
+        }, frame)
 
     def test_a_pane_command_is_refused_in_its_own_dialect(self):
         """`send_keys` has no `request_id` and its client parses `error`.

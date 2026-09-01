@@ -1929,6 +1929,125 @@ class RequestCacheTests(unittest.TestCase):
         self.assertEqual(2, second.sent[-1]["result"]["ordinal"])
 
 
+class SendPromptTests(unittest.TestCase):
+    @staticmethod
+    def socket(messages):
+        class Socket:
+            request_headers = {}
+
+            def __init__(self):
+                self.requests = iter([json.dumps(message) for message in messages])
+                self.sent = []
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                try:
+                    return next(self.requests)
+                except StopIteration:
+                    raise StopAsyncIteration
+
+            async def send(self, raw):
+                self.sent.append(json.loads(raw))
+
+        return Socket()
+
+    def drive(self, messages, checked_return=(True, ""), configured_hosts=None):
+        socket = self.socket(messages)
+        with (
+            patch.object(herdr_relay.state, "known_panes", {"pane-1"}),
+            patch.dict(herdr_relay.state.pane_remote_map, {}, clear=True),
+            patch.object(
+                herdr_relay.herdr,
+                "configured_host_records",
+                return_value=configured_hosts or [host_record("local")],
+            ),
+            patch.object(
+                herdr_relay.herdr,
+                "run_herdr_checked",
+                return_value=checked_return,
+            ) as checked,
+        ):
+            asyncio.run(herdr_relay.handle_client(socket))
+        return after_handshake(socket.sent), checked
+
+    def test_success_is_one_checked_agent_prompt_and_acknowledged(self):
+        frames, checked = self.drive([{
+            "type": "send_prompt",
+            "request_id": "prompt-1",
+            "pane_id": "pane-1",
+            "text": "run tests",
+        }])
+
+        self.assertEqual([{
+            "type": "command_ack",
+            "request_id": "prompt-1",
+            "result": {"pane_id": "pane-1"},
+        }], frames)
+        checked.assert_called_once_with(
+            "agent", "prompt", "pane-1", "run tests", remote=None, host_id=None
+        )
+
+    def test_retry_replays_ack_without_submitting_again(self):
+        messages = [{
+            "type": "send_prompt", "request_id": "prompt-1",
+            "pane_id": "pane-1", "text": "run tests",
+        }] * 2
+        frames, checked = self.drive(messages)
+
+        self.assertEqual(frames[0], frames[1])
+        checked.assert_called_once()
+
+    def test_invalid_request_id_is_typed_and_not_submitted(self):
+        frames, checked = self.drive([{
+            "type": "send_prompt", "pane_id": "pane-1", "text": "run tests",
+        }])
+
+        self.assertEqual({
+            "type": "command_error", "request_id": None,
+            "code": "INVALID_REQUEST", "message": "request_id is required",
+        }, frames[0])
+        checked.assert_not_called()
+
+    def test_unknown_host_and_pane_are_typed(self):
+        host_frames, checked = self.drive([{
+            "type": "send_prompt", "request_id": "prompt-host",
+            "host_id": "missing", "pane_id": "pane-1", "text": "run tests",
+        }])
+        self.assertEqual("UNKNOWN_HOST", host_frames[0]["code"])
+        self.assertEqual("prompt-host", host_frames[0]["request_id"])
+        checked.assert_not_called()
+
+        pane_frames, checked = self.drive([{
+            "type": "send_prompt", "request_id": "prompt-pane",
+            "pane_id": "missing", "text": "run tests",
+        }])
+        self.assertEqual("UNKNOWN_PANE", pane_frames[0]["code"])
+        self.assertEqual("prompt-pane", pane_frames[0]["request_id"])
+        checked.assert_not_called()
+
+    def test_herdr_failure_is_typed_and_replayed(self):
+        messages = [{
+            "type": "send_prompt", "request_id": "prompt-fail",
+            "pane_id": "pane-1", "text": "run tests",
+        }] * 2
+        frames, checked = self.drive(messages, checked_return=(False, "host error"))
+
+        self.assertEqual(frames[0], frames[1])
+        self.assertEqual("HERDR_FAILED", frames[0]["code"])
+        self.assertEqual("prompt-fail", frames[0]["request_id"])
+        checked.assert_called_once()
+
+    def test_text_validation_matches_legacy_send_text_limit(self):
+        frames, checked = self.drive([{
+            "type": "send_prompt", "request_id": "prompt-empty",
+            "pane_id": "pane-1", "text": "",
+        }])
+        self.assertEqual("INVALID_REQUEST", frames[0]["code"])
+        checked.assert_not_called()
+
+
 class HandshakeTests(unittest.TestCase):
     def test_server_info_precedes_anything_the_client_sends(self):
         """An update-required screen is useless if it arrives after the agent list.

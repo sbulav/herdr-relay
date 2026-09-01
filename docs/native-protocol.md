@@ -77,7 +77,7 @@ because the cost differs.
 
 | Tier | Commands | Default burst | Default sustained |
 | --- | --- | --- | --- |
-| Terminal input | `respond`, `send_keys`, `send_text` | 10 | 2/s |
+| Terminal input | `respond`, `send_keys`, `send_text`, `send_prompt` | 10 | 2/s |
 | Host reads and writes | `read_pane`, `subscribe_pane`, `catalog_refresh`, `create_tab`, `start_session`, `cancel_start`, `terminate_session`, `wake_host`, `shutdown_host`, and every `project_*` command | 30 | 10/s |
 
 `agent_event`, `unsubscribe_pane`, `push_subscribe`, and `push_unsubscribe` are
@@ -876,6 +876,36 @@ maps some accepted labels to key presses or shorter text before sending them.
 }
 ```
 
+### `send_prompt`
+
+Submits free-form text to an agent through Herdr's `agent prompt` operation.
+This is the native client's retry-safe alternative to sending `send_text` and
+`send_keys Enter` as two separate frames. It does not expose a shell command to
+the client and does not append a newline itself; Herdr owns submission.
+
+| Name | Type | Presence | Meaning |
+| --- | --- | --- | --- |
+| `type` | string | Required | Always `"send_prompt"`. |
+| `request_id` | string | Required | 1–128 characters matching `[A-Za-z0-9._:-]+`; used for response correlation and replay. |
+| `pane_id` | string | Required | Must identify a pane from the latest poll. |
+| `text` | string | Required | Non-empty text of at most 1,000 characters, matching the legacy `send_text` limit. |
+| `host_id` | string | Optional | When supplied, must name a configured host. Pane routing remains based on the latest pane map. |
+
+The relay returns one point-to-point `command_ack` on success, or a
+`command_error` on validation, host/pane, or Herdr failure. Both echo the
+request ID when it is valid. Repeating a completed request ID on the same
+connection replays the cached frame and never invokes Herdr again. The cache is
+per connection, like the other typed commands.
+
+```json
+{
+  "type": "send_prompt",
+  "request_id": "req-prompt-1",
+  "pane_id": "pane-7",
+  "text": "run the focused tests"
+}
+```
+
 ### `agent_event`
 
 Enqueues an agent status event. The event worker may fan out `blocked` and
@@ -1090,6 +1120,7 @@ These are all code and message pairs produced through `command_error`.
 | `INVALID_NAME` | `Folder name is reserved on some platforms` | A create name violates the portable platform rules. Other invalid-name messages describe the same code more specifically. |
 | `INVALID_LABEL` | `Project label must be 1-128 characters` | A project save or rename label is empty or too long. |
 | `UNKNOWN_HOST` | `Unknown host` | A project operation names a host absent from the configured host file. |
+| `UNKNOWN_PANE` | `Unknown pane` | A `send_prompt` command names a pane absent from the latest poll. |
 | `ROOT_NOT_ALLOWED` | `Folder root is not configured for this host` | A project operation names a root handle absent from the host configuration. |
 | `FOLDER_NOT_FOUND` | `Folder is unavailable` | The requested directory disappeared before the descriptor-relative open. |
 | `FOLDER_EXISTS` | `A folder with that name already exists` | Atomic create found any existing entry with the requested name. |
@@ -1116,6 +1147,7 @@ These are all code and message pairs produced through `command_error`.
 | `UNKNOWN_HOST` | `Power host has no SSH target` | A host configured for shutdown has no SSH target. `load_hosts` rejects that combination at startup, so this is a last-resort guard rather than a reachable configuration. |
 | `SHUTDOWN_FAILED` | `Host shutdown command failed` | The fixed SSH shutdown process raises or exits unsuccessfully. |
 | `RATE_LIMITED` | `Too many requests, slow down` | The connection exceeded its [rate limit](#rate-limiting) on a typed command. The command did not run. |
+| `HERDR_FAILED` | `Herdr did not submit the prompt` | The Herdr `agent prompt` operation failed for `send_prompt`. |
 
 ## Source Of Truth
 
