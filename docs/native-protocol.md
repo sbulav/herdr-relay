@@ -77,7 +77,7 @@ because the cost differs.
 
 | Tier | Commands | Default burst | Default sustained |
 | --- | --- | --- | --- |
-| Terminal input | `respond`, `send_keys`, `send_text`, `send_prompt` | 10 | 2/s |
+| Terminal input | `respond`, `respond_dialog`, `send_keys`, `send_text`, `send_prompt` | 10 | 2/s |
 | Host reads and writes | `read_pane`, `subscribe_pane`, `catalog_refresh`, `create_tab`, `start_session`, `cancel_start`, `terminate_session`, `wake_host`, `shutdown_host`, and every `project_*` command | 30 | 10/s |
 
 `agent_event`, `unsubscribe_pane`, `push_subscribe`, and `push_unsubscribe` are
@@ -382,18 +382,23 @@ operations require a request ID and return a typed `command_ack`, `command_error
 ### `blocked`
 
 Reports that a pane needs a response. Poll and `agent_event` paths broadcast a
-full frame. A `read_pane` request can send a reduced frame containing only
-`pane_id`, `prompt`, and `options` when it discovers selectable options.
+full frame. A `read_pane` request sends the same dialog metadata as a broadcast
+frame when the pane is blocked, including the public host, agent, and project
+identity.
 
 | Name | Type | Presence | Meaning |
 | --- | --- | --- | --- |
 | `type` | string | Required | Always `"blocked"`. |
 | `pane_id` | string | Required | Blocked pane identifier. |
-| `agent` | string | Broadcast form only | Agent name; may be empty for an event. |
-| `project` | string | Broadcast form only | Project name; may be empty for an event. |
-| `host` | string | Broadcast form only | Host name or ID; event frames default to `"local"`. |
+| `agent` | string | Required | Agent name; may be empty for an event. |
+| `project` | string | Required | Project name; may be empty for an event. |
+| `host` | string | Required | Host name or ID; event frames default to `"local"`. |
 | `prompt` | string | Required | Recent pane content, truncated to 500 characters. |
-| `options` | array of strings | Required | Detected choices, or the default tool choices when detection fails in a broadcast. |
+| `options` | array of strings | Required | Detected choices, or the default tool choices when detection fails; retained for legacy clients. |
+| `choices` | array of strings | Required | Exact detected choices bound to this dialog revision; empty when the relay cannot verify selectable choices. |
+| `dialog_id` | string | Required | Stable identity while this prompt and choice set remain unchanged. |
+| `revision` | integer | Required | Monotonically increasing dialog revision for this pane. |
+| `raw_input_allowed` | boolean | Required | Whether arbitrary text can be delivered. Currently always `false`; clients must use a listed choice. |
 
 ```json
 {
@@ -403,7 +408,11 @@ full frame. A `read_pane` request can send a reduced frame containing only
   "project": "herdr-remote",
   "host": "buildbox",
   "prompt": "Do you want to proceed?\n1. Yes\n2. No",
-  "options": ["1. Yes", "2. No"]
+  "options": ["1. Yes", "2. No"],
+  "choices": ["1. Yes", "2. No"],
+  "dialog_id": "dlg-d131846055fd02eba10d9bd",
+  "revision": 1,
+  "raw_input_allowed": false
 }
 ```
 
@@ -906,6 +915,40 @@ per connection, like the other typed commands.
 }
 ```
 
+### `respond_dialog`
+
+Answers a relay-owned blocked dialog. This is the acknowledged replacement for
+the legacy `respond` command; `respond` remains available to older clients but
+does not provide correlation or stale-dialog protection.
+
+| Name | Type | Presence | Meaning |
+| --- | --- | --- | --- |
+| `type` | string | Required | Always `"respond_dialog"`. |
+| `request_id` | string | Required | 1–128 characters matching `[A-Za-z0-9._:-]+`; used for acknowledgement and replay. |
+| `pane_id` | string | Required | The pane named by the blocked frame. |
+| `dialog_id` | string | Required | Must match the currently active blocked dialog. |
+| `revision` | integer | Optional | When supplied, must match the dialog revision. |
+| `text` | string | Required | One of the choices in the current dialog revision. |
+
+The relay accepts a response only while the pane is still blocked and the dialog
+has not already been answered. A changed prompt or choice set creates a new
+`dialog_id` and revision. A successful response is consumed atomically; a retry
+with the same request ID replays its acknowledgement, while another request for
+the consumed dialog receives `DIALOG_ALREADY_ANSWERED`. Stale or missing dialogs
+return `STALE_DIALOG` or `DIALOG_NOT_ACTIVE`. Failed Herdr delivery does not
+consume the dialog and returns `HERDR_FAILED`.
+
+```json
+{
+  "type": "respond_dialog",
+  "request_id": "answer-7",
+  "pane_id": "pane-7",
+  "dialog_id": "dlg-d131846055fd02eba10d9bd",
+  "revision": 1,
+  "text": "1. Yes"
+}
+```
+
 ### `agent_event`
 
 Enqueues an agent status event. The event worker may fan out `blocked` and
@@ -1121,6 +1164,10 @@ These are all code and message pairs produced through `command_error`.
 | `INVALID_LABEL` | `Project label must be 1-128 characters` | A project save or rename label is empty or too long. |
 | `UNKNOWN_HOST` | `Unknown host` | A project operation names a host absent from the configured host file. |
 | `UNKNOWN_PANE` | `Unknown pane` | A `send_prompt` command names a pane absent from the latest poll. |
+| `DIALOG_NOT_ACTIVE` | `Dialog is no longer active` | A `respond_dialog` command names a pane with no current blocked dialog. |
+| `STALE_DIALOG` | `Dialog is stale` or `Dialog revision is stale` | A `respond_dialog` command names a replaced dialog or mismatched revision. |
+| `DIALOG_ALREADY_ANSWERED` | `Dialog was already answered` | A different request attempts to answer a consumed dialog. |
+| `RESPONSE_NOT_ALLOWED` | `Response is not an option for this dialog` | The response is not globally safe or bound to the current dialog choices. |
 | `ROOT_NOT_ALLOWED` | `Folder root is not configured for this host` | A project operation names a root handle absent from the host configuration. |
 | `FOLDER_NOT_FOUND` | `Folder is unavailable` | The requested directory disappeared before the descriptor-relative open. |
 | `FOLDER_EXISTS` | `A folder with that name already exists` | Atomic create found any existing entry with the requested name. |

@@ -10,7 +10,7 @@ import json
 
 from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
 
-from . import catalogs, config, herdr, operations, panes, projects, protocol, push, state, transcripts
+from . import catalogs, config, dialogs, herdr, operations, panes, projects, protocol, push, state, transcripts
 from .config import log
 
 
@@ -101,6 +101,8 @@ async def _poll_once():
     state.pane_remote_map.clear()
     state.session_target_map.clear()
     state.pane_cwd_map.clear()
+    state.pane_host_map.clear()
+    state.pane_project_map.clear()
     state.known_panes.clear()
     state.known_panes.update(current_pane_ids)
     agent_cwd_counts = {}
@@ -116,6 +118,8 @@ async def _poll_once():
             a.get("cwd", ""), a.get("agent", ""), a.get("remote"),
             agent_cwd_counts.get(cwd_key, 0) > 1,
         )
+        state.pane_host_map[a["pane_id"]] = a.get("host", "local")
+        state.pane_project_map[a["pane_id"]] = a.get("project", "")
         pid, status = a["pane_id"], a["status"]
         # Snapshot broadcast precedes the `state.last_statuses` update below, so this
         # still reads the prior poll's status for idle-after-work detection.
@@ -166,16 +170,17 @@ async def _poll_once():
         or any(op["stage"] in operations.ACTIVE_STAGES for op in recovery)
     )
     state.poll_idle_streak = 0 if busy else state.poll_idle_streak + 1
-    # Read every newly blocked pane off the event loop, and all of them at once:
+    # Read every blocked pane off the event loop, and all of them at once:
     # `herdr pane read` shells out (over ssh for remote hosts) with a 15s timeout,
     # and a herd of agents tends to block together. Done inline, one slow host
     # freezes every client on exactly the event they care about most.
-    newly_blocked = [
-        a for a in agents
-        if a["status"] == "blocked" and state.last_statuses.get(a["pane_id"]) != "blocked"
-    ]
+    # Herdr's output revision is useful evidence, but not sufficient on its own:
+    # a pane can redraw a changed prompt without changing that counter. Reading
+    # each blocked pane lets `dialogs.ensure` compare the actual observation and
+    # keeps an unchanged dialog stable.
+    blocked_agents = [a for a in agents if a["status"] == "blocked"]
     blocked_content = dict(zip(
-        (a["pane_id"] for a in newly_blocked),
+        (a["pane_id"] for a in blocked_agents),
         await asyncio.gather(*(
             asyncio.to_thread(
                 herdr.read_pane,
@@ -183,39 +188,44 @@ async def _poll_once():
                 remote=a.get("remote"),
                 source="visible",
             )
-            for a in newly_blocked
+            for a in blocked_agents
         )),
     ))
     for a in agents:
         pid, status = a["pane_id"], a["status"]
-        if status == "blocked" and state.last_statuses.get(pid) != "blocked":
+        if status == "blocked":
             content = blocked_content.get(pid, "")
             options = panes.detect_options(content)
-            state.pane_response_options[pid] = {
-                option.lower() for option in (options or panes.TOOL_OPTIONS)
-            }
-            await broadcast({
-                "type": "blocked", "pane_id": pid,
-                "agent": a["agent"], "project": a["project"],
-                "host": a.get("host", "local"),
-                "prompt": content[:500],
-                "options": options or panes.TOOL_OPTIONS
-            })
-            await push.send_web_push(
-                title=f"🐑 {a['project']} blocked",
-                body=content[:120],
-                url=f"/?pane={pid}",
+            previous_dialog = state.pane_dialogs.get(pid)
+            dialog = dialogs.ensure(
+                pid,
+                content,
+                options,
+                agent=a.get("agent", ""),
+                project=a.get("project", ""),
+                host=a.get("host", "local"),
+                observation=a.get("output_revision"),
             )
+            if dialog is not previous_dialog:
+                await broadcast(dialogs.frame(dialog))
+            if state.last_statuses.get(pid) != "blocked":
+                await push.send_web_push(
+                    title=f"🐑 {a['project']} blocked",
+                    body=content[:120],
+                    url=f"/?pane={pid}",
+                )
         if status != "blocked" and state.last_statuses.get(pid) == "blocked":
-            state.pane_response_options.pop(pid, None)
+            dialogs.clear(pid)
             await push.send_web_push("", "", clear=True)
         state.last_statuses[pid] = status
     for pid in set(state.last_statuses) - current_pane_ids:
         del state.last_statuses[pid]
-        state.pane_response_options.pop(pid, None)
+        dialogs.clear(pid)
         state.pane_activity.pop(pid, None)
         state.pane_revisions.pop(pid, None)
         state.pane_attention_states.pop(pid, None)
+        state.pane_host_map.pop(pid, None)
+        state.pane_project_map.pop(pid, None)
 
     # Live-stream structured transcript blocks to subscribed clients. Only
     # watched Claude panes are read; a changed signature (path or content)
@@ -254,6 +264,11 @@ async def _handle_pushed_event(event):
     host = event.get("host", "local")
 
     if status == "blocked" and pane_id:
+        # A hook can race the next snapshot. Do not create an actionable
+        # dialog for a pane the relay cannot currently route; the event loop
+        # has already woken polling, which will publish it once observable.
+        if pane_id not in state.known_panes:
+            return
         remote = state.pane_remote_map.get(pane_id)
         if remote or host == "local":
             # Same 15s ssh-backed call the poll loop offloads (#26). Handle it
@@ -266,15 +281,36 @@ async def _handle_pushed_event(event):
             )
         else:
             content = event.get("prompt", "Agent is blocked")
+        # Keep the exact detector result as the typed capability. `frame()`
+        # supplies the legacy fallback in `options` only; an undetected prompt
+        # must not become answerable through `choices`.
         options = panes.detect_options(content)
-        await broadcast({
-            "type": "blocked", "pane_id": pane_id,
-            "agent": event.get("agent", ""),
-            "project": event.get("project", ""),
-            "host": host,
-            "prompt": content[:500],
-            "options": options or panes.TOOL_OPTIONS
-        })
+        current = state.pane_dialogs.get(pane_id)
+        event_host = event.get("host")
+        observation = event.get("output_revision")
+        if not isinstance(observation, int) or isinstance(observation, bool):
+            observation = event.get("revision")
+        if not isinstance(observation, int) or isinstance(observation, bool):
+            observation = state.pane_revisions.get(pane_id)
+        if not isinstance(observation, int) or isinstance(observation, bool):
+            observation = current.get("observation") if current else None
+        dialog = dialogs.ensure(
+            pane_id,
+            content,
+            options,
+            # Push hooks may omit display metadata. Preserve the identity that
+            # poll/read already established instead of replacing a remote host
+            # with the event handler's local default.
+            agent=event.get("agent") or (current["agent"] if current else ""),
+            project=event.get("project") or (
+                current["project"] if current else state.pane_project_map.get(pane_id, "")
+            ),
+            host=event_host or (current["host"] if current else state.pane_host_map.get(pane_id, host)),
+            observation=observation,
+        )
+        await broadcast(dialogs.frame(dialog))
+    elif pane_id and status:
+        dialogs.clear(pane_id)
 
     if pane_id and event.get("type") == "agent_event":
         await broadcast({

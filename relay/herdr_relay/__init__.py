@@ -21,6 +21,7 @@ they always did; it holds no logic of its own.
 from . import (  # noqa: F401
     catalogs,
     config,
+    dialogs,
     herdr,
     lifecycle,
     operations,

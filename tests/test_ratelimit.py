@@ -103,7 +103,7 @@ class ConnectionLimitsTests(unittest.TestCase):
 
     def test_every_terminal_write_is_metered_by_the_strict_tier(self):
         limits = herdr_relay.ratelimit.ConnectionLimits(Clock())
-        for msg_type in ("respond", "send_keys", "send_text", "send_prompt"):
+        for msg_type in ("respond", "respond_dialog", "send_keys", "send_text", "send_prompt"):
             self.assertIs(limits.input, limits.bucket_for(msg_type), msg_type)
 
 

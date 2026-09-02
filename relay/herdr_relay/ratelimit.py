@@ -29,7 +29,7 @@ import time
 from . import config, projects, protocol
 
 # Keystrokes into a terminal a human is watching.
-INPUT_COMMANDS = frozenset({"respond", "send_keys", "send_text", "send_prompt"})
+INPUT_COMMANDS = frozenset({"respond", "respond_dialog", "send_keys", "send_text", "send_prompt"})
 
 # Reads and writes that reach a host without typing into it. `project_*` comes
 # from the handler table itself so a new project command is metered the day it is

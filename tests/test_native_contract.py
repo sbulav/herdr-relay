@@ -376,6 +376,8 @@ class NativeContractTests(unittest.TestCase):
             patch.dict(herdr_relay.state.pane_attention_states, {}, clear=True),
             patch.object(herdr_relay.protocol, "now_ms", return_value=1700000000000),
             patch.dict(herdr_relay.state.pane_response_options, {}, clear=True),
+            patch.dict(herdr_relay.state.pane_dialogs, {}, clear=True),
+            patch.dict(herdr_relay.state.pane_dialog_revisions, {}, clear=True),
         ):
             asyncio.run(herdr_relay._poll_once())
 

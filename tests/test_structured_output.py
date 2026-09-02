@@ -357,6 +357,23 @@ class PollLoopBlockingTests(unittest.TestCase):
         finally:
             herdr_relay.state.event_queue = original_queue
 
+    def test_unknown_pushed_blocked_event_is_not_actionable(self):
+        async def run():
+            with patch.object(herdr_relay.transport, "broadcast", new_callable=AsyncMock) as broadcast:
+                await herdr_relay.transport._handle_pushed_event({
+                    "type": "agent_event", "pane_id": "not-known", "status": "blocked",
+                    "host": "buildbox", "prompt": "Do you want to proceed?\n1. Yes\n2. No",
+                })
+                broadcast.assert_not_awaited()
+
+        with (
+            patch.object(herdr_relay.state, "known_panes", set()),
+            patch.dict(herdr_relay.state.pane_dialogs, {}, clear=True),
+            patch.dict(herdr_relay.state.pane_response_options, {}, clear=True),
+        ):
+            asyncio.run(run())
+        self.assertNotIn("not-known", herdr_relay.state.pane_dialogs)
+
 
 class PaneMetadataTests(unittest.TestCase):
     def test_attention_state_mapping(self):
@@ -450,6 +467,69 @@ class PaneMetadataTests(unittest.TestCase):
         entries = [frame["agents"][0] for frame in sent if frame["type"] == "agents"]
         self.assertEqual([entry["updated_at"] for entry in entries], [1000, 1000, 2000, 3000])
 
+    def test_blocked_prompt_change_creates_new_dialog_revision(self):
+        agents = [self.agent(status="blocked", revision=1)]
+        snapshots = [agents, agents, agents]
+        prompts = iter([
+            "Do you want to proceed?\n1. Yes\n2. No",
+            "Do you want to continue?\n1. Yes\n2. No",
+            "Do you want to continue?\n1. Yes\n2. No",
+        ])
+        sent = []
+
+        async def get_all_agents():
+            return snapshots.pop(0), []
+
+        async def broadcast(frame):
+            sent.append(frame)
+
+        with self.poll_state(), patch.object(
+            herdr_relay.herdr, "get_all_agents", side_effect=get_all_agents
+        ), patch.object(
+            herdr_relay.herdr, "read_pane", side_effect=lambda *args, **kwargs: next(prompts)
+        ), patch.object(
+            herdr_relay.transport, "broadcast", side_effect=broadcast
+        ), patch.object(
+            herdr_relay.push, "send_web_push", new_callable=AsyncMock
+        ):
+            for _ in range(3):
+                asyncio.run(herdr_relay._poll_once())
+
+        blocked = [frame for frame in sent if frame["type"] == "blocked"]
+        self.assertEqual(2, len(blocked))
+        self.assertNotEqual(blocked[0]["dialog_id"], blocked[1]["dialog_id"])
+        self.assertEqual(1, blocked[0]["revision"])
+        self.assertEqual(2, blocked[1]["revision"])
+
+    def test_consumed_identical_prompt_renews_only_for_changed_output_revision(self):
+        agents = [self.agent(status="blocked", revision=1)]
+        snapshots = [agents, agents, [self.agent(status="blocked", revision=2)]]
+        sent = []
+
+        async def get_all_agents():
+            return snapshots.pop(0), []
+
+        async def broadcast(frame):
+            sent.append(frame)
+
+        with self.poll_state(), patch.object(
+            herdr_relay.herdr, "get_all_agents", side_effect=get_all_agents
+        ), patch.object(
+            herdr_relay.herdr, "read_pane", return_value="Do you want to proceed?\n1. Yes\n2. No"
+        ), patch.object(
+            herdr_relay.transport, "broadcast", side_effect=broadcast
+        ), patch.object(
+            herdr_relay.push, "send_web_push", new_callable=AsyncMock
+        ):
+            asyncio.run(herdr_relay._poll_once())
+            herdr_relay.state.pane_dialogs["pane-1"]["consumed"] = True
+            asyncio.run(herdr_relay._poll_once())
+            asyncio.run(herdr_relay._poll_once())
+
+        blocked = [frame for frame in sent if frame["type"] == "blocked"]
+        self.assertEqual(2, len(blocked))
+        self.assertEqual([1, 2], [frame["revision"] for frame in blocked])
+
     def test_missing_or_bool_revision_is_omitted(self):
         pane_list = json.dumps({"result": {"panes": [
             {"pane_id": "missing", "agent": "claude"},
@@ -497,6 +577,8 @@ class PaneMetadataTests(unittest.TestCase):
         stack.enter_context(patch.dict(herdr_relay.state.pane_activity, {}, clear=True))
         stack.enter_context(patch.dict(herdr_relay.state.pane_revisions, {}, clear=True))
         stack.enter_context(patch.dict(herdr_relay.state.pane_attention_states, {}, clear=True))
+        stack.enter_context(patch.dict(herdr_relay.state.pane_dialogs, {}, clear=True))
+        stack.enter_context(patch.dict(herdr_relay.state.pane_dialog_revisions, {}, clear=True))
         stack.enter_context(patch.dict(herdr_relay.state.subscriptions, {}, clear=True))
         return stack
 
@@ -958,6 +1040,7 @@ class StructuredOutputTests(unittest.TestCase):
                 patch.dict(herdr_relay.state.last_statuses, {"pane-1": status}, clear=True),
                 patch.object(herdr_relay.state, "known_panes", {"pane-1"}),
                 patch.dict(herdr_relay.state.pane_response_options, {}, clear=True),
+                patch.dict(herdr_relay.state.pane_dialogs, {}, clear=True),
                 patch.object(herdr_relay.herdr, "run_herdr", return_value=prompt),
                 patch.object(herdr_relay.transcripts.blocks, "pane_blocks", return_value=(None, None)),
             ):
@@ -971,6 +1054,54 @@ class StructuredOutputTests(unittest.TestCase):
             if status == "blocked":
                 self.assertEqual(frames[1]["prompt"], prompt)
                 self.assertEqual(frames[1]["options"], herdr_relay.panes.OPENCODE_OPTIONS)
+
+    def test_read_pane_keeps_remote_dialog_identity(self):
+        class Socket:
+            request_headers = {}
+
+            def __init__(self):
+                self.requests = iter([
+                    json.dumps({"type": "read_pane", "pane_id": "pane-1", "lines": 30})
+                ])
+                self.sent = []
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                try:
+                    return next(self.requests)
+                except StopIteration:
+                    raise StopAsyncIteration
+
+            async def send(self, message):
+                self.sent.append(json.loads(message))
+
+        socket = Socket()
+        with (
+            patch.dict(herdr_relay.state.last_statuses, {"pane-1": "blocked"}, clear=True),
+            patch.object(herdr_relay.state, "known_panes", {"pane-1"}),
+            patch.dict(herdr_relay.state.pane_remote_map, {"pane-1": "deploy@buildbox"}, clear=True),
+            patch.dict(herdr_relay.state.pane_cwd_map, {
+                "pane-1": ("/srv/repo", "claude", "deploy@buildbox", False)
+            }, clear=True),
+            patch.dict(herdr_relay.state.pane_host_map, {"pane-1": "buildbox"}, clear=True),
+            patch.dict(herdr_relay.state.pane_project_map, {"pane-1": "repo"}, clear=True),
+            patch.dict(herdr_relay.state.pane_dialogs, {}, clear=True),
+            patch.dict(herdr_relay.state.pane_dialog_revisions, {}, clear=True),
+            patch.object(herdr_relay.herdr, "run_herdr", return_value="Do you want to proceed?\n1. Yes\n2. No"),
+            patch.object(herdr_relay.transcripts.blocks, "pane_blocks", return_value=(None, None)),
+        ):
+            herdr_relay.dialogs.ensure(
+                "pane-1", "old prompt", ["yes", "no"],
+                agent="claude", project="repo", host="buildbox",
+            )
+            asyncio.run(herdr_relay.handle_client(socket))
+
+        frame = after_handshake(socket.sent)[1]
+        self.assertEqual("buildbox", frame["host"])
+        self.assertEqual("claude", frame["agent"])
+        self.assertEqual("repo", frame["project"])
 
     def test_claude_project_dir(self):
         self.assertEqual(
@@ -1800,6 +1931,7 @@ class RelayInputValidationTests(unittest.TestCase):
         socket = Socket()
         with (
             patch.object(herdr_relay.state, "known_panes", {"pane-1"}),
+            patch.dict(herdr_relay.state.pane_dialogs, {}, clear=True),
             patch.object(herdr_relay.transcripts.blocks, "pane_blocks", return_value=(None, None)),
         ):
             asyncio.run(herdr_relay.handle_client(socket))
@@ -1849,8 +1981,8 @@ class RelayInputValidationTests(unittest.TestCase):
         self.assertEqual("invalid pane source", frames[0]["message"])
         run_herdr.assert_not_called()
 
-    @patch.object(herdr_relay.herdr, "run_herdr")
-    def test_detected_dynamic_response_uses_its_safe_key_mapping(self, run_herdr):
+    @patch.object(herdr_relay.herdr, "run_herdr_checked", return_value=(True, ""))
+    def test_detected_dynamic_response_uses_its_safe_key_mapping(self, run_herdr_checked):
         class Socket:
             def __init__(self):
                 self.requests = iter([
@@ -1886,7 +2018,7 @@ class RelayInputValidationTests(unittest.TestCase):
             asyncio.run(herdr_relay.handle_client(socket))
 
         self.assertEqual(after_handshake(socket.sent), [])
-        run_herdr.assert_called_once_with(
+        run_herdr_checked.assert_called_once_with(
             "pane", "send-keys", "pane-1", "Enter", remote=None
         )
 
@@ -2046,6 +2178,362 @@ class SendPromptTests(unittest.TestCase):
         }])
         self.assertEqual("INVALID_REQUEST", frames[0]["code"])
         checked.assert_not_called()
+
+
+class DialogResponseTests(unittest.TestCase):
+    @staticmethod
+    def socket(messages):
+        class Socket:
+            request_headers = {}
+
+            def __init__(self):
+                self.requests = iter([json.dumps(message) for message in messages])
+                self.sent = []
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                try:
+                    return next(self.requests)
+                except StopIteration:
+                    raise StopAsyncIteration
+
+            async def send(self, raw):
+                self.sent.append(json.loads(raw))
+
+        return Socket()
+
+    def test_dialog_frame_is_stable_and_capability_is_truthful(self):
+        with (
+            patch.dict(herdr_relay.state.pane_dialogs, {}, clear=True),
+            patch.dict(herdr_relay.state.pane_dialog_revisions, {}, clear=True),
+        ):
+            first = herdr_relay.dialogs.ensure(
+                "pane-1", "Choose", ["yes", "no"]
+            )
+            second = herdr_relay.dialogs.ensure(
+                "pane-1", "Choose", ["yes", "no"], agent="claude", project="repo"
+            )
+            self.assertEqual(first["dialog_id"], second["dialog_id"])
+            self.assertEqual(first["revision"], second["revision"])
+            self.assertEqual("claude", second["agent"])
+            self.assertEqual("repo", second["project"])
+            frame = herdr_relay.dialogs.frame(first)
+
+        self.assertEqual(["yes", "no"], frame["choices"])
+        self.assertFalse(frame["raw_input_allowed"])
+
+    def test_undetected_dialog_has_no_typed_choices(self):
+        with (
+            patch.dict(herdr_relay.state.pane_dialogs, {}, clear=True),
+            patch.dict(herdr_relay.state.pane_dialog_revisions, {}, clear=True),
+        ):
+            dialog = herdr_relay.dialogs.ensure("pane-1", "Waiting", None)
+            frame = herdr_relay.dialogs.frame(dialog)
+
+        self.assertEqual([], frame["choices"])
+        self.assertEqual(herdr_relay.panes.TOOL_OPTIONS, frame["options"])
+        self.assertEqual(
+            {choice.lower() for choice in herdr_relay.panes.TOOL_OPTIONS},
+            herdr_relay.state.pane_response_options["pane-1"],
+        )
+
+    def test_missing_observation_revision_does_not_recreate_consumed_dialog(self):
+        with (
+            patch.dict(herdr_relay.state.pane_dialogs, {}, clear=True),
+            patch.dict(herdr_relay.state.pane_dialog_revisions, {}, clear=True),
+        ):
+            first = herdr_relay.dialogs.ensure("pane-1", "Choose", ["yes", "no"], observation=7)
+            first["consumed"] = True
+            missing = herdr_relay.dialogs.ensure("pane-1", "Choose", ["yes", "no"])
+            same = herdr_relay.dialogs.ensure("pane-1", "Choose", ["yes", "no"], observation=7)
+            changed = herdr_relay.dialogs.ensure("pane-1", "Choose", ["yes", "no"], observation=8)
+
+        self.assertIs(first, missing)
+        self.assertIs(first, same)
+        self.assertFalse(changed["consumed"])
+        self.assertEqual(2, changed["revision"])
+
+    def test_unanswered_dialog_keeps_identity_across_changed_observation(self):
+        with (
+            patch.dict(herdr_relay.state.pane_dialogs, {}, clear=True),
+            patch.dict(herdr_relay.state.pane_dialog_revisions, {}, clear=True),
+        ):
+            first = herdr_relay.dialogs.ensure("pane-1", "Choose", ["yes", "no"], observation=7)
+            updated = herdr_relay.dialogs.ensure("pane-1", "Choose", ["yes", "no"], observation=8)
+            updated["consumed"] = True
+            renewed = herdr_relay.dialogs.ensure("pane-1", "Choose", ["yes", "no"], observation=9)
+
+        self.assertIs(first, updated)
+        self.assertEqual(first["dialog_id"], updated["dialog_id"])
+        self.assertEqual(8, updated["observation"])
+        self.assertNotEqual(updated["dialog_id"], renewed["dialog_id"])
+        self.assertEqual(2, renewed["revision"])
+
+    def test_response_is_one_winner_and_same_request_replays(self):
+        with (
+            patch.object(herdr_relay.state, "known_panes", {"pane-1"}),
+            patch.dict(herdr_relay.state.pane_remote_map, {}, clear=True),
+            patch.dict(herdr_relay.state.pane_dialogs, {}, clear=True),
+            patch.dict(herdr_relay.state.pane_dialog_revisions, {}, clear=True),
+            patch.object(herdr_relay.herdr, "run_herdr_checked", return_value=(True, "")) as checked,
+        ):
+            dialog = herdr_relay.dialogs.ensure("pane-1", "Choose", ["yes", "no"])
+            messages = [{
+                "type": "respond_dialog", "request_id": "answer-1", "pane_id": "pane-1",
+                "dialog_id": dialog["dialog_id"], "revision": dialog["revision"], "text": "yes",
+            }] * 2 + [{
+                "type": "respond_dialog", "request_id": "answer-2", "pane_id": "pane-1",
+                "dialog_id": dialog["dialog_id"], "revision": dialog["revision"], "text": "yes",
+            }]
+            socket = self.socket(messages)
+            asyncio.run(herdr_relay.handle_client(socket))
+
+        frames = after_handshake(socket.sent)
+        self.assertEqual(frames[0], frames[1])
+        self.assertEqual("command_ack", frames[0]["type"])
+        self.assertEqual("DIALOG_ALREADY_ANSWERED", frames[2]["code"])
+        checked.assert_called_once_with("pane", "send-text", "pane-1", "y\n", remote=None)
+
+    def test_concurrent_sockets_have_one_dialog_winner(self):
+        started = threading.Event()
+        release = threading.Event()
+
+        def checked(*_args, **_kwargs):
+            started.set()
+            release.wait(timeout=1)
+            return True, ""
+
+        async def run(socket_one, socket_two):
+            first = asyncio.create_task(herdr_relay.handle_client(socket_one))
+            await asyncio.to_thread(started.wait, 1)
+            second = asyncio.create_task(herdr_relay.handle_client(socket_two))
+            await asyncio.sleep(0)
+            release.set()
+            await asyncio.gather(first, second)
+
+        with (
+            patch.object(herdr_relay.state, "known_panes", {"pane-1"}),
+            patch.dict(herdr_relay.state.last_statuses, {}, clear=True),
+            patch.dict(herdr_relay.state.pane_remote_map, {}, clear=True),
+            patch.dict(herdr_relay.state.pane_dialogs, {}, clear=True),
+            patch.dict(herdr_relay.state.pane_dialog_revisions, {}, clear=True),
+            patch.object(herdr_relay.herdr, "run_herdr_checked", side_effect=checked) as submit,
+        ):
+            dialog = herdr_relay.dialogs.ensure("pane-1", "Choose", ["yes", "no"])
+            message = {
+                "type": "respond_dialog", "pane_id": "pane-1",
+                "dialog_id": dialog["dialog_id"], "revision": dialog["revision"], "text": "yes",
+            }
+            socket_one = self.socket([{**message, "request_id": "answer-one"}])
+            socket_two = self.socket([{**message, "request_id": "answer-two"}])
+            asyncio.run(run(socket_one, socket_two))
+
+        responses = [after_handshake(socket_one.sent)[0], after_handshake(socket_two.sent)[0]]
+        self.assertCountEqual(["command_ack", "command_error"], [r["type"] for r in responses])
+        self.assertIn("DIALOG_ALREADY_ANSWERED", [r.get("code") for r in responses])
+        submit.assert_called_once()
+
+    def test_herdr_failure_is_retryable_for_same_request(self):
+        with (
+            patch.object(herdr_relay.state, "known_panes", {"pane-1"}),
+            patch.dict(herdr_relay.state.last_statuses, {}, clear=True),
+            patch.dict(herdr_relay.state.pane_remote_map, {}, clear=True),
+            patch.dict(herdr_relay.state.pane_dialogs, {}, clear=True),
+            patch.dict(herdr_relay.state.pane_dialog_revisions, {}, clear=True),
+            patch.object(
+                herdr_relay.herdr,
+                "run_herdr_checked",
+                side_effect=[(False, "temporary"), (True, "" )],
+            ) as checked,
+        ):
+            dialog = herdr_relay.dialogs.ensure("pane-1", "Choose", ["yes", "no"])
+            socket = self.socket([{
+                "type": "respond_dialog", "request_id": "answer-retry", "pane_id": "pane-1",
+                "dialog_id": dialog["dialog_id"], "revision": dialog["revision"], "text": "yes",
+            }] * 2)
+            asyncio.run(herdr_relay.handle_client(socket))
+
+        frames = after_handshake(socket.sent)
+        self.assertEqual("HERDR_FAILED", frames[0]["code"])
+        self.assertEqual("command_ack", frames[1]["type"])
+        self.assertEqual(2, checked.call_count)
+
+    def test_legacy_response_consumes_dialog_for_typed_client(self):
+        with (
+            patch.object(herdr_relay.state, "known_panes", {"pane-1"}),
+            patch.dict(herdr_relay.state.last_statuses, {"pane-1": "blocked"}, clear=True),
+            patch.dict(herdr_relay.state.pane_remote_map, {}, clear=True),
+            patch.dict(herdr_relay.state.pane_dialogs, {}, clear=True),
+            patch.dict(herdr_relay.state.pane_dialog_revisions, {}, clear=True),
+            patch.object(herdr_relay.herdr, "run_herdr_checked", return_value=(True, "")) as checked,
+        ):
+            dialog = herdr_relay.dialogs.ensure("pane-1", "Choose", ["yes", "no"])
+            legacy = {
+                "type": "respond", "pane_id": "pane-1", "text": "yes",
+            }
+            typed = {
+                "type": "respond_dialog", "request_id": "typed-after-legacy",
+                "pane_id": "pane-1", "dialog_id": dialog["dialog_id"],
+                "revision": dialog["revision"], "text": "yes",
+            }
+            socket = self.socket([legacy, typed])
+            asyncio.run(herdr_relay.handle_client(socket))
+
+        frames = after_handshake(socket.sent)
+        self.assertEqual(["DIALOG_ALREADY_ANSWERED"], [frame["code"] for frame in frames])
+        self.assertTrue(dialog["consumed"])
+        checked.assert_called_once_with("pane", "send-text", "pane-1", "y\n", remote=None)
+
+    def test_failed_legacy_response_leaves_dialog_retryable(self):
+        with (
+            patch.object(herdr_relay.state, "known_panes", {"pane-1"}),
+            patch.dict(herdr_relay.state.last_statuses, {"pane-1": "blocked"}, clear=True),
+            patch.dict(herdr_relay.state.pane_remote_map, {}, clear=True),
+            patch.dict(herdr_relay.state.pane_dialogs, {}, clear=True),
+            patch.dict(herdr_relay.state.pane_dialog_revisions, {}, clear=True),
+            patch.object(
+                herdr_relay.herdr,
+                "run_herdr_checked",
+                side_effect=[(False, "temporary"), (True, "")],
+            ) as checked,
+        ):
+            dialog = herdr_relay.dialogs.ensure("pane-1", "Choose", ["yes", "no"])
+            legacy = {
+                "type": "respond", "pane_id": "pane-1", "text": "yes",
+            }
+            typed = {
+                "type": "respond_dialog", "request_id": "typed-after-failure",
+                "pane_id": "pane-1", "dialog_id": dialog["dialog_id"],
+                "revision": dialog["revision"], "text": "yes",
+            }
+            socket = self.socket([legacy, typed])
+            asyncio.run(herdr_relay.handle_client(socket))
+
+        frames = after_handshake(socket.sent)
+        self.assertEqual("command_ack", frames[0]["type"])
+        self.assertTrue(dialog["consumed"])
+        self.assertEqual(2, checked.call_count)
+
+    def test_push_fast_dialog_can_be_answered_before_poll_catches_up(self):
+        async def run():
+            with (
+                patch.object(herdr_relay.herdr, "read_pane", return_value="Choose\n1. Yes\n2. No"),
+                patch.object(herdr_relay.transport, "broadcast", new_callable=AsyncMock),
+                patch.object(herdr_relay.herdr, "run_herdr_checked", return_value=(True, "")) as checked,
+            ):
+                await herdr_relay.transport._handle_pushed_event({
+                    "type": "agent_event", "pane_id": "pane-1", "status": "blocked",
+                    "host": "buildbox", "agent": "claude", "project": "repo",
+                    "prompt": "Choose\n1. Yes\n2. No",
+                })
+                dialog = herdr_relay.state.pane_dialogs["pane-1"]
+                socket = self.socket([{
+                    "type": "respond_dialog", "request_id": "push-answer",
+                    "pane_id": "pane-1", "dialog_id": dialog["dialog_id"],
+                    "revision": dialog["revision"], "text": "1. Yes",
+                }])
+                await herdr_relay.handle_client(socket)
+                return socket, checked
+
+        with (
+            patch.object(herdr_relay.state, "known_panes", {"pane-1"}),
+            patch.dict(herdr_relay.state.last_statuses, {"pane-1": "working"}, clear=True),
+            patch.dict(herdr_relay.state.pane_remote_map, {}, clear=True),
+            patch.dict(herdr_relay.state.pane_dialogs, {}, clear=True),
+            patch.dict(herdr_relay.state.pane_dialog_revisions, {}, clear=True),
+            patch.dict(herdr_relay.state.pane_host_map, {}, clear=True),
+            patch.dict(herdr_relay.state.pane_project_map, {}, clear=True),
+        ):
+            socket, checked = asyncio.run(run())
+
+        frame = after_handshake(socket.sent)[0]
+        self.assertEqual("command_ack", frame["type"])
+        checked.assert_called_once()
+
+    def test_push_fast_dialog_survives_read_before_poll_catches_up(self):
+        class Socket:
+            request_headers = {}
+
+            def __init__(self):
+                self.requests = iter([
+                    json.dumps({"type": "read_pane", "pane_id": "pane-1", "lines": 30})
+                ])
+                self.sent = []
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                try:
+                    return next(self.requests)
+                except StopIteration:
+                    raise StopAsyncIteration
+
+            async def send(self, message):
+                self.sent.append(json.loads(message))
+
+        async def run():
+            with (
+                patch.object(herdr_relay.herdr, "read_pane", return_value="Choose\n1. Yes\n2. No"),
+                patch.object(herdr_relay.transport, "broadcast", new_callable=AsyncMock),
+                patch.object(herdr_relay.transcripts.blocks, "pane_blocks", return_value=(None, None)),
+            ):
+                await herdr_relay.transport._handle_pushed_event({
+                    "type": "agent_event", "pane_id": "pane-1", "status": "blocked",
+                    "host": "buildbox", "agent": "claude", "project": "repo",
+                })
+                socket = Socket()
+                await herdr_relay.handle_client(socket)
+                return socket
+
+        with (
+            patch.object(herdr_relay.state, "known_panes", {"pane-1"}),
+            patch.dict(herdr_relay.state.last_statuses, {"pane-1": "working"}, clear=True),
+            patch.dict(herdr_relay.state.pane_remote_map, {}, clear=True),
+            patch.dict(herdr_relay.state.pane_dialogs, {}, clear=True),
+            patch.dict(herdr_relay.state.pane_dialog_revisions, {}, clear=True),
+            patch.dict(herdr_relay.state.pane_host_map, {}, clear=True),
+            patch.dict(herdr_relay.state.pane_project_map, {}, clear=True),
+        ):
+            socket = asyncio.run(run())
+
+        frames = after_handshake(socket.sent)
+        self.assertEqual(["pane_content", "blocked"], [frame["type"] for frame in frames])
+        self.assertEqual("buildbox", frames[1]["host"])
+
+    def test_changed_prompt_rejects_old_dialog(self):
+        with (
+            patch.object(herdr_relay.state, "known_panes", {"pane-1"}),
+            patch.dict(herdr_relay.state.pane_remote_map, {}, clear=True),
+            patch.dict(herdr_relay.state.pane_dialogs, {}, clear=True),
+            patch.dict(herdr_relay.state.pane_dialog_revisions, {}, clear=True),
+            patch.object(herdr_relay.herdr, "run_herdr_checked") as checked,
+        ):
+            old = herdr_relay.dialogs.ensure("pane-1", "Choose", ["yes", "no"])
+            current = herdr_relay.dialogs.ensure("pane-1", "Choose again", ["yes", "no"])
+            socket = self.socket([{
+                "type": "respond_dialog", "request_id": "answer-stale", "pane_id": "pane-1",
+                "dialog_id": old["dialog_id"], "revision": old["revision"], "text": "yes",
+            }])
+            asyncio.run(herdr_relay.handle_client(socket))
+
+        frame = after_handshake(socket.sent)[0]
+        self.assertEqual("STALE_DIALOG", frame["code"])
+        self.assertNotEqual(old["dialog_id"], current["dialog_id"])
+        checked.assert_not_called()
+
+    def test_clear_removes_actionable_dialog(self):
+        with (
+            patch.dict(herdr_relay.state.pane_dialogs, {}, clear=True),
+            patch.dict(herdr_relay.state.pane_response_options, {}, clear=True),
+            patch.dict(herdr_relay.state.pane_dialog_revisions, {}, clear=True),
+        ):
+            herdr_relay.dialogs.ensure("pane-1", "Choose", ["yes", "no"])
+            herdr_relay.dialogs.clear("pane-1")
+            self.assertNotIn("pane-1", herdr_relay.state.pane_dialogs)
+            self.assertNotIn("pane-1", herdr_relay.state.pane_response_options)
 
 
 class HandshakeTests(unittest.TestCase):

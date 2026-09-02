@@ -1,5 +1,10 @@
 {
   "agent": "claude",
+  "choices": [
+    "1. Yes",
+    "2. No"
+  ],
+  "dialog_id": "dlg-751484d4c5f4b91da342fde7",
   "host": "buildbox",
   "options": [
     "1. Yes",
@@ -8,5 +13,7 @@
   "pane_id": "pane-7",
   "project": "herdr-remote",
   "prompt": "Do you want to proceed?\n1. Yes\n2. No",
+  "raw_input_allowed": false,
+  "revision": 1,
   "type": "blocked"
 }

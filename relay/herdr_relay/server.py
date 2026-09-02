@@ -12,7 +12,7 @@ except ImportError:
     from websockets.server import serve
 from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
 
-from . import catalogs, config, herdr, lifecycle, panes, projects, protocol, push, ratelimit, state, transcripts, transport
+from . import catalogs, config, dialogs, herdr, lifecycle, panes, projects, protocol, push, ratelimit, state, transcripts, transport
 from .audit import audit
 from .config import log
 
@@ -269,6 +269,72 @@ async def handle_client(ws):
                 response = await asyncio.to_thread(lifecycle.shutdown_host, msg)
                 _remember_response(request_results, request_id, response)
                 await ws.send(json.dumps(response))
+            elif msg_type == "respond_dialog":
+                if not isinstance(request_id, str) or not projects.REQUEST_ID_RE.fullmatch(request_id):
+                    response = protocol.command_error(None, "INVALID_REQUEST", "request_id is required")
+                else:
+                    pane_id = msg.get("pane_id")
+                    dialog_id = msg.get("dialog_id")
+                    text = msg.get("text")
+                    dialog = state.pane_dialogs.get(pane_id) if isinstance(pane_id, str) else None
+                    if not isinstance(pane_id, str) or pane_id not in state.known_panes:
+                        response = protocol.command_error(request_id, "UNKNOWN_PANE", "Unknown pane")
+                    elif not isinstance(dialog_id, str) or dialog is None:
+                        response = protocol.command_error(request_id, "DIALOG_NOT_ACTIVE", "Dialog is no longer active")
+                    elif dialog_id != dialog["dialog_id"]:
+                        response = protocol.command_error(request_id, "STALE_DIALOG", "Dialog is stale")
+                    elif "revision" in msg and (
+                        not isinstance(msg["revision"], int)
+                        or isinstance(msg["revision"], bool)
+                        or msg["revision"] != dialog["revision"]
+                    ):
+                        response = protocol.command_error(request_id, "STALE_DIALOG", "Dialog revision is stale")
+                    elif dialog["consumed"] or dialog["response_in_flight"]:
+                        response = protocol.command_error(request_id, "DIALOG_ALREADY_ANSWERED", "Dialog was already answered")
+                    elif not isinstance(text, str) or not text.strip():
+                        response = protocol.command_error(request_id, "INVALID_REQUEST", "text is required")
+                    elif not dialogs.response_allowed(dialog, text):
+                        response = protocol.command_error(request_id, "RESPONSE_NOT_ALLOWED", "Response is not an option for this dialog")
+                    else:
+                        # Claim before yielding to the subprocess so two
+                        # WebSocket connections cannot both answer one dialog.
+                        dialog["response_in_flight"] = True
+                        remote = state.pane_remote_map.get(pane_id)
+                        log.info("Dialog response from %s (%s): pane=%s text=%r", ip, device, pane_id, text)
+                        audit("respond_dialog", ip, device, pane_id, f"text={text!r}")
+                        kind, payload = panes.respond_action(text)
+                        try:
+                            if kind == "keys":
+                                success, _output = await asyncio.to_thread(
+                                    herdr.run_herdr_checked,
+                                    "pane", "send-keys", pane_id, *payload, remote=remote,
+                                )
+                            else:
+                                success, _output = await asyncio.to_thread(
+                                    herdr.run_herdr_checked,
+                                    "pane", "send-text", pane_id, payload + "\n", remote=remote,
+                                )
+                        except Exception:
+                            log.exception("Dialog response delivery failed: pane=%s", pane_id)
+                            success = False
+                        if not success:
+                            dialog["response_in_flight"] = False
+                            response = protocol.command_error(
+                                request_id, "HERDR_FAILED", "Herdr did not submit the response"
+                            )
+                        else:
+                            dialog["consumed"] = True
+                            response = protocol.command_ack(request_id, {
+                                "pane_id": pane_id,
+                                "dialog_id": dialog["dialog_id"],
+                                "revision": dialog["revision"],
+                            })
+                # A delivery failure is retryable. Do not replay a transient
+                # Herdr failure for the same request ID; the next attempt must
+                # be allowed to submit again.
+                if response.get("code") != "HERDR_FAILED":
+                    _remember_response(request_results, request_id, response)
+                await ws.send(json.dumps(response))
             elif msg_type == "respond":
                 pane_id = msg["pane_id"]
                 if pane_id not in state.known_panes:
@@ -280,14 +346,38 @@ async def handle_client(ws):
                 if normalized_text not in allowed_responses:
                     await ws.send(json.dumps(protocol.error("response not in allowlist")))
                     continue
+                dialog = state.pane_dialogs.get(pane_id)
+                if dialog is not None and (dialog["consumed"] or dialog["response_in_flight"]):
+                    # Legacy responses remain unacknowledged, but must still
+                    # participate in the same one-winner guard as typed ones.
+                    continue
+                if dialog is not None:
+                    dialog["response_in_flight"] = True
                 remote = state.pane_remote_map.get(pane_id)
                 log.info("Response from %s (%s): pane=%s text=%r", ip, device, pane_id, text)
                 audit("respond", ip, device, pane_id, f"text={text!r}")
                 kind, payload = panes.respond_action(text)
-                if kind == "keys":
-                    await asyncio.to_thread(herdr.run_herdr, "pane", "send-keys", pane_id, *payload, remote=remote)
-                else:
-                    await asyncio.to_thread(herdr.run_herdr, "pane", "send-text", pane_id, payload + "\n", remote=remote)
+                try:
+                    if kind == "keys":
+                        success, _output = await asyncio.to_thread(
+                            herdr.run_herdr_checked,
+                            "pane", "send-keys", pane_id, *payload, remote=remote,
+                        )
+                    else:
+                        success, _output = await asyncio.to_thread(
+                            herdr.run_herdr_checked,
+                            "pane", "send-text", pane_id, payload + "\n", remote=remote,
+                        )
+                except Exception:
+                    log.exception("Legacy response delivery failed: pane=%s", pane_id)
+                    success = False
+                if dialog is not None:
+                    # Only consume the exact dialog claimed above. A poll may
+                    # replace it while Herdr is running; that newer prompt must
+                    # remain answerable.
+                    if success and state.pane_dialogs.get(pane_id) is dialog:
+                        dialog["consumed"] = True
+                    dialog["response_in_flight"] = False
             elif msg_type == "agent_event":
                 state.event_queue.put_nowait(msg)
             elif msg_type == "read_pane":
@@ -350,15 +440,31 @@ async def handle_client(ws):
                     if state.subscriptions.get(ws) == pane_id:
                         state.stream_sigs[(id(ws), pane_id)] = sig
                 await ws.send(json.dumps(payload))
-                options = panes.detect_options(content) if state.last_statuses.get(pane_id) == "blocked" else None
-                if options:
-                    state.pane_response_options[pane_id] = {option.lower() for option in options}
-                    await ws.send(json.dumps({
-                        "type": "blocked",
-                        "pane_id": pane_id,
-                        "prompt": content[:500],
-                        "options": options,
-                    }))
+                current = state.pane_dialogs.get(pane_id)
+                if current is not None or state.last_statuses.get(pane_id) == "blocked":
+                    # `choices` must remain the exact detector result. The
+                    # legacy `options` field can still display TOOL_OPTIONS when
+                    # detection fails, but that fallback is not actionable.
+                    options = panes.detect_options(content)
+                    _cwd, agent, _remote, _ambiguous = state.pane_cwd_map.get(
+                        pane_id, ("", "", state.pane_remote_map.get(pane_id), False)
+                    )
+                    agent = current["agent"] if current and not agent else agent
+                    project = current["project"] if current else state.pane_project_map.get(pane_id, "")
+                    host = current["host"] if current else state.pane_host_map.get(pane_id, "local")
+                    observation = current.get("observation") if current else state.pane_revisions.get(pane_id)
+                    dialog = dialogs.ensure(
+                        pane_id,
+                        content,
+                        options,
+                        agent=agent,
+                        project=project,
+                        host=host,
+                        observation=observation,
+                    )
+                    await ws.send(json.dumps(dialogs.frame(dialog)))
+                else:
+                    dialogs.clear(pane_id)
             elif msg_type == "subscribe_pane":
                 pane_id = msg.get("pane_id")
                 if pane_id in state.pane_cwd_map:

@@ -27,6 +27,12 @@ subscriptions = {}     # ws -> pane_id the client is currently viewing
 stream_sigs = {}       # (id(ws), pane_id) -> signature of the last blocks pushed
 known_panes = set()
 pane_response_options = {}
+# The current relay-owned blocked dialog per pane. Counters intentionally remain
+# after `clear()` so a reused pane ID cannot recycle an old dialog identity.
+pane_dialogs = {}
+pane_dialog_revisions = {}
+pane_host_map = {}     # pane_id -> public host ID
+pane_project_map = {}  # pane_id -> public project label
 # Poll pacing (#19). `poll_idle_streak` counts consecutive cycles that saw
 # nothing worth staying fast for; `poll_wakeup` is how an edge — a client
 # connecting or subscribing, an event pushed by the herdr hook — cuts the
