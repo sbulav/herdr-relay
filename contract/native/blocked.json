@@ -16,5 +16,9 @@
   "prompt": "Do you want to proceed?\n1. Yes\n2. No",
   "raw_input_allowed": false,
   "revision": 1,
-  "type": "blocked"
+  "tab_id": "tab-4",
+  "tab_name": "API",
+  "type": "blocked",
+  "workspace_id": "workspace-2",
+  "workspace_name": "Relay"
 }

@@ -14,6 +14,22 @@ from . import catalogs, config, dialogs, herdr, hosts, operations, panes, projec
 from .config import log
 
 
+def _merge_pushed_identity(mapping, key, identifier, label):
+    """Merge one pushed ID/label pair without borrowing labels across IDs."""
+    if not isinstance(identifier, str) or not identifier:
+        return
+    identifier = protocol.public_identifier(identifier)
+    if not identifier:
+        return
+    existing = state.get(mapping, key, ("", ""))
+    if not isinstance(existing, tuple) or len(existing) != 2:
+        existing = ("", "")
+    label = protocol.public_text(label)
+    if identifier == existing[0]:
+        label = label or protocol.public_text(existing[1])
+    mapping[key] = (identifier, label or "")
+
+
 async def broadcast(msg):
     data = json.dumps(msg)
     dead = set()
@@ -119,6 +135,10 @@ async def _poll_once():
     state.pane_cwd_map.clear()
     state.pane_host_map.clear()
     state.pane_project_map.clear()
+    state.pane_workspace_map.clear()
+    state.pane_tab_map.clear()
+    state.pane_activity_titles.clear()
+    state.pane_statuses.clear()
     state.known_panes.clear()
     state.known_pane_keys.clear()
     state.pane_hosts.clear()
@@ -144,6 +164,21 @@ async def _poll_once():
         state.pane_host_map[key] = host_id
         state.pane_project_map[key] = a.get("project", "")
         status = a["status"]
+        state.pane_statuses[key] = status
+        workspace_id = protocol.public_identifier(a.get("workspace_id"))
+        workspace_name = protocol.public_text(a.get("workspace_name"))
+        if workspace_id:
+            existing = state.get(state.pane_workspace_map, key, ("", ""))
+            state.pane_workspace_map[key] = (workspace_id, workspace_name or existing[1])
+        tab_id = protocol.public_identifier(a.get("tab_id"))
+        tab_name = protocol.public_text(a.get("tab_name"))
+        if tab_id:
+            existing = state.get(state.pane_tab_map, key, ("", ""))
+            state.pane_tab_map[key] = (tab_id, tab_name or existing[1])
+        title = a.get("activity_title")
+        title = protocol.public_text(title, protocol.ACTIVITY_TITLE_MAX_CHARS)
+        if title and status == "working":
+            state.pane_activity_titles[key] = title
         # Snapshot broadcast precedes the `state.last_statuses` update below, so this
         # still reads the prior poll's status for idle-after-work detection.
         previous_status = state.get(state.last_statuses, key)
@@ -223,6 +258,7 @@ async def _poll_once():
             content = blocked_content.get(key, "")
             options = panes.detect_options(content)
             previous_dialog = state.get(state.pane_dialogs, key)
+            previous_frame = dialogs.frame(previous_dialog) if previous_dialog is not None else None
             dialog = dialogs.ensure(
                 pid,
                 content,
@@ -231,9 +267,14 @@ async def _poll_once():
                 project=a.get("project", ""),
                 host=host_id,
                 observation=a.get("output_revision"),
+                workspace_id=a.get("workspace_id", ""),
+                workspace_name=a.get("workspace_name", ""),
+                tab_id=a.get("tab_id", ""),
+                tab_name=a.get("tab_name", ""),
             )
-            if dialog is not previous_dialog:
-                await broadcast(dialogs.frame(dialog))
+            frame = dialogs.frame(dialog)
+            if previous_frame != frame:
+                await broadcast(frame)
             if state.get(state.last_statuses, key) != "blocked":
                 await push.send_web_push(
                     title=f"🐑 {a['project']} blocked",
@@ -257,6 +298,10 @@ async def _poll_once():
             state.pop(state.pane_attention_states, key)
             state.pop(state.pane_host_map, key)
             state.pop(state.pane_project_map, key)
+            state.pop(state.pane_workspace_map, key)
+            state.pop(state.pane_tab_map, key)
+            state.pop(state.pane_activity_titles, key)
+            state.pop(state.pane_statuses, key)
 
     # Live-stream structured transcript blocks to subscribed clients. Only
     # watched Claude panes are read; a changed signature (path or content)
@@ -317,6 +362,17 @@ def _discover_pushed_pane(event, host_id, pane_id):
     state.pane_remote_map[key] = remote
     state.pane_host_map[key] = host_id
     state.pane_project_map[key] = event.get("project", "")
+    _merge_pushed_identity(
+        state.pane_workspace_map, key,
+        event.get("workspace_id"), event.get("workspace_name"),
+    )
+    _merge_pushed_identity(
+        state.pane_tab_map, key,
+        event.get("tab_id"), event.get("tab_name"),
+    )
+    title = protocol.public_text(event.get("activity_title"), protocol.ACTIVITY_TITLE_MAX_CHARS)
+    if title and event.get("status") == "working":
+        state.pane_activity_titles[key] = title
     state.pane_cwd_map[key] = (
         event.get("cwd", ""), event.get("agent", ""), remote, False,
     )
@@ -338,6 +394,25 @@ async def _handle_pushed_event(event):
     # authority: those events remain ignored until a snapshot proves identity.
     if key is None and event.get("host_id") is not None:
         key = _discover_pushed_pane(event, event.get("host_id"), pane_id)
+
+    if key is not None and key is not state.AMBIGUOUS:
+        # Pushes may carry richer Herdr metadata than the legacy hook did.
+        # Merge only present values so an old event cannot erase a known label.
+        _merge_pushed_identity(
+            state.pane_workspace_map, key,
+            event.get("workspace_id"), event.get("workspace_name"),
+        )
+        _merge_pushed_identity(
+            state.pane_tab_map, key,
+            event.get("tab_id"), event.get("tab_name"),
+        )
+        title = protocol.public_text(event.get("activity_title"), protocol.ACTIVITY_TITLE_MAX_CHARS)
+        if status == "working" and title:
+            state.pane_activity_titles[key] = title
+        elif status != "working":
+            state.pop(state.pane_activity_titles, key)
+        if status:
+            state.pane_statuses[key] = status
 
     if status == "blocked" and pane_id:
         # A hook can race the next snapshot. Do not create an actionable
@@ -371,6 +446,8 @@ async def _handle_pushed_event(event):
             observation = state.get(state.pane_revisions, key)
         if not isinstance(observation, int) or isinstance(observation, bool):
             observation = current.get("observation") if current else None
+        workspace = state.get(state.pane_workspace_map, key)
+        tab = state.get(state.pane_tab_map, key)
         dialog = dialogs.ensure(
             pane_id,
             content,
@@ -384,6 +461,10 @@ async def _handle_pushed_event(event):
             ),
             host=event_host or (current["host"] if current else state.get(state.pane_host_map, key, host)),
             observation=observation,
+            workspace_id=workspace[0] if workspace else "",
+            workspace_name=workspace[1] if workspace else "",
+            tab_id=tab[0] if tab else "",
+            tab_name=tab[1] if tab else "",
         )
         await broadcast(dialogs.frame(dialog))
     elif pane_id and status:
@@ -393,8 +474,8 @@ async def _handle_pushed_event(event):
         dialogs.clear(key)
 
     if pane_id and event.get("type") == "agent_event" and key is not None and key is not state.AMBIGUOUS:
-        await broadcast({
-            "type": "agents", "agents": [{
+        agent = {
+                "type": "agents", "agents": [{
                 "pane_id": pane_id,
                 "host_id": key[0] if key else host,
                 "agent": event.get("agent", ""),
@@ -402,8 +483,9 @@ async def _handle_pushed_event(event):
                 "cwd": event.get("cwd", ""),
                 "project": event.get("project", ""),
                 "host": key[0] if key else host,
-            }]
-        })
+            }]}
+        protocol.add_pane_metadata(agent["agents"][0], pane_id, key[0], status=status)
+        await broadcast({"type": agent["type"], "agents": protocol.public_agents(agent["agents"])})
 
 
 async def event_push():

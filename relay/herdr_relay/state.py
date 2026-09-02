@@ -35,6 +35,13 @@ pane_dialogs = {}      # (host_id, pane_id) -> dialog
 pane_dialog_revisions = {}
 pane_host_map = {}     # (host_id, pane_id) -> public host ID
 pane_project_map = {}  # (host_id, pane_id) -> public project label
+# Additive display metadata learned from Herdr.  These maps deliberately use
+# the host-qualified pane identity so identical pane IDs on two hosts cannot
+# borrow one another's labels.
+pane_workspace_map = {}  # (host_id, pane_id) -> (workspace_id, workspace_name)
+pane_tab_map = {}        # (host_id, pane_id) -> (tab_id, tab_name)
+pane_activity_titles = {}  # (host_id, pane_id) -> bounded current activity title
+pane_statuses = {}  # (host_id, pane_id) -> latest observed status for live metadata
 
 
 AMBIGUOUS = object()

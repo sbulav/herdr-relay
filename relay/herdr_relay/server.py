@@ -490,6 +490,10 @@ async def handle_client(ws):
                         project=project,
                         host=host,
                         observation=observation,
+                        workspace_id=(state.get(state.pane_workspace_map, pane_key) or ("", ""))[0],
+                        workspace_name=(state.get(state.pane_workspace_map, pane_key) or ("", ""))[1],
+                        tab_id=(state.get(state.pane_tab_map, pane_key) or ("", ""))[0],
+                        tab_name=(state.get(state.pane_tab_map, pane_key) or ("", ""))[1],
                     )
                     await ws.send(json.dumps(dialogs.frame(dialog)))
                 else:

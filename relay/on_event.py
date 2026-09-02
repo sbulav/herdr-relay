@@ -38,6 +38,11 @@ payload = {
     "agent": (data.get("agent") or data.get("display_agent") or "").lower(),
     "project": os.path.basename(data.get("cwd", "")),
     "cwd": data.get("cwd", ""),
+    "workspace_id": data.get("workspace_id", ""),
+    "workspace_name": data.get("workspace_name", ""),
+    "tab_id": data.get("tab_id", ""),
+    "tab_name": data.get("tab_name", ""),
+    "activity_title": data.get("title", "") if (data.get("agent_status") or "").lower() == "working" else "",
     "host_id": host_id,
     "host": socket.gethostname().split(".")[0],
 }

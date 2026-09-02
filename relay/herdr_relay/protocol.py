@@ -3,6 +3,37 @@ import time
 
 from . import config, state
 
+
+ACTIVITY_TITLE_MAX_CHARS = 160
+DISPLAY_NAME_MAX_CHARS = 160
+
+# Fields deliberately safe for native clients. Keep this list closed so a new
+# Herdr/internal field cannot become public merely by passing through here.
+PUBLIC_AGENT_FIELDS = frozenset({
+    "pane_id", "host_id", "host", "agent", "label", "status", "cwd", "project",
+    "workspace_id", "workspace_name", "tab_id", "tab_name", "activity_title",
+    "attention_state", "updated_at", "output_revision",
+})
+
+
+def public_text(value, maximum=DISPLAY_NAME_MAX_CHARS):
+    """Normalize bounded public display text, omitting empty/non-text values."""
+    if not isinstance(value, str):
+        return None
+    text = " ".join(part for part in value.split() if part)
+    text = "".join(char for char in text if char.isprintable())
+    text = text[:maximum].rstrip()
+    return text or None
+
+
+def public_identifier(value):
+    """Sanitize a public ID without truncating its identity."""
+    if not isinstance(value, str):
+        return None
+    value = "".join(char for char in value if char.isprintable())
+    return value or None
+
+
 def server_info():
     """The first frame on every connection: who this relay is and what it requires.
 
@@ -29,7 +60,31 @@ def public_agents(agents):
     """
     result = []
     for agent in agents:
-        public = {key: value for key, value in agent.items() if key not in {"remote", "agent_name"}}
+        # Keep this projection explicit: Herdr data and future internal
+        # routing fields must not accidentally become public just because a
+        # caller passed them through an event or test double.
+        public = {
+            key: value for key, value in agent.items() if key in PUBLIC_AGENT_FIELDS
+        }
+        for field in ("workspace_name", "tab_name", "activity_title"):
+            if field in public:
+                maximum = (
+                    ACTIVITY_TITLE_MAX_CHARS
+                    if field == "activity_title"
+                    else DISPLAY_NAME_MAX_CHARS
+                )
+                value = public_text(public[field], maximum)
+                if value is None:
+                    public.pop(field, None)
+                else:
+                    public[field] = value
+        for field in ("workspace_id", "tab_id"):
+            if field in public:
+                value = public_identifier(public[field])
+                if value is None:
+                    public.pop(field, None)
+                else:
+                    public[field] = value
         host_id = public.get("host_id") or public.get("host", "local")
         public["host_id"] = host_id
         result.append(public)
@@ -68,7 +123,7 @@ def attention_state(status, previous_status, previous_state=None):
     return None
 
 
-def add_pane_metadata(entry, pane_id, host_id=None):
+def add_pane_metadata(entry, pane_id, host_id=None, status=None):
     host_id = host_id or entry.get("host_id") or entry.get("host")
     key = state.pane_key(host_id, pane_id)
     attention = state.get(state.pane_attention_states, key)
@@ -81,6 +136,33 @@ def add_pane_metadata(entry, pane_id, host_id=None):
     if isinstance(revision, int) and not isinstance(revision, bool):
         entry["output_revision"] = revision
 
+    workspace = state.get(state.pane_workspace_map, key)
+    if isinstance(workspace, tuple) and len(workspace) == 2:
+        workspace_id, workspace_name = workspace
+        workspace_id = public_identifier(workspace_id)
+        if workspace_id:
+            entry["workspace_id"] = workspace_id
+        if isinstance(workspace_name, str) and workspace_name:
+            entry["workspace_name"] = workspace_name
+    tab = state.get(state.pane_tab_map, key)
+    if isinstance(tab, tuple) and len(tab) == 2:
+        tab_id, tab_name = tab
+        tab_id = public_identifier(tab_id)
+        if tab_id:
+            entry["tab_id"] = tab_id
+        if isinstance(tab_name, str) and tab_name:
+            entry["tab_name"] = tab_name
+
+    effective_status = status if isinstance(status, str) else entry.get("status")
+    if not isinstance(effective_status, str):
+        effective_status = state.get(state.pane_statuses, key)
+    if not isinstance(effective_status, str):
+        effective_status = state.get(state.last_statuses, key)
+    title = state.get(state.pane_activity_titles, key)
+    if effective_status == "working" and isinstance(title, str) and title:
+        normalized = public_text(title, ACTIVITY_TITLE_MAX_CHARS)
+        if normalized:
+            entry["activity_title"] = normalized
 
 
 def command_error(request_id, code, message):

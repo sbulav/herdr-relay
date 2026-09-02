@@ -12,7 +12,7 @@ import signal
 import subprocess
 import time
 
-from . import config, hosts, panes, state
+from . import config, hosts, panes, protocol, state
 from .transcripts import refs
 
 
@@ -275,6 +275,25 @@ def get_agents_from_host(remote=None, host_id=None, host=None, cancel_event=None
         pane_list = data.get("result", {}).get("panes", [])
         if not isinstance(pane_list, list):
             return [], probe
+        # Pane rows carry stable workspace/tab IDs, while their display names
+        # are owned by the corresponding list endpoints. A failed optional
+        # lookup must not make an otherwise valid pane snapshot disappear.
+        # Avoid the extra calls when there are no agent panes; this also keeps
+        # an empty/legacy Herdr response cheap.
+        has_agent_panes = any(isinstance(p, dict) and p.get("agent") for p in pane_list)
+        workspace_names = _workspace_names(
+            remote=remote, host_id=host_id, host=host,
+            timeout=max(remaining(), 0.01), deadline=deadline, cancel_event=cancel_event,
+        ) if has_agent_panes and remaining() > 0 else {}
+        workspace_ids = {
+            protocol.public_identifier(p.get("workspace_id")) for p in pane_list
+            if isinstance(p, dict) and protocol.public_identifier(p.get("workspace_id"))
+        }
+        tab_names = _tab_names(
+            remote=remote, host_id=host_id, host=host,
+            workspace_ids=workspace_ids, timeout=max(remaining(), 0.01),
+            deadline=deadline, cancel_event=cancel_event,
+        ) if has_agent_panes and remaining() > 0 else {}
         agents = []
         for p in pane_list:
             if not p.get("agent"):
@@ -291,6 +310,8 @@ def get_agents_from_host(remote=None, host_id=None, host=None, cancel_event=None
                 # unambiguous cwd fallback is safe) and an invalid supplied
                 # ref (which must never silently select another transcript).
                 state.pane_session_refs[pane_key] = ref
+            workspace_id = protocol.public_identifier(p.get("workspace_id"))
+            tab_id = protocol.public_identifier(p.get("tab_id"))
             agent = {
                 "pane_id": p["pane_id"],
                 "host_id": host_id,
@@ -301,9 +322,26 @@ def get_agents_from_host(remote=None, host_id=None, host=None, cancel_event=None
                 "project": os.path.basename(p.get("cwd", "")),
                 "host": host_label,
                 "remote": remote,
-                "workspace_id": p.get("workspace_id", ""),
-                "tab_id": p.get("tab_id", ""),
             }
+            if isinstance(workspace_id, str) and workspace_id:
+                agent["workspace_id"] = workspace_id
+                workspace_name = workspace_names.get(workspace_id)
+                if not workspace_name and isinstance(p.get("workspace"), dict):
+                    workspace_name = _display_name(p["workspace"].get("label"))
+                workspace_name = workspace_name or _display_name(p.get("workspace_name"))
+                if workspace_name:
+                    agent["workspace_name"] = workspace_name
+            if isinstance(tab_id, str) and tab_id:
+                agent["tab_id"] = tab_id
+                tab_name = tab_names.get(tab_id)
+                if not tab_name and isinstance(p.get("tab"), dict):
+                    tab_name = _display_name(p["tab"].get("label"))
+                tab_name = tab_name or _display_name(p.get("tab_name"))
+                if tab_name:
+                    agent["tab_name"] = tab_name
+            activity_title = _activity_title(p.get("activity_title") or p.get("title"))
+            if p.get("agent_status") == "working" and activity_title:
+                agent["activity_title"] = activity_title
             # Newer Herdr builds expose the user-facing start name explicitly.
             # Keep it internal: the relay uses it to reconcile durable starts,
             # while public frames continue to expose only the harness label.
@@ -319,6 +357,63 @@ def get_agents_from_host(remote=None, host_id=None, host=None, cancel_event=None
     probe["herdr_ready"] = True
     probe["active_agent_count"] = len(agents)
     return agents, probe
+
+
+def _list_names(
+    kind, *, remote, host_id, host, timeout, cancel_event, workspace_ids=None,
+    deadline=None,
+):
+    """Read Herdr's public ID/label catalog, returning only valid entries."""
+    if deadline is None:
+        deadline = time.monotonic() + max(float(timeout), 0.0)
+    if timeout <= 0 or deadline <= time.monotonic():
+        return {}
+    names = {}
+    key = "workspace_id" if kind == "workspace" else "tab_id"
+    scopes = [None] if kind == "workspace" else sorted(workspace_ids or ())
+    for workspace_id in scopes:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        args = (kind, "list")
+        if kind == "tab" and workspace_id:
+            args += ("--workspace", workspace_id)
+        _success, raw = run_herdr_checked(
+            *args, remote=remote, host_id=host_id,
+            command=hosts.herdr_command(host), timeout=remaining,
+            cancel_event=cancel_event,
+        )
+        data = _parse_response(raw)
+        result = data.get("result") if isinstance(data, dict) else None
+        rows = result.get("workspaces" if kind == "workspace" else "tabs") if isinstance(result, dict) else None
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            identifier = protocol.public_identifier(row.get(key))
+            label = _display_name(row.get("label"))
+            if isinstance(identifier, str) and identifier and label:
+                names[identifier] = label
+    return names
+
+
+def _workspace_names(**kwargs):
+    return _list_names("workspace", **kwargs)
+
+
+def _tab_names(**kwargs):
+    return _list_names("tab", **kwargs)
+
+
+def _activity_title(value):
+    """Normalize Herdr's optional title for the relay's concise wire field."""
+    return protocol.public_text(value, protocol.ACTIVITY_TITLE_MAX_CHARS)
+
+
+def _display_name(value):
+    """Return an available Herdr workspace/tab label without inventing one."""
+    return protocol.public_text(value)
 
 
 def _parse_response(raw):

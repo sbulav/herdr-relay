@@ -186,7 +186,8 @@ event update by the presence of `hosts`.
 | `hosts` | array of host objects | Poll snapshots only | Public configured host state and capabilities. |
 
 A complete poll agent contains all of these fields. A partial event agent
-contains `pane_id`, `host_id`, `agent`, `status`, `cwd`, `project`, and `host` only.
+contains the identity fields it knows and carries the same additive metadata
+when Herdr supplied it.
 
 | Agent field | Type | Presence | Meaning |
 | --- | --- | --- | --- |
@@ -198,8 +199,11 @@ contains `pane_id`, `host_id`, `agent`, `status`, `cwd`, `project`, and `host` o
 | `cwd` | string | Required | Pane working directory; defaults to an empty string. |
 | `project` | string | Required | Basename of `cwd` in a poll, or the event's `project`; may be empty. |
 | `host` | string | Required | Configured host ID or `"local"`; retained for display compatibility. |
-| `workspace_id` | string | Poll agents only | Workspace identifier reported by `herdr`; defaults to an empty string. |
-| `tab_id` | string | Poll agents only | Tab identifier reported by `herdr`; defaults to an empty string. |
+| `workspace_id` | string | When Herdr reports it | Workspace identifier reported by `herdr`; omitted when unavailable. |
+| `workspace_name` | string | When Herdr reports it | Workspace label from `herdr workspace list`; never inferred from cwd or host. |
+| `tab_id` | string | When Herdr reports it | Tab identifier reported by `herdr`; omitted when unavailable. |
+| `tab_name` | string | When Herdr reports it | Tab label from `herdr tab list`; never inferred from pane order. |
+| `activity_title` | string | Working agents when Herdr reports it | Current Herdr activity title, whitespace-normalized and bounded to 160 characters. It is omitted for blocked, done, idle, unknown, empty, or unavailable titles. |
 | `attention_state` | string | Optional | Additive explicit attention state: `"working"`, `"waiting"`, `"done"`, or `"idle"`. `"waiting"` means the agent is waiting on the user. Unknown statuses are omitted rather than guessed. |
 | `updated_at` | integer | Optional | Additive epoch milliseconds when this pane's status or output revision last changed. |
 | `output_revision` | integer | Optional | Additive monotonic per-pane output revision reported by `herdr`; omitted when unavailable or invalid. |
@@ -234,7 +238,10 @@ host configuration file and withheld by `public_agents()`.
       "project": "herdr-remote",
       "host": "buildbox",
       "workspace_id": "workspace-2",
-      "tab_id": "tab-4"
+      "workspace_name": "Relay",
+      "tab_id": "tab-4",
+      "tab_name": "API",
+      "activity_title": "Run focused tests"
     }
   ],
   "hosts": [{
@@ -413,6 +420,10 @@ identity.
 | `dialog_id` | string | Required | Stable identity while this prompt and choice set remain unchanged. |
 | `revision` | integer | Required | Monotonically increasing dialog revision for this pane. |
 | `raw_input_allowed` | boolean | Required | Whether arbitrary text can be delivered. Currently always `false`; clients must use a listed choice. |
+| `workspace_id` | string | Optional | Workspace identifier reported by Herdr for this pane. |
+| `workspace_name` | string | Optional | Workspace label reported by Herdr. |
+| `tab_id` | string | Optional | Tab identifier reported by Herdr for this pane. |
+| `tab_name` | string | Optional | Tab label reported by Herdr. |
 
 ```json
 {
@@ -433,6 +444,12 @@ identity.
 
 Poll and event forms are fan-out. The reduced form produced by `read_pane` is
 point-to-point to the requesting WebSocket.
+
+Blocked and `pane_content` frames carry the same known `workspace_id`,
+`workspace_name`, `tab_id`, and `tab_name` fields. `pane_content` also carries
+`activity_title` only while the pane is working. A pushed event that lacks
+metadata retains metadata already learned for that host-qualified pane; it
+never derives a name from cwd, project, pane order, or SSH routing.
 
 ### `pane_content`
 
@@ -455,6 +472,11 @@ subscription updates contain `output_blocks` without `content`.
 | `attention_state` | string | Optional | Additive explicit attention state: `"working"`, `"waiting"`, `"done"`, or `"idle"`. `"waiting"` means the agent is waiting on the user. Unknown statuses are omitted rather than guessed. |
 | `updated_at` | integer | Optional | Additive epoch milliseconds when this pane's status or output revision last changed. |
 | `output_revision` | integer | Optional | Additive monotonic per-pane output revision reported by `herdr`; omitted when unavailable or invalid. |
+| `workspace_id` | string | Optional | Workspace identifier reported by Herdr for this pane. |
+| `workspace_name` | string | Optional | Workspace label reported by Herdr. |
+| `tab_id` | string | Optional | Tab identifier reported by Herdr for this pane. |
+| `tab_name` | string | Optional | Tab label reported by Herdr. |
+| `activity_title` | string | Optional | Bounded current activity title, present only while working and only when Herdr supplied one. |
 
 These optional fields have the same values as the latest `agents` entry for the
 pane. They are omitted rather than set to `null` when the relay cannot determine
@@ -987,6 +1009,17 @@ partial `agents` frames. No acknowledgement is sent.
 | `agent` | string | Optional | Agent name in emitted frames; defaults to an empty string. |
 | `project` | string | Optional | Project name in emitted frames; defaults to an empty string. |
 | `cwd` | string | Optional | Working directory in the partial `agents` frame; defaults to an empty string. |
+| `workspace_id` | string | Optional | Herdr workspace identifier; emitted unchanged (apart from control-character removal) when supplied and valid. |
+| `workspace_name` | string | Optional | Herdr workspace label; whitespace-normalized and bounded to 160 characters, then omitted when empty or invalid. |
+| `tab_id` | string | Optional | Herdr tab identifier; emitted unchanged (apart from control-character removal) when supplied and valid. |
+| `tab_name` | string | Optional | Herdr tab label; whitespace-normalized and bounded to 160 characters, then omitted when empty or invalid. |
+| `activity_title` | string | Optional | Current Herdr activity title; whitespace-normalized and bounded to 160 characters, and emitted only when `status` is `working`. |
+
+Identity and display metadata is sanitized by the relay: control characters are
+removed from identifiers, while display labels and titles are whitespace-
+normalized and bounded to 160 characters before they reach any frame. Missing
+metadata is omitted. A title is working-only and is omitted for blocked, done,
+idle, unknown, or empty statuses.
 
 For a blocked event, the relay reads current pane content instead of `prompt`
 when the pane maps to a remote or `host` is `"local"`.

@@ -46,7 +46,10 @@ class NativeContractTests(unittest.TestCase):
             "host": "buildbox",
             "remote": "deploy@buildbox",
             "workspace_id": "workspace-2",
+            "workspace_name": "Relay",
             "tab_id": "tab-4",
+            "tab_name": "API",
+            "activity_title": "Run focused tests",
             "output_revision": 7,
         }]
         hosts = [{
@@ -358,7 +361,9 @@ class NativeContractTests(unittest.TestCase):
             "host": "buildbox",
             "remote": "deploy@buildbox",
             "workspace_id": "workspace-2",
+            "workspace_name": "Relay",
             "tab_id": "tab-4",
+            "tab_name": "API",
         }]
         sent = []
 
@@ -408,7 +413,10 @@ class NativeContractTests(unittest.TestCase):
             "host": "buildbox",
             "remote": "deploy@buildbox",
             "workspace_id": "workspace-2",
+            "workspace_name": "Relay",
             "tab_id": "tab-4",
+            "tab_name": "API",
+            "activity_title": "Run focused tests",
             "output_revision": 7,
         }]
         blocks = [

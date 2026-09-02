@@ -1,4 +1,5 @@
 {
+  "activity_title": "Run focused tests",
   "attention_state": "working",
   "host_id": "buildbox",
   "output_blocks": [
@@ -45,6 +46,10 @@
   ],
   "output_revision": 7,
   "pane_id": "pane-7",
+  "tab_id": "tab-4",
+  "tab_name": "API",
   "type": "pane_content",
-  "updated_at": 1700000000000
+  "updated_at": 1700000000000,
+  "workspace_id": "workspace-2",
+  "workspace_name": "Relay"
 }

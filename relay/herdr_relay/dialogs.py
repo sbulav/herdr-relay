@@ -7,7 +7,7 @@ answer a different question after the agent has redrawn its screen.
 import hashlib
 import json
 
-from . import panes, state
+from . import panes, protocol, state
 
 
 def _prompt_key(prompt, choices, *, agent, project, host):
@@ -25,8 +25,14 @@ def _valid_observation(value):
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
+def _metadata_value(value, *, identifier=False):
+    """Normalize one optional Herdr identity/display value for wire use."""
+    return protocol.public_identifier(value) if identifier else protocol.public_text(value)
+
+
 def ensure(
-    pane_id, prompt, choices, *, agent="", project="", host="local", observation=None
+    pane_id, prompt, choices, *, agent="", project="", host="local", observation=None,
+    workspace_id=None, workspace_name=None, tab_id=None, tab_name=None,
 ):
     """Return the current dialog, creating a new revision when it changed.
 
@@ -40,6 +46,12 @@ def ensure(
     # that fallback into a claimed capability.
     normalized_choices = list(choices or [])
     observation = _valid_observation(observation)
+    metadata = {
+        "workspace_id": _metadata_value(workspace_id, identifier=True),
+        "workspace_name": _metadata_value(workspace_name),
+        "tab_id": _metadata_value(tab_id, identifier=True),
+        "tab_name": _metadata_value(tab_name),
+    }
     prompt_key = _prompt_key(
         prompt or "", normalized_choices, agent=agent, project=project, host=host
     )
@@ -62,6 +74,12 @@ def ensure(
                 current["agent"] = agent
             if not current["project"] and project:
                 current["project"] = project
+            for field, value in ((
+                ("workspace_id", workspace_id), ("workspace_name", workspace_name),
+                ("tab_id", tab_id), ("tab_name", tab_name),
+            )):
+                if value is not None:
+                    current[field] = metadata[field] or ""
             return current
 
     revision = state.get(state.pane_dialog_revisions, key, 0) + 1
@@ -81,6 +99,7 @@ def ensure(
         "agent": agent,
         "project": project,
         "host": host,
+        **metadata,
         "consumed": False,
         "response_in_flight": False,
     }
@@ -111,6 +130,12 @@ def frame(dialog, *, reduced=False):
             "project": dialog["project"],
             "host": dialog["host"],
         })
+    for field in ("workspace_id", "workspace_name", "tab_id", "tab_name"):
+        value = _metadata_value(dialog.get(field), identifier=field.endswith("_id"))
+        if value:
+            result[field] = value
+    # Activity titles are meaningful only while the agent is working. Blocked
+    # dialogs are waiting-state frames, so deliberately omit this field.
     return result
 
 
