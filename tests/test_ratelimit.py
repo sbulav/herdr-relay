@@ -161,6 +161,8 @@ class HandleClientRateLimitTests(unittest.TestCase):
         with (
             patch.dict(herdr_relay.state.pane_remote_map, {}, clear=True),
             patch.object(herdr_relay.state, "known_panes", {"pane-7"}),
+            patch.object(herdr_relay.state, "known_pane_keys", {("local", "pane-7")}),
+            patch.dict(herdr_relay.state.pane_hosts, {"pane-7": {"local"}}, clear=True),
             patch.object(herdr_relay.herdr, "run_herdr", return_value="") as run_herdr,
             patch.object(herdr_relay.server, "audit", lambda *args: audited.append(args)),
         ):

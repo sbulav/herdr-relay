@@ -40,11 +40,12 @@ def ensure(
     # that fallback into a claimed capability.
     normalized_choices = list(choices or [])
     observation = _valid_observation(observation)
-    key = _prompt_key(
+    prompt_key = _prompt_key(
         prompt or "", normalized_choices, agent=agent, project=project, host=host
     )
-    current = state.pane_dialogs.get(pane_id)
-    if current is not None and current["prompt_key"] == key:
+    key = state.pane_key(host, pane_id)
+    current = state.get(state.pane_dialogs, key)
+    if current is not None and current["prompt_key"] == prompt_key:
         current_observation = _valid_observation(current.get("observation"))
         observation_changed = (
             current_observation is not None
@@ -63,15 +64,15 @@ def ensure(
                 current["project"] = project
             return current
 
-    revision = state.pane_dialog_revisions.get(pane_id, 0) + 1
-    state.pane_dialog_revisions[pane_id] = revision
-    digest = hashlib.sha256(f"{pane_id}\0{revision}\0{key}".encode("utf-8")).hexdigest()[:24]
+    revision = state.get(state.pane_dialog_revisions, key, 0) + 1
+    state.pane_dialog_revisions[key] = revision
+    digest = hashlib.sha256(f"{pane_id}\0{revision}\0{prompt_key}".encode("utf-8")).hexdigest()[:24]
     dialog = {
         "dialog_id": f"dlg-{digest}",
         "revision": revision,
         "pane_id": pane_id,
         "prompt": display_prompt,
-        "prompt_key": key,
+        "prompt_key": prompt_key,
         "observation": observation,
         "choices": normalized_choices,
         # The relay currently only supports allowlisted labels.  It must not
@@ -83,9 +84,9 @@ def ensure(
         "consumed": False,
         "response_in_flight": False,
     }
-    state.pane_dialogs[pane_id] = dialog
+    state.pane_dialogs[key] = dialog
     legacy_choices = normalized_choices or panes.TOOL_OPTIONS
-    state.pane_response_options[pane_id] = {choice.lower() for choice in legacy_choices}
+    state.pane_response_options[key] = {choice.lower() for choice in legacy_choices}
     return dialog
 
 
@@ -102,6 +103,7 @@ def frame(dialog, *, reduced=False):
         "dialog_id": dialog["dialog_id"],
         "revision": dialog["revision"],
         "raw_input_allowed": dialog["raw_input_allowed"],
+        "host_id": dialog.get("host", "local"),
     }
     if not reduced:
         result.update({
@@ -114,8 +116,13 @@ def frame(dialog, *, reduced=False):
 
 def clear(pane_id):
     """Forget active dialog and choices when a pane is no longer blocked."""
-    state.pane_dialogs.pop(pane_id, None)
-    state.pane_response_options.pop(pane_id, None)
+    if isinstance(pane_id, tuple):
+        key = pane_id
+        pane_id = key[1]
+    else:
+        key = pane_id
+    state.pop(state.pane_dialogs, key)
+    state.pop(state.pane_response_options, key)
 
 
 def response_allowed(dialog, text):

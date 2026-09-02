@@ -4,7 +4,12 @@
 # dependencies = ["python-telegram-bot>=21.0", "websockets>=14.0"]
 # ///
 """herdr-remote Telegram bot — monitor and approve agents from Telegram."""
-import asyncio, json, os, logging, re
+import asyncio
+import json
+import os
+import logging
+import re
+import secrets
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, MessageHandler, ContextTypes, filters
@@ -21,27 +26,78 @@ if not TOKEN:
     exit(1)
 
 # State
-pending: dict[int, str] = {}  # message_id -> pane_id
+pending: dict[int, tuple[str, str]] = {}  # message_id -> (host_id, pane_id)
 agents: list[dict] = []       # current agent list from relay
-prev_statuses: dict[str, str] = {}  # pane_id -> last known status
+prev_statuses: dict[tuple[str, str], str] = {}  # (host_id, pane_id) -> status
 relay_connected = False
-send_target: str = ""         # pane_id for next free-text message (set by /send picker)
-daily_stats: dict[str, dict] = {}  # pane_id -> {agent, project, blocked_count, working_mins, last_change}
+send_target: tuple[str, str] | None = None  # selected (host_id, pane_id)
+daily_stats: dict[tuple[str, str], dict] = {}  # pane key -> stats
+callback_targets: dict[str, dict] = {}  # compact Telegram callback token -> pane/action
+MAX_CALLBACK_TARGETS = 4096
+
+
+def pane_key(agent: dict) -> tuple[str, str]:
+    return (agent.get("host_id") or agent.get("host", "local"), agent["pane_id"])
+
+
+def pane_payload(agent: dict, action: str | None = None) -> dict:
+    payload = {"pane_id": agent["pane_id"], "host_id": pane_key(agent)[0]}
+    if action:
+        payload["action"] = action
+    return payload
+
+
+def callback_data(agent: dict, action: str | None = None, response: str | None = None) -> str:
+    """Store a callback target server-side; Telegram allows only 64 UTF-8 bytes."""
+    while True:
+        token = secrets.token_urlsafe(9)
+        if token not in callback_targets:
+            break
+    target = pane_payload(agent, action)
+    if response is not None:
+        target["response"] = response
+    callback_targets[token] = target
+    while len(callback_targets) > MAX_CALLBACK_TARGETS:
+        callback_targets.pop(next(iter(callback_targets)))
+    return token
+
+
+def decode_callback(raw: str | None) -> dict | None:
+    """Decode a current token or safely upgrade an old hostless JSON callback."""
+    if not isinstance(raw, str):
+        return None
+    target = callback_targets.get(raw)
+    if target is not None:
+        return dict(target)
+    try:
+        target = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(target, dict) or not isinstance(target.get("pane_id"), str):
+        return None
+    if "host_id" not in target:
+        matches = [agent for agent in agents if agent.get("pane_id") == target["pane_id"]]
+        if len(matches) != 1:
+            return None
+        target["host_id"] = pane_key(matches[0])[0]
+    if not isinstance(target.get("host_id"), str) or not target["host_id"]:
+        return None
+    return target
 
 
 # --- Relay communication ---
 
-async def send_to_relay(pane_id: str, text: str):
+async def send_to_relay(host_id: str, pane_id: str, text: str):
     """Send a response to the relay via WebSocket."""
     import websockets
     try:
         async with websockets.connect(RELAY_WS) as ws:
-            await ws.send(json.dumps({"type": "respond", "pane_id": pane_id, "text": text}))
+            await ws.send(json.dumps({"type": "respond", "host_id": host_id, "pane_id": pane_id, "text": text}))
     except Exception as e:
         log.warning(f"Failed to send to relay: {e}")
 
 
-async def read_pane(pane_id: str, lines: int = 15) -> str:
+async def read_pane(host_id: str, pane_id: str, lines: int = 15) -> str:
     """Read pane content from relay."""
     import websockets
     try:
@@ -50,6 +106,7 @@ async def read_pane(pane_id: str, lines: int = 15) -> str:
             # separate from the relay's visible-screen default used for polling.
             await ws.send(json.dumps({
                 "type": "read_pane",
+                "host_id": host_id,
                 "pane_id": pane_id,
                 "lines": lines,
                 "source": "recent",
@@ -150,7 +207,7 @@ async def cmd_read(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return
         keyboard = [[InlineKeyboardButton(
             f"{a['project']} ({a['agent']})",
-            callback_data=json.dumps({"action": "read", "pane_id": a["pane_id"]})
+            callback_data=callback_data(a, "read")
         )] for a in agents[:8]]
         await update.message.reply_text("Read which agent?", reply_markup=InlineKeyboardMarkup(keyboard))
         return
@@ -162,12 +219,12 @@ async def cmd_read(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"No agent matching '{query}'. Use /agents to see list.")
         return
 
-    content = await read_pane(match["pane_id"])
+    content = await read_pane(*pane_key(match))
     if len(content) > 3500:
         content = content[-3500:]
     msg = await update.message.reply_text(f"{match['project']}:\n\n{content}")
     # Store pane_id so user can reply to this message to send text
-    pending[msg.message_id] = match["pane_id"]
+    pending[msg.message_id] = pane_key(match)
 
 
 async def cmd_interrupt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -183,7 +240,7 @@ async def cmd_interrupt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return
         keyboard = [[InlineKeyboardButton(
             f"{a['project']} ({a['agent']})",
-            callback_data=json.dumps({"action": "interrupt", "pane_id": a["pane_id"]})
+            callback_data=callback_data(a, "interrupt")
         )] for a in working[:8]]
         await update.message.reply_text("Interrupt which agent?", reply_markup=InlineKeyboardMarkup(keyboard))
         return
@@ -197,7 +254,7 @@ async def cmd_interrupt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     import websockets
     try:
         async with websockets.connect(RELAY_WS) as ws:
-            await ws.send(json.dumps({"type": "send_keys", "pane_id": match["pane_id"], "keys": ["Ctrl+c"]}))
+            await ws.send(json.dumps({"type": "send_keys", **pane_payload(match), "keys": ["Ctrl+c"]}))
         await update.message.reply_text(f"Sent Ctrl+C to {match['project']}")
     except Exception as e:
         await update.message.reply_text(f"Failed: {e}")
@@ -212,7 +269,7 @@ async def cmd_send(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return
         keyboard = [[InlineKeyboardButton(
             f"{a['project']} ({a['agent']})",
-            callback_data=json.dumps({"action": "select_send", "pane_id": a["pane_id"]})
+            callback_data=callback_data(a, "select_send")
         )] for a in agents[:8]]
         await update.message.reply_text("Send to which agent?\n(After selecting, reply with your text)", reply_markup=InlineKeyboardMarkup(keyboard))
         return
@@ -226,14 +283,14 @@ async def cmd_send(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text = " ".join(args[1:])
     if not text:
         msg = await update.message.reply_text(f"Selected {match['project']}. Reply to this message with text to send.")
-        pending[msg.message_id] = match["pane_id"]
+        pending[msg.message_id] = pane_key(match)
         return
 
     import websockets
     try:
         async with websockets.connect(RELAY_WS) as ws:
-            await ws.send(json.dumps({"type": "send_text", "pane_id": match["pane_id"], "text": text}))
-            await ws.send(json.dumps({"type": "send_keys", "pane_id": match["pane_id"], "keys": ["Enter"]}))
+            await ws.send(json.dumps({"type": "send_text", **pane_payload(match), "text": text}))
+            await ws.send(json.dumps({"type": "send_keys", **pane_payload(match), "keys": ["Enter"]}))
         await update.message.reply_text(f"Sent to {match['project']}: {text}")
     except Exception as e:
         await update.message.reply_text(f"Failed: {e}")
@@ -251,7 +308,7 @@ async def cmd_reply(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not args:
         keyboard = [[InlineKeyboardButton(
             f"{a['project']} ({a['agent']})",
-            callback_data=json.dumps({"action": "select_reply", "pane_id": a["pane_id"]})
+            callback_data=callback_data(a, "select_reply")
         )] for a in agents[:8]]
         await update.message.reply_text("Reply to which agent?", reply_markup=InlineKeyboardMarkup(keyboard))
         return
@@ -263,10 +320,10 @@ async def cmd_reply(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     # Show output then set send target
-    content = await read_pane(match["pane_id"])
+    content = await read_pane(*pane_key(match))
     if len(content) > 3000:
         content = content[-3000:]
-    send_target = match["pane_id"]
+    send_target = pane_key(match)
     await update.message.reply_text(f"{match['project']}:\n\n{content}\n\n--- Type your response below ---")
 
 
@@ -282,7 +339,7 @@ async def cmd_trust(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not args:
         keyboard = [[InlineKeyboardButton(
             f"{a['project']} ({a['agent']})",
-            callback_data=json.dumps({"action": "trust", "pane_id": a["pane_id"]})
+            callback_data=callback_data(a, "trust")
         )] for a in blocked[:8]]
         await update.message.reply_text("Trust which agent?", reply_markup=InlineKeyboardMarkup(keyboard))
         return
@@ -293,7 +350,7 @@ async def cmd_trust(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"No blocked agent matching '{query}'.")
         return
 
-    await send_to_relay(match["pane_id"], "trust, always allow")
+    await send_to_relay(*pane_key(match), "trust, always allow")
     await update.message.reply_text(f"Trusted {match['project']} (always allow)")
 
 
@@ -303,7 +360,6 @@ async def cmd_digest(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("No activity recorded yet today.")
         return
 
-    import time
     lines = ["Today's activity:\n"]
     sorted_agents = sorted(daily_stats.values(), key=lambda x: x.get("working_mins", 0), reverse=True)
     for s in sorted_agents:
@@ -323,24 +379,27 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if CHAT_ID and str(update.effective_chat.id) != CHAT_ID:
         await query.answer("Unauthorized")
         return
-    await query.answer()
 
-    data = json.loads(query.data)
+    data = decode_callback(query.data)
+    if data is None:
+        await query.answer("Agent is no longer available")
+        return
+    await query.answer()
     action = data.get("action", "respond")
 
     if action == "read":
-        content = await read_pane(data["pane_id"])
+        content = await read_pane(data["host_id"], data["pane_id"])
         if len(content) > 3500:
             content = content[-3500:]
         msg = await query.message.reply_text(f"{content}")
-        pending[msg.message_id] = data["pane_id"]
+        pending[msg.message_id] = (data["host_id"], data["pane_id"])
         return
 
     if action == "interrupt":
         import websockets
         try:
             async with websockets.connect(RELAY_WS) as ws:
-                await ws.send(json.dumps({"type": "send_keys", "pane_id": data["pane_id"], "keys": ["Ctrl+c"]}))
+                await ws.send(json.dumps({"type": "send_keys", "host_id": data["host_id"], "pane_id": data["pane_id"], "keys": ["Ctrl+c"]}))
             await query.message.reply_text("Sent Ctrl+C")
         except Exception as e:
             await query.message.reply_text(f"Failed: {e}")
@@ -348,30 +407,31 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     if action == "select_send":
         global send_target
-        send_target = data["pane_id"]
-        agent_name = next((a['project'] for a in agents if a['pane_id'] == data['pane_id']), '?')
+        send_target = (data["host_id"], data["pane_id"])
+        agent_name = next((a['project'] for a in agents if pane_key(a) == send_target), '?')
         await query.message.reply_text(f"Ready. Type your message — it will be sent to {agent_name}.")
         return
 
     if action == "select_reply":
-        send_target = data["pane_id"]
-        agent_name = next((a['project'] for a in agents if a['pane_id'] == data['pane_id']), '?')
-        content = await read_pane(data["pane_id"])
+        send_target = (data["host_id"], data["pane_id"])
+        agent_name = next((a['project'] for a in agents if pane_key(a) == send_target), '?')
+        content = await read_pane(*send_target)
         if len(content) > 3000:
             content = content[-3000:]
         await query.message.reply_text(f"{agent_name}:\n\n{content}\n\n--- Type your response below ---")
         return
 
     if action == "trust":
-        await send_to_relay(data["pane_id"], "trust, always allow")
-        agent_name = next((a['project'] for a in agents if a['pane_id'] == data['pane_id']), '?')
+        await send_to_relay(data["host_id"], data["pane_id"], "trust, always allow")
+        agent_name = next((a['project'] for a in agents if pane_key(a) == (data["host_id"], data["pane_id"])), '?')
         await query.message.reply_text(f"Trusted {agent_name} (always allow)")
         return
 
     # Default: respond to blocked agent
     pane_id = data["pane_id"]
+    host_id = data["host_id"]
     response = data["response"]
-    await send_to_relay(pane_id, response)
+    await send_to_relay(host_id, pane_id, response)
     await query.edit_message_reply_markup(reply_markup=None)
     await query.message.reply_text(f"Sent: `{response}`", parse_mode="Markdown")
 
@@ -383,22 +443,23 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     global send_target
     
     # Check if there's an active send target (from /send picker)
-    pane_id = None
+    target = None
     if send_target:
-        pane_id = send_target
-        send_target = ""  # one-shot
+        target = send_target
+        send_target = None  # one-shot
     elif update.message.reply_to_message:
         orig_id = update.message.reply_to_message.message_id
-        pane_id = pending.get(orig_id)
+        target = pending.get(orig_id)
     
-    if not pane_id:
+    if not target:
         return  # Not a reply and no send target — ignore
 
     import websockets
     try:
         async with websockets.connect(RELAY_WS) as ws:
-            await ws.send(json.dumps({"type": "send_text", "pane_id": pane_id, "text": update.message.text}))
-            await ws.send(json.dumps({"type": "send_keys", "pane_id": pane_id, "keys": ["Enter"]}))
+            host_id, pane_id = target
+            await ws.send(json.dumps({"type": "send_text", "host_id": host_id, "pane_id": pane_id, "text": update.message.text}))
+            await ws.send(json.dumps({"type": "send_keys", "host_id": host_id, "pane_id": pane_id, "keys": ["Enter"]}))
         await update.message.reply_text("Sent")
     except Exception as e:
         await update.message.reply_text(f"Failed: {e}")
@@ -433,7 +494,7 @@ OPENCODE_BUTTONS = [
 ]
 
 
-def make_keyboard(pane_id: str, options: list[str] | None) -> InlineKeyboardMarkup:
+def make_keyboard(host_id: str, pane_id: str, options: list[str] | None) -> InlineKeyboardMarkup:
     joined = " ".join(options or []).lower()
     if options and "yes, single permission" in joined:
         buttons = TOOL_BUTTONS
@@ -445,21 +506,23 @@ def make_keyboard(pane_id: str, options: list[str] | None) -> InlineKeyboardMark
         buttons = [(_option_label(opt), opt) for opt in (options or ["1. Yes", "2. No"])]
 
     keyboard = [
-        [InlineKeyboardButton(label, callback_data=json.dumps({"pane_id": pane_id, "response": resp}))]
+        [InlineKeyboardButton(label, callback_data=callback_data(
+            {"host_id": host_id, "pane_id": pane_id}, response=resp
+        ))]
         for label, resp in buttons
     ]
     return InlineKeyboardMarkup(keyboard)
 
 
-async def notify_blocked(app: Application, pane_id: str, agent: str, project: str, prompt: str, options: list[str] | None):
+async def notify_blocked(app: Application, host_id: str, pane_id: str, agent: str, project: str, prompt: str, options: list[str] | None):
     if not CHAT_ID:
         return
     text = f"*{agent}* blocked in `{project}`\n\n```\n{prompt[:400]}\n```"
-    keyboard = make_keyboard(pane_id, options)
+    keyboard = make_keyboard(host_id, pane_id, options)
     msg = await app.bot.send_message(
         chat_id=int(CHAT_ID), text=text, parse_mode="Markdown", reply_markup=keyboard
     )
-    pending[msg.message_id] = pane_id
+    pending[msg.message_id] = (host_id, pane_id)
 
 
 # --- Relay listener ---
@@ -487,14 +550,14 @@ async def relay_listener(app: Application):
                             import time
                             now = time.time()
                             for a in new_agents:
-                                pid = a["pane_id"]
+                                key = pane_key(a)
                                 new_status = a.get("status", "unknown")
-                                old_status = prev_statuses.get(pid)
+                                old_status = prev_statuses.get(key)
 
                                 # Update daily stats
-                                if pid not in daily_stats:
-                                    daily_stats[pid] = {"agent": a.get("agent",""), "project": a.get("project",""), "blocked_count": 0, "working_mins": 0, "last_change": now}
-                                ds = daily_stats[pid]
+                                if key not in daily_stats:
+                                    daily_stats[key] = {"agent": a.get("agent",""), "project": a.get("project",""), "blocked_count": 0, "working_mins": 0, "last_change": now}
+                                ds = daily_stats[key]
                                 if old_status == "working" and old_status != new_status:
                                     elapsed = (now - ds["last_change"]) / 60
                                     ds["working_mins"] += int(elapsed)
@@ -512,12 +575,13 @@ async def relay_listener(app: Application):
                                             )
                                         except Exception:
                                             pass
-                                prev_statuses[pid] = new_status
+                                prev_statuses[key] = new_status
                         agents = new_agents
 
                     elif msg.get("type") == "blocked":
                         await notify_blocked(
                             app,
+                            host_id=msg.get("host_id") or msg.get("host", "local"),
                             pane_id=msg["pane_id"],
                             agent=msg.get("agent", "unknown"),
                             project=msg.get("project", ""),

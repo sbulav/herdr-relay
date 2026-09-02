@@ -37,6 +37,7 @@ class NativeContractTests(unittest.TestCase):
     def test_agents_snapshot(self):
         agents = [{
             "pane_id": "pane-7",
+            "host_id": "buildbox",
             "agent": "claude",
             "label": "api tests",
             "status": "working",
@@ -76,10 +77,12 @@ class NativeContractTests(unittest.TestCase):
             patch.dict(herdr_relay.state.session_target_map, {}, clear=True),
             patch.dict(herdr_relay.state.pane_cwd_map, {}, clear=True),
             patch.dict(herdr_relay.state.known_panes, set(), clear=True),
+            patch.object(herdr_relay.state, "known_pane_keys", set()),
+            patch.dict(herdr_relay.state.pane_hosts, {}, clear=True),
         ):
             asyncio.run(herdr_relay._poll_once())
             # Read inside the patch: patch.dict restores the map on exit.
-            routed_target = herdr_relay.state.pane_remote_map.get("pane-7")
+            routed_target = herdr_relay.state.pane_remote_map.get(("buildbox", "pane-7"))
 
         self.assert_contract("agents", sent[0])
         # `hosts` and `projects` drive the whole composer; a snapshot without
@@ -346,6 +349,7 @@ class NativeContractTests(unittest.TestCase):
     def test_blocked_transition(self):
         agents = [{
             "pane_id": "pane-7",
+            "host_id": "buildbox",
             "agent": "claude",
             "label": "api tests",
             "status": "blocked",
@@ -378,6 +382,8 @@ class NativeContractTests(unittest.TestCase):
             patch.dict(herdr_relay.state.pane_response_options, {}, clear=True),
             patch.dict(herdr_relay.state.pane_dialogs, {}, clear=True),
             patch.dict(herdr_relay.state.pane_dialog_revisions, {}, clear=True),
+            patch.object(herdr_relay.state, "known_pane_keys", set()),
+            patch.dict(herdr_relay.state.pane_hosts, {}, clear=True),
         ):
             asyncio.run(herdr_relay._poll_once())
 
@@ -426,7 +432,9 @@ class NativeContractTests(unittest.TestCase):
             patch.object(herdr_relay.herdr, "get_all_agents", return_value=(agents, [])),
             patch.object(herdr_relay.transport, "broadcast", side_effect=broadcast),
             patch.object(herdr_relay.transcripts.blocks, "pane_blocks", return_value=(blocks, "stable-signature")),
-            patch.dict(herdr_relay.state.subscriptions, {socket: "pane-7"}, clear=True),
+            patch.dict(herdr_relay.state.subscriptions, {socket: ("buildbox", "pane-7")}, clear=True),
+            patch.object(herdr_relay.state, "known_pane_keys", set()),
+            patch.dict(herdr_relay.state.pane_hosts, {}, clear=True),
             patch.dict(herdr_relay.state.stream_sigs, {}, clear=True),
             patch.dict(herdr_relay.state.last_statuses, {}, clear=True),
             patch.dict(herdr_relay.state.pane_activity, {}, clear=True),
@@ -443,7 +451,7 @@ class NativeContractTests(unittest.TestCase):
         with (
             patch.dict(
                 herdr_relay.state.session_target_map,
-                {session: ("pane-7", "deploy@buildbox")},
+                {session: ("buildbox", "pane-7", "deploy@buildbox")},
                 clear=True,
             ),
             patch.object(herdr_relay.herdr, "run_herdr_checked", return_value=(True, "pane closed")),
@@ -537,7 +545,7 @@ class NativeContractTests(unittest.TestCase):
         with (
             patch.dict(
                 herdr_relay.state.session_target_map,
-                {"legacy:buildbox:pane-7": ("pane-7", "deploy@buildbox")},
+                {"legacy:buildbox:pane-7": ("buildbox", "pane-7", "deploy@buildbox")},
                 clear=True,
             ),
             patch.object(herdr_relay.herdr, "run_herdr_checked", return_value=(False, "")),

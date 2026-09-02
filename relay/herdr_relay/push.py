@@ -8,6 +8,7 @@ none of it is transitional.
 """
 import json
 import os
+import hashlib
 
 from . import config
 from .config import log
@@ -48,7 +49,7 @@ def unsubscribe(sub) -> bool:
     return True
 
 
-async def send_web_push(title: str, body: str, url: str = "/", clear: bool = False):
+async def send_web_push(title: str, body: str, url: str = "/", clear: bool = False, tag: str = "herdr-blocked"):
     """Send push notification to all registered subscriptions.
 
     Uses collapse topic + TTL so offline devices get only the latest.
@@ -62,10 +63,15 @@ async def send_web_push(title: str, body: str, url: str = "/", clear: bool = Fal
         log.warning("pywebpush not installed, skipping push")
         return
     if clear:
-        payload = json.dumps({"type": "clear", "tag": "herdr-blocked"})
+        payload = json.dumps({"type": "clear", "tag": tag})
     else:
-        payload = json.dumps({"title": title, "body": body, "url": url})
-    headers = {"Topic": "herdr-herd", "TTL": "21600"}  # 6h TTL, collapse key
+        payload = json.dumps({"title": title, "body": body, "url": url, "tag": tag})
+    # Web Push topics collapse queued notifications. Keep that collapse scope
+    # host/pane-specific so a clear for one duplicate pane cannot consume
+    # another host's notification. Hashing also stays within the provider's
+    # 32-character Topic limit while retaining the browser-visible tag below.
+    topic = "herdr-" + hashlib.sha256(tag.encode("utf-8")).hexdigest()[:26]
+    headers = {"Topic": topic, "TTL": "21600"}  # 6h TTL, collapse key
     dead = []
     for i, sub in enumerate(push_subscriptions):
         try:

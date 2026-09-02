@@ -14,11 +14,22 @@ Environment:
   HERDR_RELAY        relay URL, ws/wss accepted and mapped to http/https
                      (default ws://127.0.0.1:8375)
   HERDR_RELAY_TOKEN  shared secret; without it the relay answers 401
+  HERDR_HOST_ID      configured relay host ID; required when it differs from
+                     the machine hostname
 """
-import json, os, socket, sys, urllib.parse, urllib.request
+import json
+import os
+import socket
+import sys
+import urllib.parse
+import urllib.request
 
 event = json.loads(os.environ.get("HERDR_PLUGIN_EVENT_JSON", "{}"))
 data = event.get("data", {})
+# The hook runs on an agent host, but the machine hostname is not necessarily
+# the relay's configured identity. HERDR_HOST_ID is therefore the authority;
+# event data cannot override it.
+host_id = os.environ.get("HERDR_HOST_ID") or socket.gethostname().split(".")[0]
 
 payload = {
     "type": "agent_event",
@@ -27,6 +38,7 @@ payload = {
     "agent": (data.get("agent") or data.get("display_agent") or "").lower(),
     "project": os.path.basename(data.get("cwd", "")),
     "cwd": data.get("cwd", ""),
+    "host_id": host_id,
     "host": socket.gethostname().split(".")[0],
 }
 

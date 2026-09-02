@@ -168,6 +168,10 @@ Everything the relay reads. Only the first is mandatory.
 `HERDR_RELAY` is a *client* variable — the URL a client or the herdr push plugin
 dials. The relay itself never reads it.
 
+The push plugin also accepts `HERDR_HOST_ID`. Set it to the exact `id` from
+`HERDR_HOSTS_FILE` whenever the machine hostname differs from that configured
+host identity; pushed events always carry this canonical host ID.
+
 The `HERDR_RATE_*` defaults are chosen so that no human-driven session reaches
 them, and they are per connection rather than per token — one shared secret means
 every client is otherwise the same principal. Raise them for a deployment with

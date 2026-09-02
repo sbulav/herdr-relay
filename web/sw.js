@@ -21,9 +21,9 @@ self.addEventListener('push', (event) => {
       body: data.body,
       icon: '/logo.svg',
       badge: '/logo.svg',
-      tag: 'herdr-blocked',
+      tag: data.tag || 'herdr-blocked',
       renotify: true,
-      data: { url: data.url },
+      data: { url: data.url, tag: data.tag || 'herdr-blocked' },
     })
   );
 });

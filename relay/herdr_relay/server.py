@@ -206,10 +206,17 @@ async def handle_client(ws):
                 continue
             msg_type = msg.get("type")
             request_id = msg.get("request_id")
-            if request_id and request_id in request_results:
+            if isinstance(request_id, str) and request_id in request_results:
                 # Replaying a remembered answer reaches no host, so it is not
                 # metered: the work this would rate-limit already happened once.
-                await ws.send(json.dumps(request_results[request_id]))
+                fingerprint, remembered = request_results[request_id]
+                if fingerprint != _request_fingerprint(msg):
+                    response = protocol.command_error(
+                        request_id, "REQUEST_ID_REUSED", "request_id was already used for another command"
+                    )
+                    await ws.send(json.dumps(response))
+                else:
+                    await ws.send(json.dumps(remembered))
             elif not limits.allows(msg_type):
                 # Audited, not just logged. One shared token means a flood is
                 # indistinguishable from a compromised client until the audit
@@ -223,7 +230,7 @@ async def handle_client(ws):
                 response = await asyncio.to_thread(projects.handle_command, msg)
                 if response is None:
                     continue
-                _remember_response(request_results, request_id, response)
+                _remember_response(request_results, request_id, response, msg)
                 await ws.send(json.dumps(response))
                 if msg_type in {"project_create", "project_save", "project_rename", "project_remove", "project_restore"} and response.get("type") == "command_ack":
                     audit(msg_type, ip, device, "", f"project_id={msg.get('project_id', '')}")
@@ -245,39 +252,42 @@ async def handle_client(ws):
                             "request_id": request_id,
                             "result": {"catalog_status": (await asyncio.to_thread(catalogs.refresh_all, host_id=requested_host))["catalog_status"]},
                         }
-                _remember_response(request_results, request_id, response)
+                _remember_response(request_results, request_id, response, msg)
                 await ws.send(json.dumps(response))
                 if response.get("type") == "command_ack":
                     await transport.broadcast({"type": "catalogs", **catalogs.public_frame()})
             elif msg_type == "start_session":
                 response = await asyncio.to_thread(lifecycle.start_session, msg)
-                _remember_response(request_results, request_id, response)
+                _remember_response(request_results, request_id, response, msg)
                 await ws.send(json.dumps(response))
             elif msg_type == "cancel_start":
                 response = await asyncio.to_thread(lifecycle.cancel_start, msg)
-                _remember_response(request_results, request_id, response)
+                _remember_response(request_results, request_id, response, msg)
                 await ws.send(json.dumps(response))
             elif msg_type == "terminate_session":
                 response = await asyncio.to_thread(lifecycle.terminate_session, msg)
-                _remember_response(request_results, request_id, response)
+                _remember_response(request_results, request_id, response, msg)
                 await ws.send(json.dumps(response))
             elif msg_type == "wake_host":
                 response = await asyncio.to_thread(lifecycle.wake_host, msg)
-                _remember_response(request_results, request_id, response)
+                _remember_response(request_results, request_id, response, msg)
                 await ws.send(json.dumps(response))
             elif msg_type == "shutdown_host":
                 response = await asyncio.to_thread(lifecycle.shutdown_host, msg)
-                _remember_response(request_results, request_id, response)
+                _remember_response(request_results, request_id, response, msg)
                 await ws.send(json.dumps(response))
             elif msg_type == "respond_dialog":
                 if not isinstance(request_id, str) or not projects.REQUEST_ID_RE.fullmatch(request_id):
                     response = protocol.command_error(None, "INVALID_REQUEST", "request_id is required")
                 else:
                     pane_id = msg.get("pane_id")
+                    pane_key = state.resolve(msg.get("host_id"), pane_id)
                     dialog_id = msg.get("dialog_id")
                     text = msg.get("text")
-                    dialog = state.pane_dialogs.get(pane_id) if isinstance(pane_id, str) else None
-                    if not isinstance(pane_id, str) or pane_id not in state.known_panes:
+                    dialog = state.get(state.pane_dialogs, pane_key) if isinstance(pane_key, tuple) else None
+                    if pane_key is state.AMBIGUOUS:
+                        response = protocol.command_error(request_id, "AMBIGUOUS_PANE", "host_id is required for this pane")
+                    elif pane_key is None:
                         response = protocol.command_error(request_id, "UNKNOWN_PANE", "Unknown pane")
                     elif not isinstance(dialog_id, str) or dialog is None:
                         response = protocol.command_error(request_id, "DIALOG_NOT_ACTIVE", "Dialog is no longer active")
@@ -299,7 +309,7 @@ async def handle_client(ws):
                         # Claim before yielding to the subprocess so two
                         # WebSocket connections cannot both answer one dialog.
                         dialog["response_in_flight"] = True
-                        remote = state.pane_remote_map.get(pane_id)
+                        remote = state.get(state.pane_remote_map, pane_key)
                         log.info("Dialog response from %s (%s): pane=%s text=%r", ip, device, pane_id, text)
                         audit("respond_dialog", ip, device, pane_id, f"text={text!r}")
                         kind, payload = panes.respond_action(text)
@@ -307,12 +317,16 @@ async def handle_client(ws):
                             if kind == "keys":
                                 success, _output = await asyncio.to_thread(
                                     herdr.run_herdr_checked,
-                                    "pane", "send-keys", pane_id, *payload, remote=remote,
+                                    "pane", "send-keys", pane_id, *payload,
+                                    remote=remote, host_id=pane_key[0],
+                                    command=herdr.command_for_host(pane_key[0]),
                                 )
                             else:
                                 success, _output = await asyncio.to_thread(
                                     herdr.run_herdr_checked,
-                                    "pane", "send-text", pane_id, payload + "\n", remote=remote,
+                                    "pane", "send-text", pane_id, payload + "\n",
+                                    remote=remote, host_id=pane_key[0],
+                                    command=herdr.command_for_host(pane_key[0]),
                                 )
                         except Exception:
                             log.exception("Dialog response delivery failed: pane=%s", pane_id)
@@ -326,6 +340,7 @@ async def handle_client(ws):
                             dialog["consumed"] = True
                             response = protocol.command_ack(request_id, {
                                 "pane_id": pane_id,
+                                "host_id": pane_key[0],
                                 "dialog_id": dialog["dialog_id"],
                                 "revision": dialog["revision"],
                             })
@@ -333,27 +348,31 @@ async def handle_client(ws):
                 # Herdr failure for the same request ID; the next attempt must
                 # be allowed to submit again.
                 if response.get("code") != "HERDR_FAILED":
-                    _remember_response(request_results, request_id, response)
+                    _remember_response(request_results, request_id, response, msg)
                 await ws.send(json.dumps(response))
             elif msg_type == "respond":
                 pane_id = msg["pane_id"]
-                if pane_id not in state.known_panes:
+                pane_key = state.resolve(msg.get("host_id"), pane_id)
+                if pane_key is state.AMBIGUOUS:
+                    await ws.send(json.dumps(protocol.error("host_id required for ambiguous pane_id")))
+                    continue
+                if pane_key is None:
                     await ws.send(json.dumps(protocol.error("unknown pane_id")))
                     continue
                 text = msg.get("text", "")
                 normalized_text = text.strip().lower()
-                allowed_responses = panes.SAFE_RESPONSES | state.pane_response_options.get(pane_id, set())
+                allowed_responses = panes.SAFE_RESPONSES | state.get(state.pane_response_options, pane_key, set())
                 if normalized_text not in allowed_responses:
                     await ws.send(json.dumps(protocol.error("response not in allowlist")))
                     continue
-                dialog = state.pane_dialogs.get(pane_id)
+                dialog = state.get(state.pane_dialogs, pane_key)
                 if dialog is not None and (dialog["consumed"] or dialog["response_in_flight"]):
                     # Legacy responses remain unacknowledged, but must still
                     # participate in the same one-winner guard as typed ones.
                     continue
                 if dialog is not None:
                     dialog["response_in_flight"] = True
-                remote = state.pane_remote_map.get(pane_id)
+                remote = state.get(state.pane_remote_map, pane_key)
                 log.info("Response from %s (%s): pane=%s text=%r", ip, device, pane_id, text)
                 audit("respond", ip, device, pane_id, f"text={text!r}")
                 kind, payload = panes.respond_action(text)
@@ -361,12 +380,16 @@ async def handle_client(ws):
                     if kind == "keys":
                         success, _output = await asyncio.to_thread(
                             herdr.run_herdr_checked,
-                            "pane", "send-keys", pane_id, *payload, remote=remote,
+                            "pane", "send-keys", pane_id, *payload,
+                            remote=remote, host_id=pane_key[0],
+                            command=herdr.command_for_host(pane_key[0]),
                         )
                     else:
                         success, _output = await asyncio.to_thread(
                             herdr.run_herdr_checked,
-                            "pane", "send-text", pane_id, payload + "\n", remote=remote,
+                            "pane", "send-text", pane_id, payload + "\n",
+                            remote=remote, host_id=pane_key[0],
+                            command=herdr.command_for_host(pane_key[0]),
                         )
                 except Exception:
                     log.exception("Legacy response delivery failed: pane=%s", pane_id)
@@ -375,14 +398,18 @@ async def handle_client(ws):
                     # Only consume the exact dialog claimed above. A poll may
                     # replace it while Herdr is running; that newer prompt must
                     # remain answerable.
-                    if success and state.pane_dialogs.get(pane_id) is dialog:
+                    if success and state.get(state.pane_dialogs, pane_key) is dialog:
                         dialog["consumed"] = True
                     dialog["response_in_flight"] = False
             elif msg_type == "agent_event":
                 state.event_queue.put_nowait(msg)
             elif msg_type == "read_pane":
                 pane_id = msg["pane_id"]
-                if pane_id not in state.known_panes:
+                pane_key = state.resolve(msg.get("host_id"), pane_id)
+                if pane_key is state.AMBIGUOUS:
+                    await ws.send(json.dumps(protocol.error("host_id required for ambiguous pane_id")))
+                    continue
+                if pane_key is None:
                     await ws.send(json.dumps(protocol.error("unknown pane_id")))
                     continue
                 try:
@@ -393,20 +420,21 @@ async def handle_client(ws):
                 # herdr rejects a non-numeric --lines by printing an error and
                 # exiting 0, which would reach the client as pane content.
                 lines = herdr._read_pane_lines(msg.get("lines"))
-                remote = state.pane_remote_map.get(pane_id)
+                remote = state.get(state.pane_remote_map, pane_key)
                 content = await asyncio.to_thread(
                     herdr.read_pane,
                     pane_id,
                     remote=remote,
                     lines=lines,
                     source=source,
+                    host_id=pane_key[0],
                 )
-                payload = {"type": "pane_content", "pane_id": pane_id, "content": content}
-                protocol.add_pane_metadata(payload, pane_id)
+                payload = {"type": "pane_content", "pane_id": pane_id, "host_id": pane_key[0], "content": content}
+                protocol.add_pane_metadata(payload, pane_id, pane_key[0])
                 # Include structured blocks on demand without changing which pane
                 # this client explicitly subscribed to for live updates.
                 try:
-                    blocks, sig = await asyncio.to_thread(transcripts.blocks.pane_blocks, pane_id)
+                    blocks, sig = await asyncio.to_thread(transcripts.blocks.pane_blocks, pane_id, host_id=pane_key[0])
                 except Exception:
                     blocks, sig = None, None
                 if blocks is not None:
@@ -427,6 +455,7 @@ async def handle_client(ws):
                             limit=block_limit,
                             before=before,
                             max_bytes=max_bytes,
+                            host_id=pane_key[0],
                         )
                         payload["output_blocks"] = page or []
                         payload["output_total"] = page_meta["total"]
@@ -437,22 +466,22 @@ async def handle_client(ws):
                             payload["output_truncated"] = True
                     else:
                         payload["output_blocks"] = blocks
-                    if state.subscriptions.get(ws) == pane_id:
-                        state.stream_sigs[(id(ws), pane_id)] = sig
+                    if state.subscriptions.get(ws) == pane_key:
+                        state.stream_sigs[(id(ws), pane_key[0], pane_key[1])] = sig
                 await ws.send(json.dumps(payload))
-                current = state.pane_dialogs.get(pane_id)
-                if current is not None or state.last_statuses.get(pane_id) == "blocked":
+                current = state.get(state.pane_dialogs, pane_key)
+                if current is not None or state.get(state.last_statuses, pane_key) == "blocked":
                     # `choices` must remain the exact detector result. The
                     # legacy `options` field can still display TOOL_OPTIONS when
                     # detection fails, but that fallback is not actionable.
                     options = panes.detect_options(content)
-                    _cwd, agent, _remote, _ambiguous = state.pane_cwd_map.get(
-                        pane_id, ("", "", state.pane_remote_map.get(pane_id), False)
-                    )
+                    _cwd, agent, _remote, _ambiguous = state.get(state.pane_cwd_map, pane_key, (
+                        "", "", state.get(state.pane_remote_map, pane_key), False
+                    ))
                     agent = current["agent"] if current and not agent else agent
-                    project = current["project"] if current else state.pane_project_map.get(pane_id, "")
-                    host = current["host"] if current else state.pane_host_map.get(pane_id, "local")
-                    observation = current.get("observation") if current else state.pane_revisions.get(pane_id)
+                    project = current["project"] if current else state.get(state.pane_project_map, pane_key, "")
+                    host = current["host"] if current else state.get(state.pane_host_map, pane_key, "local")
+                    observation = current.get("observation") if current else state.get(state.pane_revisions, pane_key)
                     dialog = dialogs.ensure(
                         pane_id,
                         content,
@@ -464,56 +493,73 @@ async def handle_client(ws):
                     )
                     await ws.send(json.dumps(dialogs.frame(dialog)))
                 else:
-                    dialogs.clear(pane_id)
+                    dialogs.clear(pane_key)
             elif msg_type == "subscribe_pane":
                 pane_id = msg.get("pane_id")
-                if pane_id in state.pane_cwd_map:
+                pane_key = state.resolve(msg.get("host_id"), pane_id)
+                if pane_key is state.AMBIGUOUS:
+                    await ws.send(json.dumps(protocol.error("host_id required for ambiguous pane_id")))
+                elif pane_key is not None:
                     previous = state.subscriptions.get(ws)
-                    state.subscriptions[ws] = pane_id
+                    state.subscriptions[ws] = pane_key
                     # Someone is now watching this pane live, so the poll loop
                     # returns to its floor without waiting out a backoff (#19).
                     transport.wake_poll_loop()
                     if previous is not None:
-                        state.stream_sigs.pop((id(ws), previous), None)
+                        state.stream_sigs.pop((id(ws), previous[0], previous[1]), None)
                     try:
-                        blocks, sig = await asyncio.to_thread(transcripts.blocks.pane_blocks, pane_id)
+                        blocks, sig = await asyncio.to_thread(transcripts.blocks.pane_blocks, pane_id, host_id=pane_key[0])
                     except Exception:
                         blocks, sig = None, None
                     if blocks is not None:
-                        state.stream_sigs[(id(ws), pane_id)] = sig
-                        payload = {"type": "pane_content", "pane_id": pane_id, "output_blocks": blocks}
-                        protocol.add_pane_metadata(payload, pane_id)
+                        state.stream_sigs[(id(ws), pane_key[0], pane_id)] = sig
+                        payload = {"type": "pane_content", "pane_id": pane_id, "host_id": pane_key[0], "output_blocks": blocks}
+                        protocol.add_pane_metadata(payload, pane_id, pane_key[0])
                         await ws.send(json.dumps(payload))
             elif msg_type == "unsubscribe_pane":
                 previous = state.subscriptions.pop(ws, None)
                 if previous is not None:
-                    state.stream_sigs.pop((id(ws), previous), None)
+                    state.stream_sigs.pop((id(ws), previous[0], previous[1]), None)
             elif msg_type == "send_keys":
                 pane_id = msg["pane_id"]
-                if pane_id not in state.known_panes:
+                pane_key = state.resolve(msg.get("host_id"), pane_id)
+                if pane_key is state.AMBIGUOUS:
+                    await ws.send(json.dumps(protocol.error("host_id required for ambiguous pane_id")))
+                    continue
+                if pane_key is None:
                     await ws.send(json.dumps(protocol.error("unknown pane_id")))
                     continue
                 keys = msg.get("keys", [])
                 if not all(panes.is_safe_key(k) for k in keys):
                     await ws.send(json.dumps(protocol.error("keys contain disallowed values")))
                     continue
-                remote = state.pane_remote_map.get(pane_id)
+                remote = state.get(state.pane_remote_map, pane_key)
                 log.info("Keys from %s (%s): pane=%s keys=%s", ip, device, pane_id, keys)
                 audit("send_keys", ip, device, pane_id, f"keys={keys}")
-                await asyncio.to_thread(herdr.run_herdr, "pane", "send-keys", pane_id, *keys, remote=remote)
+                await asyncio.to_thread(
+                    herdr.run_herdr, "pane", "send-keys", pane_id, *keys,
+                    remote=remote, host_id=pane_key[0],
+                )
             elif msg_type == "send_text":
                 pane_id = msg["pane_id"]
-                if pane_id not in state.known_panes:
+                pane_key = state.resolve(msg.get("host_id"), pane_id)
+                if pane_key is state.AMBIGUOUS:
+                    await ws.send(json.dumps(protocol.error("host_id required for ambiguous pane_id")))
+                    continue
+                if pane_key is None:
                     await ws.send(json.dumps(protocol.error("unknown pane_id")))
                     continue
                 text = msg.get("text", "")
                 if not text or len(text) > 1000:
                     await ws.send(json.dumps(protocol.error("text empty or too long")))
                     continue
-                remote = state.pane_remote_map.get(pane_id)
+                remote = state.get(state.pane_remote_map, pane_key)
                 log.info("Text from %s (%s): pane=%s text=%r", ip, device, pane_id, text)
                 audit("send_text", ip, device, pane_id, f"text={text!r}")
-                await asyncio.to_thread(herdr.run_herdr, "pane", "send-text", pane_id, text, remote=remote)
+                await asyncio.to_thread(
+                    herdr.run_herdr, "pane", "send-text", pane_id, text,
+                    remote=remote, host_id=pane_key[0],
+                )
             elif msg_type == "send_prompt":
                 # Unlike the legacy send_text/send_keys pair, this is one Herdr
                 # operation: `agent prompt` owns both typing and submission.
@@ -532,7 +578,10 @@ async def handle_client(ws):
                         response = protocol.command_error(request_id, "UNKNOWN_HOST", "Unknown host")
                     else:
                         pane_id = msg.get("pane_id")
-                        if not isinstance(pane_id, str) or pane_id not in state.known_panes:
+                        pane_key = state.resolve(host_id, pane_id)
+                        if pane_key is state.AMBIGUOUS:
+                            response = protocol.command_error(request_id, "AMBIGUOUS_PANE", "host_id is required for this pane")
+                        elif pane_key is None:
                             response = protocol.command_error(request_id, "UNKNOWN_PANE", "Unknown pane")
                         else:
                             text = msg.get("text", "")
@@ -541,24 +590,25 @@ async def handle_client(ws):
                                     request_id, "INVALID_REQUEST", "text empty or too long"
                                 )
                             else:
-                                remote = state.pane_remote_map.get(pane_id)
+                                remote = state.get(state.pane_remote_map, pane_key)
                                 log.info("Prompt from %s (%s): pane=%s text=%r", ip, device, pane_id, text)
                                 audit("send_prompt", ip, device, pane_id, f"text={text!r}")
                                 success, _output = await asyncio.to_thread(
                                     herdr.run_herdr_checked,
                                     "agent", "prompt", pane_id, text,
                                     remote=remote,
-                                    host_id=host_id,
+                                    host_id=pane_key[0],
+                                    command=herdr.command_for_host(pane_key[0]),
                                 )
                                 if success:
                                     response = protocol.command_ack(
-                                        request_id, {"pane_id": pane_id}
+                                        request_id, {"pane_id": pane_id, "host_id": pane_key[0]}
                                     )
                                 else:
                                     response = protocol.command_error(
                                         request_id, "HERDR_FAILED", "Herdr did not submit the prompt"
                                     )
-                _remember_response(request_results, request_id, response)
+                _remember_response(request_results, request_id, response, msg)
                 await ws.send(json.dumps(response))
             elif msg_type == "create_tab":
                 workspace_id = msg.get("workspace_id", "")
@@ -594,10 +644,19 @@ def require_auth_token():
         raise SystemExit("HERDR_RELAY_TOKEN is required; set it before starting the relay")
 
 
-def _remember_response(request_results, request_id, response):
-    if not request_id:
+def _request_fingerprint(msg):
+    return json.dumps(
+        {key: value for key, value in msg.items() if key != "request_id"},
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+
+
+def _remember_response(request_results, request_id, response, msg):
+    if not isinstance(request_id, str) or not request_id:
         return
-    request_results[request_id] = response
+    request_results[request_id] = (_request_fingerprint(msg), response)
     if len(request_results) > 512:
         request_results.pop(next(iter(request_results)))
 

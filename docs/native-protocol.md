@@ -16,7 +16,19 @@ allowed, and `server_info.min_client` below is how it is announced.
 
 This document describes the **native dialect**, and the native dialect is *the*
 protocol. State and terminal operations use `agents`, `blocked`, and
-`pane_content` frames keyed by `pane_id`.
+`pane_content` frames keyed by `host_id` plus `pane_id`.
+
+### Host-qualified pane identity
+
+Every pane-bearing snapshot, event, response, and subscription frame includes
+`host_id` alongside `pane_id`. The relay uses the pair `(host_id, pane_id)` for
+all routing and transient state, because tmux pane IDs are only unique within a
+host. New clients must send `host_id` on every pane command. For compatibility,
+an omitted host is accepted only while exactly one currently observed host has
+that pane ID; when two hosts expose the same ID the relay returns
+`AMBIGUOUS_PANE` (or the legacy `error` form for unacknowledged commands) and
+does not invoke Herdr. Supplying an unknown or wrong `host_id` never falls back
+to another host.
 
 There was once a second, unbuilt design — "protocol v1", based on `snapshot`,
 opaque `session_id`, and `dialog_id` + `revision`. It was never deployed on
@@ -174,17 +186,18 @@ event update by the presence of `hosts`.
 | `hosts` | array of host objects | Poll snapshots only | Public configured host state and capabilities. |
 
 A complete poll agent contains all of these fields. A partial event agent
-contains `pane_id`, `agent`, `status`, `cwd`, `project`, and `host` only.
+contains `pane_id`, `host_id`, `agent`, `status`, `cwd`, `project`, and `host` only.
 
 | Agent field | Type | Presence | Meaning |
 | --- | --- | --- | --- |
-| `pane_id` | string | Required | Native pane identifier and key used by other native frames. |
+| `pane_id` | string | Required | Native pane identifier, unique only within `host_id`. |
+| `host_id` | string | Required | Configured host identity used with `pane_id` for routing. `host` remains as a display-compatible alias. |
 | `agent` | string | Required | Agent name reported by `herdr`, or the event's `agent`; may be empty in an event update. |
 | `label` | string | Poll agents only | Pane label reported by `herdr`; defaults to an empty string. |
 | `status` | string | Required | `agent_status` reported by `herdr`, defaulting to `"unknown"`, or the event's `status`, defaulting to an empty string. |
 | `cwd` | string | Required | Pane working directory; defaults to an empty string. |
 | `project` | string | Required | Basename of `cwd` in a poll, or the event's `project`; may be empty. |
-| `host` | string | Required | Configured host ID or `"local"`; event updates default to `"local"`. |
+| `host` | string | Required | Configured host ID or `"local"`; retained for display compatibility. |
 | `workspace_id` | string | Poll agents only | Workspace identifier reported by `herdr`; defaults to an empty string. |
 | `tab_id` | string | Poll agents only | Tab identifier reported by `herdr`; defaults to an empty string. |
 | `attention_state` | string | Optional | Additive explicit attention state: `"working"`, `"waiting"`, `"done"`, or `"idle"`. `"waiting"` means the agent is waiting on the user. Unknown statuses are omitted rather than guessed. |
@@ -389,7 +402,8 @@ identity.
 | Name | Type | Presence | Meaning |
 | --- | --- | --- | --- |
 | `type` | string | Required | Always `"blocked"`. |
-| `pane_id` | string | Required | Blocked pane identifier. |
+| `pane_id` | string | Required | Blocked pane identifier within `host_id`. |
+| `host_id` | string | Required | Configured host identity used with `pane_id`. |
 | `agent` | string | Required | Agent name; may be empty for an event. |
 | `project` | string | Required | Project name; may be empty for an event. |
 | `host` | string | Required | Host name or ID; event frames default to `"local"`. |
@@ -404,6 +418,7 @@ identity.
 {
   "type": "blocked",
   "pane_id": "pane-7",
+  "host_id": "buildbox",
   "agent": "claude",
   "project": "herdr-remote",
   "host": "buildbox",
@@ -429,7 +444,8 @@ subscription updates contain `output_blocks` without `content`.
 | Name | Type | Presence | Meaning |
 | --- | --- | --- | --- |
 | `type` | string | Required | Always `"pane_content"`. |
-| `pane_id` | string | Required | Pane whose content is represented. |
+| `pane_id` | string | Required | Pane whose content is represented within `host_id`. |
+| `host_id` | string | Required | Configured host identity used with `pane_id`. |
 | `content` | string | `read_pane` responses only | Output of `herdr pane read`. |
 | `output_blocks` | array of output block objects | Optional | At most the requested bounded page of structured Claude or OpenCode transcript blocks. |
 | `output_total` | integer | Optional | Number of parsed blocks available to the current bounded history window. |
@@ -598,7 +614,8 @@ point-to-point and is not correlated with `request_id`.
 
 | Message | Trigger |
 | --- | --- |
-| `unknown pane_id` | `respond`, `read_pane`, `send_keys`, or `send_text` names a pane absent from the latest poll. |
+| `unknown pane_id` | A pane command names a pane absent from the latest poll or supplies a wrong `host_id`. |
+| `host_id required for ambiguous pane_id` | A legacy pane command omitted `host_id` while multiple current hosts expose that pane ID; the command is not sent to Herdr. |
 | `response not in allowlist` | Normalized `respond.text` is not globally safe or detected for that pane. |
 | `keys contain disallowed values` | At least one `send_keys.keys` value fails the key allowlist. |
 | `text empty or too long` | `send_text.text` is empty or longer than 1,000 characters. |
@@ -866,7 +883,8 @@ Selects a response to a blocked agent prompt.
 | Name | Type | Presence | Meaning |
 | --- | --- | --- | --- |
 | `type` | string | Required | Always `"respond"`. |
-| `pane_id` | string | Required | Must identify a pane from the latest poll. |
+| `pane_id` | string | Required | Must identify a pane from the latest poll within `host_id`. |
+| `host_id` | string | Required for new clients | Configured host identity. Omit only for an unambiguous legacy pane ID. |
 | `text` | string | Required in practice | Response label. Missing input defaults to an empty string and fails the allowlist. |
 
 The relay strips surrounding whitespace and lowercases `text` for validation.
@@ -896,20 +914,23 @@ the client and does not append a newline itself; Herdr owns submission.
 | --- | --- | --- | --- |
 | `type` | string | Required | Always `"send_prompt"`. |
 | `request_id` | string | Required | 1–128 characters matching `[A-Za-z0-9._:-]+`; used for response correlation and replay. |
-| `pane_id` | string | Required | Must identify a pane from the latest poll. |
+| `pane_id` | string | Required | Must identify a pane from the latest poll within `host_id`. |
+| `host_id` | string | Required for new clients | Configured host identity. Omit only for an unambiguous legacy pane ID. |
 | `text` | string | Required | Non-empty text of at most 1,000 characters, matching the legacy `send_text` limit. |
-| `host_id` | string | Optional | When supplied, must name a configured host. Pane routing remains based on the latest pane map. |
 
 The relay returns one point-to-point `command_ack` on success, or a
 `command_error` on validation, host/pane, or Herdr failure. Both echo the
 request ID when it is valid. Repeating a completed request ID on the same
 connection replays the cached frame and never invokes Herdr again. The cache is
-per connection, like the other typed commands.
+per connection, like the other typed commands. Reusing a request ID with
+different command fields, including a different host/pane target, returns
+`REQUEST_ID_REUSED` and never reaches Herdr.
 
 ```json
 {
   "type": "send_prompt",
   "request_id": "req-prompt-1",
+  "host_id": "buildbox",
   "pane_id": "pane-7",
   "text": "run the focused tests"
 }
@@ -926,6 +947,7 @@ does not provide correlation or stale-dialog protection.
 | `type` | string | Required | Always `"respond_dialog"`. |
 | `request_id` | string | Required | 1–128 characters matching `[A-Za-z0-9._:-]+`; used for acknowledgement and replay. |
 | `pane_id` | string | Required | The pane named by the blocked frame. |
+| `host_id` | string | Required for new clients | Configured host identity. Omit only for an unambiguous legacy pane ID. |
 | `dialog_id` | string | Required | Must match the currently active blocked dialog. |
 | `revision` | integer | Optional | When supplied, must match the dialog revision. |
 | `text` | string | Required | One of the choices in the current dialog revision. |
@@ -943,6 +965,7 @@ consume the dialog and returns `HERDR_FAILED`.
   "type": "respond_dialog",
   "request_id": "answer-7",
   "pane_id": "pane-7",
+  "host_id": "buildbox",
   "dialog_id": "dlg-d131846055fd02eba10d9bd",
   "revision": 1,
   "text": "1. Yes"
@@ -972,6 +995,7 @@ when the pane maps to a remote or `host` is `"local"`.
 {
   "type": "agent_event",
   "pane_id": "pane-7",
+  "host_id": "buildbox",
   "status": "blocked",
   "host": "buildbox",
   "agent": "claude",
@@ -1029,6 +1053,7 @@ already available, the relay sends it immediately.
 | --- | --- | --- | --- |
 | `type` | string | Required | Always `"subscribe_pane"`. |
 | `pane_id` | string | Required for an effect | Pane identifier from the latest poll with correlation metadata. |
+| `host_id` | string | Required for new clients | Configured host identity. Omit only for an unambiguous legacy pane ID. |
 
 An absent or unknown `pane_id` is silently ignored. There is no acknowledgement
 other than a possible `pane_content` frame.
@@ -1057,7 +1082,8 @@ Sends an allowlisted key sequence to a current pane.
 | Name | Type | Presence | Meaning |
 | --- | --- | --- | --- |
 | `type` | string | Required | Always `"send_keys"`. |
-| `pane_id` | string | Required | Must identify a pane from the latest poll. |
+| `pane_id` | string | Required | Must identify a pane from the latest poll within `host_id`. |
+| `host_id` | string | Required for new clients | Configured host identity. Omit only for an unambiguous legacy pane ID. |
 | `keys` | array of strings | Optional | Key sequence; defaults to an empty array, which is accepted. |
 
 Literal allowed values are `y`, `n`, `a`, `Enter`, `Tab`, `Escape`, `Space`,
@@ -1083,11 +1109,13 @@ Sends text verbatim to a current pane. It does not append a newline.
 | --- | --- | --- | --- |
 | `type` | string | Required | Always `"send_text"`. |
 | `pane_id` | string | Required | Must identify a pane from the latest poll. |
+| `host_id` | string | Required for new clients | Configured host identity. Omit only for an unambiguous legacy pane ID. |
 | `text` | string | Required | Non-empty text of at most 1,000 characters. |
 
 ```json
 {
   "type": "send_text",
+  "host_id": "buildbox",
   "pane_id": "pane-7",
   "text": "pytest -q"
 }
@@ -1164,6 +1192,8 @@ These are all code and message pairs produced through `command_error`.
 | `INVALID_LABEL` | `Project label must be 1-128 characters` | A project save or rename label is empty or too long. |
 | `UNKNOWN_HOST` | `Unknown host` | A project operation names a host absent from the configured host file. |
 | `UNKNOWN_PANE` | `Unknown pane` | A `send_prompt` command names a pane absent from the latest poll. |
+| `AMBIGUOUS_PANE` | `host_id is required for this pane` | A typed pane command omitted `host_id` while multiple current hosts expose that pane ID. |
+| `REQUEST_ID_REUSED` | `request_id was already used for another command` | A connection reuses a completed request ID with different command fields. |
 | `DIALOG_NOT_ACTIVE` | `Dialog is no longer active` | A `respond_dialog` command names a pane with no current blocked dialog. |
 | `STALE_DIALOG` | `Dialog is stale` or `Dialog revision is stale` | A `respond_dialog` command names a replaced dialog or mismatched revision. |
 | `DIALOG_ALREADY_ANSWERED` | `Dialog was already answered` | A different request attempts to answer a consumed dialog. |

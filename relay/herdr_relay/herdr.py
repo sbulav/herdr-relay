@@ -195,8 +195,32 @@ def run_herdr_checked(*args, remote=None, host_id=None, command=None, timeout=15
         return False, ""
 
 
-def run_herdr(*args, remote=None):
-    return run_herdr_checked(*args, remote=remote)[1]
+def run_herdr(*args, remote=None, host_id=None, command=None):
+    kwargs = {"remote": remote}
+    if host_id is not None:
+        kwargs.update({"host_id": host_id, "command": command or command_for_host(host_id)})
+    elif command is not None:
+        kwargs["command"] = command
+    return run_herdr_checked(*args, **kwargs)[1]
+
+
+def command_for_host(host_id=None):
+    """Return the configured Herdr executable/wrapper for one host.
+
+    ``remote`` selects the SSH destination; this selects the command that runs
+    there. They are intentionally independent because two host IDs may share a
+    target while exposing different Herdr installations.
+    """
+    if host_id is None:
+        return [config.HERDR]
+    for host in configured_host_records():
+        if host.get("id") == host_id:
+            return hosts.herdr_command(host)
+    # A relay without a host file can still observe synthetic/legacy host IDs
+    # supplied by older pollers. Their pane state already selected `remote`, so
+    # retain the historical default command rather than making a valid pane
+    # unreadable solely because no per-host wrapper is configured.
+    return [config.HERDR]
 
 
 def get_agents_from_host(remote=None, host_id=None, host=None, cancel_event=None, timeout=None):
@@ -258,16 +282,18 @@ def get_agents_from_host(remote=None, host_id=None, host=None, cancel_event=None
             # A pane can relaunch under another harness, or stop reporting a
             # session altogether. Do not let a previous poll's ref survive
             # either transition when this helper is called directly.
-            state.pane_session_refs.pop((remote, p["pane_id"]), None)
+            pane_key = state.pane_key(host_id, p["pane_id"])
+            state.pane_session_refs.pop(pane_key, None)
             raw_ref = p.get("agent_session")
             ref = refs.from_pane(p.get("agent"), raw_ref)
             if raw_ref is not None:
                 # Preserve the distinction between an omitted ref (where an
                 # unambiguous cwd fallback is safe) and an invalid supplied
                 # ref (which must never silently select another transcript).
-                state.pane_session_refs[(remote, p["pane_id"])] = ref
+                state.pane_session_refs[pane_key] = ref
             agent = {
                 "pane_id": p["pane_id"],
+                "host_id": host_id,
                 "agent": p.get("agent", ""),
                 "label": p.get("label", ""),
                 "status": p.get("agent_status", "unknown"),
@@ -512,7 +538,7 @@ def _read_pane_source(value, default=DEFAULT_READ_PANE_SOURCE):
     return value
 
 
-def read_pane(pane_id, remote=None, lines=30, source=DEFAULT_READ_PANE_SOURCE):
+def read_pane(pane_id, remote=None, lines=30, source=DEFAULT_READ_PANE_SOURCE, host_id=None):
     """Read and normalize pane output without changing the operator's screen.
 
     ``visible`` is the safe default for automatic reads. ``recent`` remains
@@ -522,8 +548,12 @@ def read_pane(pane_id, remote=None, lines=30, source=DEFAULT_READ_PANE_SOURCE):
     """
     source = _read_pane_source(source)
     count = _read_pane_lines(lines)
+    kwargs = {"remote": remote}
+    if host_id is not None:
+        kwargs.update({"host_id": host_id, "command": command_for_host(host_id)})
     raw = run_herdr(
-        "pane", "read", pane_id, "--lines", str(count), "--source", source, remote=remote
+        "pane", "read", pane_id, "--lines", str(count), "--source", source,
+        **kwargs,
     )
     meaningful_lines = [
         line for line in raw.splitlines()

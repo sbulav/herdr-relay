@@ -326,6 +326,16 @@ body { font-family: -apple-system, system-ui, -webkit-system-font, sans-serif; b
 <script>
 
 let ws = null, agents = [], hosts = [], projects = [], projectRoots = [], catalogs = [], catalogStatus = {}, operations = [], activePane = null, refreshInterval = null, userScrolledUp = false;
+
+function paneKey(value) {
+  if (!value) return '';
+  return `${value.host_id || value.host || 'local'}\0${value.pane_id || ''}`;
+}
+function samePane(value) { return paneKey(value) === paneKey(activePane); }
+function panePayload(extra = {}) {
+  if (!activePane) return extra;
+  return {...extra, host_id: activePane.host_id || activePane.host || 'local', pane_id: activePane.pane_id};
+}
 let timeline = [], prevStatuses = {};
 let activeWorkspace = null;
 let activeTab = null;
@@ -473,22 +483,23 @@ function handleMessage(msg) {
     if (msg.catalog_status) catalogStatus = msg.catalog_status;
     if (Array.isArray(msg.operations)) operations = msg.operations;
     // Track timeline on status changes; preserve prompt/options across polls
-    const prevById = Object.fromEntries(agents.map(a => [a.pane_id, a]));
+    const prevById = Object.fromEntries(agents.map(a => [paneKey(a), a]));
     for (const a of msg.agents) {
-      const prev = prevStatuses[a.pane_id];
+      const key = paneKey(a);
+      const prev = prevStatuses[key];
       if (prev && prev !== a.status) {
         timeline.unshift({project: a.project, agent: a.agent, status: a.status, time: new Date()});
         if (timeline.length > 100) timeline.pop();
       }
-      prevStatuses[a.pane_id] = a.status;
-      const old = prevById[a.pane_id];
+      prevStatuses[key] = a.status;
+      const old = prevById[key];
       if (a.status === 'blocked' && old) {
         if (old.prompt && !a.prompt) a.prompt = old.prompt;
         if (old.options && !a.options) a.options = old.options;
       }
     }
     agents = msg.agents; render();
-    if (activePane) renderQuickActions(agents.find(x => x.pane_id === activePane));
+    if (activePane) renderQuickActions(agents.find(samePane));
   } else if (msg.type === 'projects') {
     if (Array.isArray(msg.projects)) projects = msg.projects;
     if (Array.isArray(msg.roots)) projectRoots = msg.roots;
@@ -563,16 +574,16 @@ function handleMessage(msg) {
     }
   }
   else if (msg.type === 'blocked') {
-    const a = agents.find(x => x.pane_id === msg.pane_id);
+    const a = agents.find(x => paneKey(x) === paneKey(msg));
     if (a) { a.status='blocked'; a.prompt=msg.prompt; a.options=msg.options; }
     else agents.push({...msg, status:'blocked'});
     if(window.cue) cue('chime');
     timeline.unshift({project: msg.project, agent: msg.agent, status: 'blocked', time: new Date()});
     if (timeline.length > 100) timeline.pop();
     render();
-    if (activePane === msg.pane_id) renderQuickActions(agents.find(x => x.pane_id === msg.pane_id));
+    if (activePane && samePane(msg)) renderQuickActions(agents.find(samePane));
     notify(msg.agent || 'Agent', msg.project || '');
-  } else if (msg.type === 'pane_content' && msg.pane_id === activePane) {
+  } else if (msg.type === 'pane_content' && activePane && samePane(msg)) {
     const el = document.getElementById('termContent');
     const prevHeight = el.scrollHeight;
     const prevScroll = el.scrollTop;
@@ -1094,7 +1105,7 @@ function agentCard(a) {
   const host = a.host&&a.host!=='local'?` <span style="color:var(--orange);font-size:0.6rem">@${a.host}</span>`:'';
   const cwd = a.cwd ? `<span style="font-family:monospace;opacity:0.7">${a.cwd.split('/').slice(-2).join('/')}</span>` : '';
   const label = a.label||a.project||a.agent;
-  return `<div class="agent${a.status==='blocked'?' blocked':''}" role="button" tabindex="0" aria-label="${label}, ${a.status}" onclick="openTerminal('${a.pane_id}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openTerminal('${a.pane_id}')}">
+  return `<div class="agent${a.status==='blocked'?' blocked':''}" role="button" tabindex="0" aria-label="${label}, ${a.status}" onclick="openTerminal('${a.pane_id}', '${a.host_id || a.host || 'local'}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openTerminal('${a.pane_id}', '${a.host_id || a.host || 'local'}')}">
     <span class="dot${pulseClass}" style="background:${color}" aria-hidden="true"></span>
     <div class="info"><div class="project">${label}${host}</div><div class="meta">${a.agent} · ${cwd}</div></div>
     <span style="color:var(--muted);font-size:1.2rem" aria-hidden="true">›</span>
@@ -1131,9 +1142,9 @@ function renderQuickActions(a) {
   }).join('');
 }
 
-function openTerminal(paneId) {
-  activePane = paneId; paneLines = 200; userScrolledUp = false;
-  const a = agents.find(x => x.pane_id===paneId);
+function openTerminal(paneId, hostId) {
+  activePane = {pane_id: paneId, host_id: hostId || 'local'}; paneLines = 200; userScrolledUp = false;
+  const a = agents.find(samePane);
   document.getElementById('termTitle').textContent = a?`${a.label||a.project} · ${a.agent}`:paneId;
   document.getElementById('agentListView').style.display = 'none';
   document.getElementById('terminalView').classList.add('active');
@@ -1151,17 +1162,17 @@ function closeTerminal() {
 }
 
 let paneLines = 200;
-function refreshPane() { if(ws&&activePane) ws.send(JSON.stringify({type:'read_pane',pane_id:activePane,lines:paneLines})); }
+function refreshPane() { if(ws&&activePane) ws.send(JSON.stringify(panePayload({type:'read_pane',lines:paneLines}))); }
 function loadMore() { paneLines = Math.min(paneLines + 500, 5000); refreshPane(); }
 function sendText() {
   const i=document.getElementById('termInput');
   if(!i.value||!ws||!activePane)return;
-  ws.send(JSON.stringify({type:'send_text',pane_id:activePane,text:i.value}));
-  ws.send(JSON.stringify({type:'send_keys',pane_id:activePane,keys:['Enter']}));
+  ws.send(JSON.stringify(panePayload({type:'send_text',text:i.value})));
+  ws.send(JSON.stringify(panePayload({type:'send_keys',keys:['Enter']})));
   i.value=''; setTimeout(refreshPane,500);
 }
-function sendKey(k){if(!ws||!activePane)return;ws.send(JSON.stringify({type:'send_keys',pane_id:activePane,keys:[k]}));setTimeout(refreshPane,300);}
-function sendKeys(k){if(!ws||!activePane)return;ws.send(JSON.stringify({type:'send_keys',pane_id:activePane,keys:k}));setTimeout(refreshPane,300);}
+function sendKey(k){if(!ws||!activePane)return;ws.send(JSON.stringify(panePayload({type:'send_keys',keys:[k]})));setTimeout(refreshPane,300);}
+function sendKeys(k){if(!ws||!activePane)return;ws.send(JSON.stringify(panePayload({type:'send_keys',keys:k})));setTimeout(refreshPane,300);}
 
 // --- Nav Tray (collie-style) ---
 let keyQueue = [], armedMod = null, ctrlConfirm = null;
@@ -1249,8 +1260,8 @@ function toggleQuickDock() {
 function quickSend(text) {
   if (!ws || !activePane) return;
   if(window.cue) cue('success');
-  ws.send(JSON.stringify({type:'send_text', pane_id: activePane, text: text}));
-  ws.send(JSON.stringify({type:'send_keys', pane_id: activePane, keys:['Enter']}));
+  ws.send(JSON.stringify(panePayload({type:'send_text', text: text})));
+  ws.send(JSON.stringify(panePayload({type:'send_keys', keys:['Enter']})));
   document.getElementById('quickDock').style.display = 'none';
   setTimeout(refreshPane, 500);
 }
@@ -1304,7 +1315,7 @@ function pressCtrl(label) {
 
 function toggleArrows(){}
 function hideArrows(){}
-function respond(t){if(!ws||!activePane)return;if(window.cue)cue('success');ws.send(JSON.stringify({type:'respond',pane_id:activePane,text:t}));document.getElementById('quickActions').innerHTML='';setTimeout(refreshPane,500);}
+function respond(t){if(!ws||!activePane)return;if(window.cue)cue('success');ws.send(JSON.stringify(panePayload({type:'respond',text:t})));document.getElementById('quickActions').innerHTML='';setTimeout(refreshPane,500);}
 document.getElementById('termInput').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();sendText();}});
 document.getElementById('termContent').addEventListener('scroll', function() {
   const el = this;
@@ -1359,7 +1370,7 @@ const COMMANDS = {
 };
 
 function getAgentCommands() {
-  const a = agents.find(x => x.pane_id === activePane);
+  const a = agents.find(samePane);
   if (!a) return [];
   const key = (a.agent || '').toLowerCase();
   if (COMMANDS[key]) return COMMANDS[key];
@@ -1394,8 +1405,8 @@ function filterCommands() {
 function runCommand(cmd) {
   closePalette();
   if (!ws || !activePane) return;
-  ws.send(JSON.stringify({type:'send_text', pane_id: activePane, text: cmd}));
-  ws.send(JSON.stringify({type:'send_keys', pane_id: activePane, keys:['Enter']}));
+  ws.send(JSON.stringify(panePayload({type:'send_text', text: cmd})));
+  ws.send(JSON.stringify(panePayload({type:'send_keys', keys:['Enter']})));
   setTimeout(refreshPane, 500);
 }
 

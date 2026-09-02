@@ -1,5 +1,6 @@
 {
   "attention_state": "working",
+  "host_id": "buildbox",
   "output_blocks": [
     {
       "id": "b0",

@@ -10,13 +10,16 @@ import os
 from .. import config, state
 from . import claude, opencode, refs
 
-def _transcript(pane_id, block_limit=config.TRANSCRIPT_BLOCK_LIMIT, max_bytes=None):
+def _transcript(pane_id, block_limit=config.TRANSCRIPT_BLOCK_LIMIT, max_bytes=None, host_id=None):
     """Resolve and parse one pane transcript, keeping the security checks in one place."""
-    info = state.pane_cwd_map.get(pane_id)
+    key = state.resolve(host_id, pane_id)
+    if key is None or key is state.AMBIGUOUS:
+        return None, None, None
+    info = state.pane_cwd_map.get(key)
     if not info:
         return None, None, None
     cwd, agent, remote, ambiguous = info
-    ref_key = (remote, pane_id)
+    ref_key = key
     ref = state.pane_session_refs.get(ref_key)
     usable_ref = refs.validated(agent, ref)
     # A session ref correlates a pane directly; without one cwd remains the
@@ -29,15 +32,20 @@ def _transcript(pane_id, block_limit=config.TRANSCRIPT_BLOCK_LIMIT, max_bytes=No
         return None, None, None
     if agent == "claude":
         try:
+            transcript_kwargs = {"max_bytes": max_bytes}
             if usable_ref and usable_ref["kind"] == "path":
-                path, body = claude.read_transcript(cwd, remote, path=usable_ref["value"], max_bytes=max_bytes)
+                path, body = claude.read_transcript(
+                    cwd, remote, path=usable_ref["value"], **transcript_kwargs
+                )
             elif usable_ref:
                 transcript_path = os.path.join(
                     config.CLAUDE_PROJECTS, claude.claude_project_dir(cwd), usable_ref["value"] + ".jsonl"
                 ) if cwd else None
-                path, body = claude.read_transcript(cwd, remote, path=transcript_path, max_bytes=max_bytes)
+                path, body = claude.read_transcript(
+                    cwd, remote, path=transcript_path, **transcript_kwargs
+                )
             else:
-                path, body = claude.read_transcript(cwd, remote, max_bytes=max_bytes)
+                path, body = claude.read_transcript(cwd, remote, **transcript_kwargs)
         except Exception:
             return None, None, None
         if not body:
@@ -53,9 +61,9 @@ def _transcript(pane_id, block_limit=config.TRANSCRIPT_BLOCK_LIMIT, max_bytes=No
     return blocks, hash(json.dumps(document, sort_keys=True)), {"source": document.get("session_id"), "truncated": False}
 
 
-def pane_blocks(pane_id):
+def pane_blocks(pane_id, host_id=None):
     """(blocks, signature) for a pane's transcript, else (None, None)."""
-    blocks, signature, _meta = _transcript(pane_id)
+    blocks, signature, _meta = _transcript(pane_id, host_id=host_id)
     return blocks, signature
 
 
@@ -104,12 +112,13 @@ def paginate_blocks(blocks, limit=config.TRANSCRIPT_BLOCK_LIMIT,
 
 
 def pane_block_page(pane_id, limit=config.TRANSCRIPT_BLOCK_LIMIT, before=None,
-                    max_bytes=config.TRANSCRIPT_PAGE_MAX_BYTES):
+                    max_bytes=config.TRANSCRIPT_PAGE_MAX_BYTES, host_id=None):
     """Return a bounded transcript page and pagination metadata for native history clients."""
     blocks, signature, meta = _transcript(
         pane_id,
         block_limit=config.TRANSCRIPT_HISTORY_BLOCK_LIMIT,
         max_bytes=config.TRANSCRIPT_HISTORY_MAX_BYTES,
+        host_id=host_id,
     )
     if blocks is None:
         return None, signature, {"total": 0, "has_more": False, "next_cursor": None, **(meta or {})}

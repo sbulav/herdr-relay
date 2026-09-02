@@ -51,8 +51,13 @@ def terminate_session(msg):
     target = state.session_target_map.get(msg.get("session_id"))
     if not target:
         return protocol.command_error(request_id, "STALE_SESSION", "Session is no longer active")
-    pane_id, remote = target
-    success, output = herdr.run_herdr_checked("pane", "close", pane_id, remote=remote)
+    if not isinstance(target, tuple) or len(target) != 3:
+        return protocol.command_error(request_id, "STALE_SESSION", "Session is no longer active")
+    host_id, pane_id, remote = target
+    success, output = herdr.run_herdr_checked(
+        "pane", "close", pane_id, remote=remote, host_id=host_id,
+        command=herdr.command_for_host(host_id),
+    )
     if not success:
         return protocol.command_error(request_id, "TERMINATE_FAILED", "Herdr did not terminate the client")
     state.session_target_map.pop(msg["session_id"], None)

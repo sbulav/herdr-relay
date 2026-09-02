@@ -27,10 +27,13 @@ def public_agents(agents):
     `state.pane_remote_map`. Sending it would hand every connected phone, and every
     proxy log, a login string for the host.
     """
-    return [
-        {key: value for key, value in agent.items() if key not in {"remote", "agent_name"}}
-        for agent in agents
-    ]
+    result = []
+    for agent in agents:
+        public = {key: value for key, value in agent.items() if key not in {"remote", "agent_name"}}
+        host_id = public.get("host_id") or public.get("host", "local")
+        public["host_id"] = host_id
+        result.append(public)
+    return result
 
 
 def session_id(host_id, pane_id):
@@ -65,13 +68,16 @@ def attention_state(status, previous_status, previous_state=None):
     return None
 
 
-def add_pane_metadata(entry, pane_id):
-    attention = state.pane_attention_states.get(pane_id)
+def add_pane_metadata(entry, pane_id, host_id=None):
+    host_id = host_id or entry.get("host_id") or entry.get("host")
+    key = state.pane_key(host_id, pane_id)
+    attention = state.get(state.pane_attention_states, key)
     if attention is not None:
         entry["attention_state"] = attention
-    if pane_id in state.pane_activity:
-        entry["updated_at"] = state.pane_activity[pane_id]
-    revision = state.pane_revisions.get(pane_id)
+    activity = state.get(state.pane_activity, key)
+    if activity is not None:
+        entry["updated_at"] = activity
+    revision = state.get(state.pane_revisions, key)
     if isinstance(revision, int) and not isinstance(revision, bool):
         entry["output_revision"] = revision
 

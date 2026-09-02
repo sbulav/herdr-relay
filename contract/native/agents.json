@@ -5,6 +5,7 @@
       "attention_state": "working",
       "cwd": "/srv/herdr-remote",
       "host": "buildbox",
+      "host_id": "buildbox",
       "label": "api tests",
       "output_revision": 7,
       "pane_id": "pane-7",

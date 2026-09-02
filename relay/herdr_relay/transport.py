@@ -10,7 +10,7 @@ import json
 
 from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
 
-from . import catalogs, config, dialogs, herdr, operations, panes, projects, protocol, push, state, transcripts
+from . import catalogs, config, dialogs, herdr, hosts, operations, panes, projects, protocol, push, state, transcripts
 from .config import log
 
 
@@ -96,14 +96,32 @@ async def catalog_loop():
 async def _poll_once():
     state.pane_session_refs.clear()  # Host threads populate refs while herdr.get_all_agents() awaits.
     agents, hosts = await herdr.get_all_agents()
+    seen_keys = set()
+    for agent in agents:
+        if not isinstance(agent, dict) or not isinstance(agent.get("pane_id"), str):
+            log.warning("Rejecting malformed pane observation atomically")
+            state.pane_session_refs.clear()
+            return
+        key = state.pane_key(agent.get("host_id") or agent.get("host", "local"), agent["pane_id"])
+        if key in seen_keys:
+            log.warning("Rejecting duplicate pane observation atomically for host=%s pane=%s", key[0], key[1])
+            state.pane_session_refs.clear()
+            return
+        seen_keys.add(key)
     changed = False
-    current_pane_ids = {a["pane_id"] for a in agents}
+    current_pane_keys = {
+        state.pane_key(a.get("host_id") or a.get("host", "local"), a["pane_id"])
+        for a in agents
+    }
+    current_pane_ids = {key[1] for key in current_pane_keys}
     state.pane_remote_map.clear()
     state.session_target_map.clear()
     state.pane_cwd_map.clear()
     state.pane_host_map.clear()
     state.pane_project_map.clear()
     state.known_panes.clear()
+    state.known_pane_keys.clear()
+    state.pane_hosts.clear()
     state.known_panes.update(current_pane_ids)
     agent_cwd_counts = {}
     for a in agents:
@@ -111,34 +129,39 @@ async def _poll_once():
             cwd_key = (a.get("remote"), a["cwd"], a["agent"])
             agent_cwd_counts[cwd_key] = agent_cwd_counts.get(cwd_key, 0) + 1
     for a in agents:
-        state.pane_remote_map[a["pane_id"]] = a.get("remote")
-        state.session_target_map[protocol.session_id(a["host"], a["pane_id"])] = (a["pane_id"], a.get("remote"))
+        pid = a["pane_id"]
+        host_id = a.get("host_id") or a.get("host", "local")
+        key = state.pane_key(host_id, pid)
+        state.known_pane_keys.add(key)
+        state.pane_hosts.setdefault(pid, set()).add(host_id)
+        state.pane_remote_map[key] = a.get("remote")
+        state.session_target_map[protocol.session_id(host_id, pid)] = (host_id, pid, a.get("remote"))
         cwd_key = (a.get("remote"), a.get("cwd", ""), a.get("agent", ""))
-        state.pane_cwd_map[a["pane_id"]] = (
+        state.pane_cwd_map[key] = (
             a.get("cwd", ""), a.get("agent", ""), a.get("remote"),
             agent_cwd_counts.get(cwd_key, 0) > 1,
         )
-        state.pane_host_map[a["pane_id"]] = a.get("host", "local")
-        state.pane_project_map[a["pane_id"]] = a.get("project", "")
-        pid, status = a["pane_id"], a["status"]
+        state.pane_host_map[key] = host_id
+        state.pane_project_map[key] = a.get("project", "")
+        status = a["status"]
         # Snapshot broadcast precedes the `state.last_statuses` update below, so this
         # still reads the prior poll's status for idle-after-work detection.
-        previous_status = state.last_statuses.get(pid)
-        attention = protocol.attention_state(status, previous_status, state.pane_attention_states.get(pid))
+        previous_status = state.get(state.last_statuses, key)
+        attention = protocol.attention_state(status, previous_status, state.get(state.pane_attention_states, key))
         if attention is None:
-            state.pane_attention_states.pop(pid, None)
+            state.pop(state.pane_attention_states, key)
         else:
-            state.pane_attention_states[pid] = attention
+            state.pane_attention_states[key] = attention
         revision = a.get("output_revision")
-        previous_revision = state.pane_revisions.get(pid)
+        previous_revision = state.get(state.pane_revisions, key)
         if (
-            pid not in state.pane_activity
+            key not in state.pane_activity
             or status != previous_status
             or revision != previous_revision
         ):
-            state.pane_activity[pid] = protocol.now_ms()
+            state.pane_activity[key] = protocol.now_ms()
             changed = True
-        state.pane_revisions[pid] = revision
+        state.pane_revisions[key] = revision
         protocol.add_pane_metadata(a, pid)
 
     # Always send a complete snapshot. In particular, an empty snapshot
@@ -180,96 +203,149 @@ async def _poll_once():
     # keeps an unchanged dialog stable.
     blocked_agents = [a for a in agents if a["status"] == "blocked"]
     blocked_content = dict(zip(
-        (a["pane_id"] for a in blocked_agents),
+        (state.pane_key(a.get("host_id") or a.get("host", "local"), a["pane_id"]) for a in blocked_agents),
         await asyncio.gather(*(
             asyncio.to_thread(
                 herdr.read_pane,
                 a["pane_id"],
                 remote=a.get("remote"),
                 source="visible",
+                host_id=a.get("host_id") or a.get("host", "local"),
             )
             for a in blocked_agents
         )),
     ))
     for a in agents:
         pid, status = a["pane_id"], a["status"]
+        host_id = a.get("host_id") or a.get("host", "local")
+        key = state.pane_key(host_id, pid)
         if status == "blocked":
-            content = blocked_content.get(pid, "")
+            content = blocked_content.get(key, "")
             options = panes.detect_options(content)
-            previous_dialog = state.pane_dialogs.get(pid)
+            previous_dialog = state.get(state.pane_dialogs, key)
             dialog = dialogs.ensure(
                 pid,
                 content,
                 options,
                 agent=a.get("agent", ""),
                 project=a.get("project", ""),
-                host=a.get("host", "local"),
+                host=host_id,
                 observation=a.get("output_revision"),
             )
             if dialog is not previous_dialog:
                 await broadcast(dialogs.frame(dialog))
-            if state.last_statuses.get(pid) != "blocked":
+            if state.get(state.last_statuses, key) != "blocked":
                 await push.send_web_push(
                     title=f"🐑 {a['project']} blocked",
                     body=content[:120],
-                    url=f"/?pane={pid}",
+                    url=f"/?pane={pid}&host_id={host_id}",
+                    tag=f"herdr-blocked:{host_id}:{pid}",
                 )
-        if status != "blocked" and state.last_statuses.get(pid) == "blocked":
-            dialogs.clear(pid)
-            await push.send_web_push("", "", clear=True)
-        state.last_statuses[pid] = status
-    for pid in set(state.last_statuses) - current_pane_ids:
-        del state.last_statuses[pid]
-        dialogs.clear(pid)
-        state.pane_activity.pop(pid, None)
-        state.pane_revisions.pop(pid, None)
-        state.pane_attention_states.pop(pid, None)
-        state.pane_host_map.pop(pid, None)
-        state.pane_project_map.pop(pid, None)
+        if status != "blocked" and state.get(state.last_statuses, key) == "blocked":
+            dialogs.clear(key)
+            await push.send_web_push(
+                "", "", url=f"/?pane={pid}&host_id={host_id}",
+                tag=f"herdr-blocked:{host_id}:{pid}", clear=True,
+            )
+        state.last_statuses[key] = status
+    for key in set(state.last_statuses) - current_pane_keys:
+        if isinstance(key, tuple):
+            state.last_statuses.pop(key, None)
+            dialogs.clear(key)
+            state.pop(state.pane_activity, key)
+            state.pop(state.pane_revisions, key)
+            state.pop(state.pane_attention_states, key)
+            state.pop(state.pane_host_map, key)
+            state.pop(state.pane_project_map, key)
 
     # Live-stream structured transcript blocks to subscribed clients. Only
     # watched Claude panes are read; a changed signature (path or content)
     # triggers a push. Failures are swallowed so one bad host can't stall.
     watchers = {
-        pid: [ws for ws, subscribed_pid in list(state.subscriptions.items()) if subscribed_pid == pid]
-        for pid in set(state.subscriptions.values()) if pid in current_pane_ids
+        key: [ws for ws, subscribed_key in list(state.subscriptions.items()) if subscribed_key == key]
+        for key in set(state.subscriptions.values()) if key in current_pane_keys
     }
     pane_results = await asyncio.gather(
-        *(asyncio.to_thread(transcripts.blocks.pane_blocks, pid) for pid in watchers),
+        *(asyncio.to_thread(transcripts.blocks.pane_blocks, key[1], host_id=key[0]) for key in watchers),
         return_exceptions=True,
     )
-    for pid, result in zip(watchers, pane_results):
+    for key, result in zip(watchers, pane_results):
         if isinstance(result, Exception):
             continue
         blocks, sig = result
         if blocks is None:
             continue
-        frame = {"type": "pane_content", "pane_id": pid, "output_blocks": blocks}
-        protocol.add_pane_metadata(frame, pid)
+        pid = key[1]
+        frame = {"type": "pane_content", "pane_id": pid, "host_id": key[0], "output_blocks": blocks}
+        protocol.add_pane_metadata(frame, pid, key[0])
         payload = json.dumps(frame)
-        for ws in watchers[pid]:
-            key = (id(ws), pid)
-            if state.stream_sigs.get(key) == sig:
+        for ws in watchers[key]:
+            stream_key = (id(ws), key[0], key[1])
+            if state.stream_sigs.get(stream_key) == sig:
                 continue
-            state.stream_sigs[key] = sig
+            state.stream_sigs[stream_key] = sig
             try:
                 await ws.send(payload)
             except Exception:
                 pass
 
 
+def _discover_pushed_pane(event, host_id, pane_id):
+    """Register an explicitly host-qualified event before the next poll.
+
+    A pushed event is safe to discover early only when its host ID is one of
+    the relay's configured canonical identities.  Omitted host IDs retain the
+    old lookup behavior and therefore cannot create a pane that might belong
+    to an unknown or ambiguous host.
+    """
+    if not isinstance(host_id, str) or not host_id or not isinstance(pane_id, str) or not pane_id:
+        return None
+    configured = next(
+        (record for record in herdr.configured_host_records() if record.get("id") == host_id),
+        None,
+    )
+    if configured is None:
+        return None
+    key = state.resolve(host_id, pane_id)
+    if key is not None:
+        return key
+    key = state.pane_key(host_id, pane_id)
+    state.known_panes.add(pane_id)
+    state.known_pane_keys.add(key)
+    state.pane_hosts.setdefault(pane_id, set()).add(host_id)
+    remote = hosts.ssh_target(configured)
+    state.pane_remote_map[key] = remote
+    state.pane_host_map[key] = host_id
+    state.pane_project_map[key] = event.get("project", "")
+    state.pane_cwd_map[key] = (
+        event.get("cwd", ""), event.get("agent", ""), remote, False,
+    )
+    return key
+
+
 async def _handle_pushed_event(event):
     pane_id = event.get("pane_id", "")
     status = event.get("status", "")
-    host = event.get("host", "local")
+    host = event.get("host_id")
+    # Old local hooks had no host_id; retain only the unambiguous local
+    # compatibility case. A non-canonical host field is never accepted as a
+    # routing authority.
+    if host is None and event.get("host") == "local":
+        host = "local"
+    key = state.resolve(host, pane_id)
+    # A canonical host-qualified hook event can safely add a pane before the
+    # poll catches up. Never let an omitted or unknown host become a routing
+    # authority: those events remain ignored until a snapshot proves identity.
+    if key is None and event.get("host_id") is not None:
+        key = _discover_pushed_pane(event, event.get("host_id"), pane_id)
 
     if status == "blocked" and pane_id:
         # A hook can race the next snapshot. Do not create an actionable
         # dialog for a pane the relay cannot currently route; the event loop
         # has already woken polling, which will publish it once observable.
-        if pane_id not in state.known_panes:
+        if key is None or key is state.AMBIGUOUS:
             return
-        remote = state.pane_remote_map.get(pane_id)
+        remote = state.get(state.pane_remote_map, key)
         if remote or host == "local":
             # Same 15s ssh-backed call the poll loop offloads (#26). Handle it
             # in a child task so it cannot delay operation transitions behind it.
@@ -278,6 +354,7 @@ async def _handle_pushed_event(event):
                 pane_id,
                 remote=remote,
                 source="visible",
+                host_id=key[0],
             )
         else:
             content = event.get("prompt", "Agent is blocked")
@@ -285,13 +362,13 @@ async def _handle_pushed_event(event):
         # supplies the legacy fallback in `options` only; an undetected prompt
         # must not become answerable through `choices`.
         options = panes.detect_options(content)
-        current = state.pane_dialogs.get(pane_id)
-        event_host = event.get("host")
+        current = state.get(state.pane_dialogs, key)
+        event_host = key[0]
         observation = event.get("output_revision")
         if not isinstance(observation, int) or isinstance(observation, bool):
             observation = event.get("revision")
         if not isinstance(observation, int) or isinstance(observation, bool):
-            observation = state.pane_revisions.get(pane_id)
+            observation = state.get(state.pane_revisions, key)
         if not isinstance(observation, int) or isinstance(observation, bool):
             observation = current.get("observation") if current else None
         dialog = dialogs.ensure(
@@ -303,24 +380,28 @@ async def _handle_pushed_event(event):
             # with the event handler's local default.
             agent=event.get("agent") or (current["agent"] if current else ""),
             project=event.get("project") or (
-                current["project"] if current else state.pane_project_map.get(pane_id, "")
+                current["project"] if current else state.get(state.pane_project_map, key, "")
             ),
-            host=event_host or (current["host"] if current else state.pane_host_map.get(pane_id, host)),
+            host=event_host or (current["host"] if current else state.get(state.pane_host_map, key, host)),
             observation=observation,
         )
         await broadcast(dialogs.frame(dialog))
     elif pane_id and status:
-        dialogs.clear(pane_id)
+        key = state.resolve(host, pane_id)
+        if key is None or key is state.AMBIGUOUS:
+            return
+        dialogs.clear(key)
 
-    if pane_id and event.get("type") == "agent_event":
+    if pane_id and event.get("type") == "agent_event" and key is not None and key is not state.AMBIGUOUS:
         await broadcast({
             "type": "agents", "agents": [{
                 "pane_id": pane_id,
+                "host_id": key[0] if key else host,
                 "agent": event.get("agent", ""),
                 "status": status,
                 "cwd": event.get("cwd", ""),
                 "project": event.get("project", ""),
-                "host": host,
+                "host": key[0] if key else host,
             }]
         })
 

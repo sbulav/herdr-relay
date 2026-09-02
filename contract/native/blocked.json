@@ -6,6 +6,7 @@
   ],
   "dialog_id": "dlg-751484d4c5f4b91da342fde7",
   "host": "buildbox",
+  "host_id": "buildbox",
   "options": [
     "1. Yes",
     "2. No"

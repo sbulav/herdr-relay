@@ -259,6 +259,8 @@ class EventLoopBlockingTests(unittest.TestCase):
 
         with (
             patch.object(herdr_relay.state, "known_panes", {"pane-1"}),
+            patch.object(herdr_relay.state, "known_pane_keys", {("local", "pane-1")}),
+            patch.dict(herdr_relay.state.pane_hosts, {"pane-1": {"local"}}, clear=True),
             patch.object(herdr_relay.state, "pane_remote_map", {}),
             patch.object(herdr_relay.herdr, "run_herdr", side_effect=blocking_command),
         ):
@@ -271,7 +273,7 @@ class PollLoopBlockingTests(unittest.TestCase):
         release = threading.Event()
         finished = threading.Event()
 
-        def blocking_read(pane_id, remote=None, source=None):
+        def blocking_read(pane_id, remote=None, source=None, host_id=None):
             started.set()
             release.wait(timeout=1)
             finished.set()
@@ -317,7 +319,7 @@ class PollLoopBlockingTests(unittest.TestCase):
         release = threading.Event()
         finished = threading.Event()
 
-        def blocking_read(pane_id, remote=None, source=None):
+        def blocking_read(pane_id, remote=None, source=None, host_id=None):
             started.set()
             release.wait(timeout=1)
             finished.set()
@@ -522,7 +524,7 @@ class PaneMetadataTests(unittest.TestCase):
             herdr_relay.push, "send_web_push", new_callable=AsyncMock
         ):
             asyncio.run(herdr_relay._poll_once())
-            herdr_relay.state.pane_dialogs["pane-1"]["consumed"] = True
+            herdr_relay.state.pane_dialogs[("local", "pane-1")]["consumed"] = True
             asyncio.run(herdr_relay._poll_once())
             asyncio.run(herdr_relay._poll_once())
 
@@ -992,7 +994,8 @@ class PaneChromeTests(unittest.TestCase):
     def test_read_pane_uses_visible_by_default_and_honors_recent(self, run_herdr):
         self.assertEqual("first\nsecond\nthird", herdr_relay.herdr.read_pane("pane-1"))
         run_herdr.assert_called_once_with(
-            "pane", "read", "pane-1", "--lines", "30", "--source", "visible", remote=None
+            "pane", "read", "pane-1", "--lines", "30", "--source", "visible",
+            remote=None
         )
 
         run_herdr.reset_mock()
@@ -1037,8 +1040,10 @@ class StructuredOutputTests(unittest.TestCase):
         ):
             socket = Socket()
             with (
-                patch.dict(herdr_relay.state.last_statuses, {"pane-1": status}, clear=True),
+                patch.dict(herdr_relay.state.last_statuses, {("local", "pane-1"): status}, clear=True),
                 patch.object(herdr_relay.state, "known_panes", {"pane-1"}),
+                patch.object(herdr_relay.state, "known_pane_keys", {("local", "pane-1")}),
+                patch.dict(herdr_relay.state.pane_hosts, {"pane-1": {"local"}}, clear=True),
                 patch.dict(herdr_relay.state.pane_response_options, {}, clear=True),
                 patch.dict(herdr_relay.state.pane_dialogs, {}, clear=True),
                 patch.object(herdr_relay.herdr, "run_herdr", return_value=prompt),
@@ -1079,14 +1084,16 @@ class StructuredOutputTests(unittest.TestCase):
 
         socket = Socket()
         with (
-            patch.dict(herdr_relay.state.last_statuses, {"pane-1": "blocked"}, clear=True),
+            patch.dict(herdr_relay.state.last_statuses, {("buildbox", "pane-1"): "blocked"}, clear=True),
             patch.object(herdr_relay.state, "known_panes", {"pane-1"}),
-            patch.dict(herdr_relay.state.pane_remote_map, {"pane-1": "deploy@buildbox"}, clear=True),
+            patch.object(herdr_relay.state, "known_pane_keys", {("buildbox", "pane-1")}),
+            patch.dict(herdr_relay.state.pane_hosts, {"pane-1": {"buildbox"}}, clear=True),
+            patch.dict(herdr_relay.state.pane_remote_map, {("buildbox", "pane-1"): "deploy@buildbox"}, clear=True),
             patch.dict(herdr_relay.state.pane_cwd_map, {
-                "pane-1": ("/srv/repo", "claude", "deploy@buildbox", False)
+                ("buildbox", "pane-1"): ("/srv/repo", "claude", "deploy@buildbox", False)
             }, clear=True),
-            patch.dict(herdr_relay.state.pane_host_map, {"pane-1": "buildbox"}, clear=True),
-            patch.dict(herdr_relay.state.pane_project_map, {"pane-1": "repo"}, clear=True),
+            patch.dict(herdr_relay.state.pane_host_map, {("buildbox", "pane-1"): "buildbox"}, clear=True),
+            patch.dict(herdr_relay.state.pane_project_map, {("buildbox", "pane-1"): "repo"}, clear=True),
             patch.dict(herdr_relay.state.pane_dialogs, {}, clear=True),
             patch.dict(herdr_relay.state.pane_dialog_revisions, {}, clear=True),
             patch.object(herdr_relay.herdr, "run_herdr", return_value="Do you want to proceed?\n1. Yes\n2. No"),
@@ -1388,11 +1395,13 @@ class StructuredOutputTests(unittest.TestCase):
             with (
                 patch.object(herdr_relay.config, "CLAUDE_PROJECTS", directory),
                 patch.dict(herdr_relay.state.pane_session_refs, {}, clear=True),
+                patch.object(herdr_relay.state, "known_pane_keys", {("local", "first"), ("local", "second")}),
+                patch.dict(herdr_relay.state.pane_hosts, {"first": {"local"}, "second": {"local"}}, clear=True),
                 patch.dict(
                     herdr_relay.state.pane_cwd_map,
                     {
-                        "first": ("/work/repo", "claude", None, True),
-                        "second": ("/work/repo", "claude", None, True),
+                        ("local", "first"): ("/work/repo", "claude", None, True),
+                        ("local", "second"): ("/work/repo", "claude", None, True),
                     },
                     clear=True,
                 ),
@@ -1411,7 +1420,7 @@ class StructuredOutputTests(unittest.TestCase):
         with (
             patch.dict(
                 herdr_relay.state.pane_cwd_map,
-                {"ambiguous": ("/work/repo", "claude", None, True)},
+                {("local", "ambiguous"): ("/work/repo", "claude", None, True)},
                 clear=True,
             ),
             patch.dict(herdr_relay.state.pane_session_refs, {}, clear=True),
@@ -1431,14 +1440,16 @@ class StructuredOutputTests(unittest.TestCase):
                 }))
             with (
                 patch.object(herdr_relay.config, "CLAUDE_PROJECTS", projects),
+                patch.object(herdr_relay.state, "known_pane_keys", {("local", "pane-id")}),
+                patch.dict(herdr_relay.state.pane_hosts, {"pane-id": {"local"}}, clear=True),
                 patch.dict(
                     herdr_relay.state.pane_cwd_map,
-                    {"pane-id": (cwd, "claude", None, True)},
+                    {("local", "pane-id"): (cwd, "claude", None, True)},
                     clear=True,
                 ),
                 patch.dict(
                     herdr_relay.state.pane_session_refs,
-                    {(None, "pane-id"): {
+                    {("local", "pane-id"): {
                         "agent": "claude", "kind": "id", "value": session_id,
                     }},
                     clear=True,
@@ -1461,14 +1472,16 @@ class StructuredOutputTests(unittest.TestCase):
                 }))
             with (
                 patch.object(herdr_relay.config, "CLAUDE_PROJECTS", projects),
+                patch.object(herdr_relay.state, "known_pane_keys", {("local", "pane-id")}),
+                patch.dict(herdr_relay.state.pane_hosts, {"pane-id": {"local"}}, clear=True),
                 patch.dict(
                     herdr_relay.state.pane_cwd_map,
-                    {"pane-id": (cwd, "claude", None, True)},
+                    {("local", "pane-id"): (cwd, "claude", None, True)},
                     clear=True,
                 ),
                 patch.dict(
                     herdr_relay.state.pane_session_refs,
-                    {(None, "pane-id"): {
+                    {("local", "pane-id"): {
                         "agent": "claude", "kind": "id", "value": session_id,
                     }},
                     clear=True,
@@ -1481,12 +1494,12 @@ class StructuredOutputTests(unittest.TestCase):
         with (
             patch.dict(
                 herdr_relay.state.pane_cwd_map,
-                {"pane-id": ("", "claude", None, False)},
+                {("local", "pane-id"): ("", "claude", None, False)},
                 clear=True,
             ),
             patch.dict(
                 herdr_relay.state.pane_session_refs,
-                {(None, "pane-id"): {
+                {("local", "pane-id"): {
                     "agent": "claude", "kind": "id",
                     "value": "123e4567-e89b-62d3-a456-426614174000",
                 }},
@@ -1522,7 +1535,7 @@ class StructuredOutputTests(unittest.TestCase):
             patch.dict(herdr_relay.state.pane_session_refs, {}, clear=True),
             patch.dict(
                 herdr_relay.state.pane_cwd_map,
-                {pane_id: ("/work/repo", "claude", None, True)
+                {("local", pane_id): ("/work/repo", "claude", None, True)
                  for pane_id in ("bad-kind", "empty", "invalid-id", "wrong-agent", "null")},
                 clear=True,
             ),
@@ -1531,7 +1544,7 @@ class StructuredOutputTests(unittest.TestCase):
             herdr_relay.herdr.get_agents_from_host()
             self.assertEqual(
                 set(herdr_relay.state.pane_session_refs),
-                {(None, pane_id) for pane_id in
+                {("local", pane_id) for pane_id in
                  ("bad-kind", "empty", "invalid-id", "wrong-agent")},
             )
             self.assertTrue(all(
@@ -1555,12 +1568,12 @@ class StructuredOutputTests(unittest.TestCase):
                 patch.object(herdr_relay.config, "CLAUDE_PROJECTS", projects),
                 patch.dict(
                     herdr_relay.state.pane_cwd_map,
-                    {"pane-id": (cwd, "claude", None, False)},
+                    {("local", "pane-id"): (cwd, "claude", None, False)},
                     clear=True,
                 ),
                 patch.dict(
                     herdr_relay.state.pane_session_refs,
-                    {(None, "pane-id"): None},
+                    {("local", "pane-id"): None},
                     clear=True,
                 ),
             ):
@@ -1574,7 +1587,7 @@ class StructuredOutputTests(unittest.TestCase):
         with (
             patch.dict(
                 herdr_relay.state.pane_session_refs,
-                {(None, pane_id): {
+                {("local", pane_id): {
                     "agent": "claude", "kind": "id",
                     "value": "123e4567-e89b-42d3-a456-426614174000",
                 }},
@@ -1583,18 +1596,18 @@ class StructuredOutputTests(unittest.TestCase):
             patch.object(herdr_relay.herdr, "run_herdr_checked", return_value=(True, pane_list)),
         ):
             herdr_relay.herdr.get_agents_from_host()
-            self.assertNotIn((None, pane_id), herdr_relay.state.pane_session_refs)
+            self.assertNotIn(("local", pane_id), herdr_relay.state.pane_session_refs)
 
     def test_claude_ref_must_match_pane_agent(self):
         with (
             patch.dict(
                 herdr_relay.state.pane_cwd_map,
-                {"pane-id": ("/work/repo", "claude", None, True)},
+                {("local", "pane-id"): ("/work/repo", "claude", None, True)},
                 clear=True,
             ),
             patch.dict(
                 herdr_relay.state.pane_session_refs,
-                {(None, "pane-id"): {
+                {("local", "pane-id"): {
                     "agent": "opencode", "kind": "id", "value": "ses_target",
                 }},
                 clear=True,
@@ -1618,12 +1631,12 @@ class StructuredOutputTests(unittest.TestCase):
                 patch.object(herdr_relay.config, "CLAUDE_PROJECTS", projects),
                 patch.dict(
                     herdr_relay.state.pane_cwd_map,
-                    {"pane-id": (cwd, "claude", None, True)},
+                    {("local", "pane-id"): (cwd, "claude", None, True)},
                     clear=True,
                 ),
                 patch.dict(
                     herdr_relay.state.pane_session_refs,
-                    {(None, "pane-id"): {
+                    {("local", "pane-id"): {
                         "agent": "claude", "kind": "id", "value": missing_id,
                     }},
                     clear=True,
@@ -1730,14 +1743,16 @@ class StructuredOutputTests(unittest.TestCase):
                 db.close()
             with (
                 patch.object(herdr_relay.config, "OPENCODE_DB", db_path),
+                patch.object(herdr_relay.state, "known_pane_keys", {("local", "opencode")}),
+                patch.dict(herdr_relay.state.pane_hosts, {"opencode": {"local"}}, clear=True),
                 patch.dict(
                     herdr_relay.state.pane_cwd_map,
-                    {"opencode": ("/wrong/repo", "opencode", None, True)},
+                    {("local", "opencode"): ("/wrong/repo", "opencode", None, True)},
                     clear=True,
                 ),
                 patch.dict(
                     herdr_relay.state.pane_session_refs,
-                    {(None, "opencode"): {
+                    {("local", "opencode"): {
                         "agent": "opencode", "kind": "id", "value": "target-session",
                     }},
                     clear=True,
@@ -1931,6 +1946,8 @@ class RelayInputValidationTests(unittest.TestCase):
         socket = Socket()
         with (
             patch.object(herdr_relay.state, "known_panes", {"pane-1"}),
+            patch.object(herdr_relay.state, "known_pane_keys", {("local", "pane-1")}),
+            patch.dict(herdr_relay.state.pane_hosts, {"pane-1": {"local"}}, clear=True),
             patch.dict(herdr_relay.state.pane_dialogs, {}, clear=True),
             patch.object(herdr_relay.transcripts.blocks, "pane_blocks", return_value=(None, None)),
         ):
@@ -1939,7 +1956,8 @@ class RelayInputValidationTests(unittest.TestCase):
         # "abc" would make herdr print an error on stdout and exit 0, which the
         # relay would then serve to the client as terminal content.
         run_herdr.assert_called_once_with(
-            "pane", "read", "pane-1", "--lines", "30", "--source", "visible", remote=None
+            "pane", "read", "pane-1", "--lines", "30", "--source", "visible",
+            remote=None, host_id="local", command=[herdr_relay.config.HERDR]
         )
         self.assertEqual(
             ["pane_content"], [frame["type"] for frame in after_handshake(socket.sent)]
@@ -1972,6 +1990,8 @@ class RelayInputValidationTests(unittest.TestCase):
         socket = Socket()
         with (
             patch.object(herdr_relay.state, "known_panes", {"pane-1"}),
+            patch.object(herdr_relay.state, "known_pane_keys", {("local", "pane-1")}),
+            patch.dict(herdr_relay.state.pane_hosts, {"pane-1": {"local"}}, clear=True),
             patch.object(herdr_relay.herdr, "run_herdr") as run_herdr,
         ):
             asyncio.run(herdr_relay.handle_client(socket))
@@ -2008,9 +2028,11 @@ class RelayInputValidationTests(unittest.TestCase):
 
         with (
             patch.object(herdr_relay.state, "known_panes", {"pane-1"}),
+            patch.object(herdr_relay.state, "known_pane_keys", {("local", "pane-1")}),
+            patch.dict(herdr_relay.state.pane_hosts, {"pane-1": {"local"}}, clear=True),
             patch.dict(
                 herdr_relay.state.pane_response_options,
-                {"pane-1": {"allow once", "allow always", "reject"}},
+                {("local", "pane-1"): {"allow once", "allow always", "reject"}},
                 clear=True,
             ),
         ):
@@ -2019,11 +2041,68 @@ class RelayInputValidationTests(unittest.TestCase):
 
         self.assertEqual(after_handshake(socket.sent), [])
         run_herdr_checked.assert_called_once_with(
-            "pane", "send-keys", "pane-1", "Enter", remote=None
+            "pane", "send-keys", "pane-1", "Enter", remote=None, host_id="local",
+            command=[herdr_relay.config.HERDR]
         )
 
 
 class RequestCacheTests(unittest.TestCase):
+    def test_request_id_reuse_across_host_pane_fingerprints_is_rejected(self):
+        class Socket:
+            request_headers = {}
+
+            def __init__(self):
+                self.requests = iter([
+                    json.dumps({
+                        "type": "send_prompt", "request_id": "same-request",
+                        "host_id": "alpha", "pane_id": "pane-a", "text": "first",
+                    }),
+                    json.dumps({
+                        "type": "send_prompt", "request_id": "same-request",
+                        "host_id": "beta", "pane_id": "pane-b", "text": "second",
+                    }),
+                ])
+                self.sent = []
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                try:
+                    return next(self.requests)
+                except StopIteration:
+                    raise StopAsyncIteration
+
+            async def send(self, raw):
+                self.sent.append(json.loads(raw))
+
+        records = [host_record("alpha", "shared-target"), host_record("beta", "shared-target")]
+        socket = Socket()
+        with (
+            patch.object(herdr_relay.state, "known_panes", {"pane-a", "pane-b"}),
+            patch.object(
+                herdr_relay.state, "known_pane_keys", {("alpha", "pane-a"), ("beta", "pane-b")}
+            ),
+            patch.dict(
+                herdr_relay.state.pane_hosts,
+                {"pane-a": {"alpha"}, "pane-b": {"beta"}},
+                clear=True,
+            ),
+            patch.dict(
+                herdr_relay.state.pane_remote_map,
+                {("alpha", "pane-a"): "shared-target", ("beta", "pane-b"): "shared-target"},
+                clear=True,
+            ),
+            patch.object(herdr_relay.herdr, "configured_host_records", return_value=records),
+            patch.object(herdr_relay.herdr, "run_herdr_checked", return_value=(True, "")) as checked,
+        ):
+            asyncio.run(herdr_relay.handle_client(socket))
+
+        frames = after_handshake(socket.sent)
+        self.assertEqual("command_ack", frames[0]["type"])
+        self.assertEqual("REQUEST_ID_REUSED", frames[1]["code"])
+        checked.assert_called_once()
+
     def test_request_replay_cache_is_scoped_to_each_connection(self):
         class Socket:
             request_headers = {}
@@ -2089,6 +2168,8 @@ class SendPromptTests(unittest.TestCase):
         socket = self.socket(messages)
         with (
             patch.object(herdr_relay.state, "known_panes", {"pane-1"}),
+            patch.object(herdr_relay.state, "known_pane_keys", {("local", "pane-1")}),
+            patch.dict(herdr_relay.state.pane_hosts, {"pane-1": {"local"}}, clear=True),
             patch.dict(herdr_relay.state.pane_remote_map, {}, clear=True),
             patch.object(
                 herdr_relay.herdr,
@@ -2115,10 +2196,11 @@ class SendPromptTests(unittest.TestCase):
         self.assertEqual([{
             "type": "command_ack",
             "request_id": "prompt-1",
-            "result": {"pane_id": "pane-1"},
+            "result": {"pane_id": "pane-1", "host_id": "local"},
         }], frames)
         checked.assert_called_once_with(
-            "agent", "prompt", "pane-1", "run tests", remote=None, host_id=None
+            "agent", "prompt", "pane-1", "run tests", remote=None, host_id="local",
+            command=[herdr_relay.config.HERDR]
         )
 
     def test_retry_replays_ack_without_submitting_again(self):
@@ -2236,7 +2318,7 @@ class DialogResponseTests(unittest.TestCase):
         self.assertEqual(herdr_relay.panes.TOOL_OPTIONS, frame["options"])
         self.assertEqual(
             {choice.lower() for choice in herdr_relay.panes.TOOL_OPTIONS},
-            herdr_relay.state.pane_response_options["pane-1"],
+            herdr_relay.state.pane_response_options[("local", "pane-1")],
         )
 
     def test_missing_observation_revision_does_not_recreate_consumed_dialog(self):
@@ -2274,6 +2356,8 @@ class DialogResponseTests(unittest.TestCase):
     def test_response_is_one_winner_and_same_request_replays(self):
         with (
             patch.object(herdr_relay.state, "known_panes", {"pane-1"}),
+            patch.object(herdr_relay.state, "known_pane_keys", {("local", "pane-1")}),
+            patch.dict(herdr_relay.state.pane_hosts, {"pane-1": {"local"}}, clear=True),
             patch.dict(herdr_relay.state.pane_remote_map, {}, clear=True),
             patch.dict(herdr_relay.state.pane_dialogs, {}, clear=True),
             patch.dict(herdr_relay.state.pane_dialog_revisions, {}, clear=True),
@@ -2294,7 +2378,10 @@ class DialogResponseTests(unittest.TestCase):
         self.assertEqual(frames[0], frames[1])
         self.assertEqual("command_ack", frames[0]["type"])
         self.assertEqual("DIALOG_ALREADY_ANSWERED", frames[2]["code"])
-        checked.assert_called_once_with("pane", "send-text", "pane-1", "y\n", remote=None)
+        checked.assert_called_once_with(
+            "pane", "send-text", "pane-1", "y\n", remote=None, host_id="local",
+            command=[herdr_relay.config.HERDR]
+        )
 
     def test_concurrent_sockets_have_one_dialog_winner(self):
         started = threading.Event()
@@ -2315,6 +2402,8 @@ class DialogResponseTests(unittest.TestCase):
 
         with (
             patch.object(herdr_relay.state, "known_panes", {"pane-1"}),
+            patch.object(herdr_relay.state, "known_pane_keys", {("local", "pane-1")}),
+            patch.dict(herdr_relay.state.pane_hosts, {"pane-1": {"local"}}, clear=True),
             patch.dict(herdr_relay.state.last_statuses, {}, clear=True),
             patch.dict(herdr_relay.state.pane_remote_map, {}, clear=True),
             patch.dict(herdr_relay.state.pane_dialogs, {}, clear=True),
@@ -2338,6 +2427,8 @@ class DialogResponseTests(unittest.TestCase):
     def test_herdr_failure_is_retryable_for_same_request(self):
         with (
             patch.object(herdr_relay.state, "known_panes", {"pane-1"}),
+            patch.object(herdr_relay.state, "known_pane_keys", {("local", "pane-1")}),
+            patch.dict(herdr_relay.state.pane_hosts, {"pane-1": {"local"}}, clear=True),
             patch.dict(herdr_relay.state.last_statuses, {}, clear=True),
             patch.dict(herdr_relay.state.pane_remote_map, {}, clear=True),
             patch.dict(herdr_relay.state.pane_dialogs, {}, clear=True),
@@ -2363,6 +2454,8 @@ class DialogResponseTests(unittest.TestCase):
     def test_legacy_response_consumes_dialog_for_typed_client(self):
         with (
             patch.object(herdr_relay.state, "known_panes", {"pane-1"}),
+            patch.object(herdr_relay.state, "known_pane_keys", {("local", "pane-1")}),
+            patch.dict(herdr_relay.state.pane_hosts, {"pane-1": {"local"}}, clear=True),
             patch.dict(herdr_relay.state.last_statuses, {"pane-1": "blocked"}, clear=True),
             patch.dict(herdr_relay.state.pane_remote_map, {}, clear=True),
             patch.dict(herdr_relay.state.pane_dialogs, {}, clear=True),
@@ -2384,12 +2477,17 @@ class DialogResponseTests(unittest.TestCase):
         frames = after_handshake(socket.sent)
         self.assertEqual(["DIALOG_ALREADY_ANSWERED"], [frame["code"] for frame in frames])
         self.assertTrue(dialog["consumed"])
-        checked.assert_called_once_with("pane", "send-text", "pane-1", "y\n", remote=None)
+        checked.assert_called_once_with(
+            "pane", "send-text", "pane-1", "y\n", remote=None, host_id="local",
+            command=[herdr_relay.config.HERDR]
+        )
 
     def test_failed_legacy_response_leaves_dialog_retryable(self):
         with (
             patch.object(herdr_relay.state, "known_panes", {"pane-1"}),
-            patch.dict(herdr_relay.state.last_statuses, {"pane-1": "blocked"}, clear=True),
+            patch.object(herdr_relay.state, "known_pane_keys", {("local", "pane-1")}),
+            patch.dict(herdr_relay.state.pane_hosts, {"pane-1": {"local"}}, clear=True),
+            patch.dict(herdr_relay.state.last_statuses, {("local", "pane-1"): "blocked"}, clear=True),
             patch.dict(herdr_relay.state.pane_remote_map, {}, clear=True),
             patch.dict(herdr_relay.state.pane_dialogs, {}, clear=True),
             patch.dict(herdr_relay.state.pane_dialog_revisions, {}, clear=True),
@@ -2425,10 +2523,10 @@ class DialogResponseTests(unittest.TestCase):
             ):
                 await herdr_relay.transport._handle_pushed_event({
                     "type": "agent_event", "pane_id": "pane-1", "status": "blocked",
-                    "host": "buildbox", "agent": "claude", "project": "repo",
+                    "host_id": "buildbox", "host": "buildbox", "agent": "claude", "project": "repo",
                     "prompt": "Choose\n1. Yes\n2. No",
                 })
-                dialog = herdr_relay.state.pane_dialogs["pane-1"]
+                dialog = herdr_relay.state.pane_dialogs[("buildbox", "pane-1")]
                 socket = self.socket([{
                     "type": "respond_dialog", "request_id": "push-answer",
                     "pane_id": "pane-1", "dialog_id": dialog["dialog_id"],
@@ -2439,7 +2537,9 @@ class DialogResponseTests(unittest.TestCase):
 
         with (
             patch.object(herdr_relay.state, "known_panes", {"pane-1"}),
-            patch.dict(herdr_relay.state.last_statuses, {"pane-1": "working"}, clear=True),
+            patch.object(herdr_relay.state, "known_pane_keys", {("buildbox", "pane-1")}),
+            patch.dict(herdr_relay.state.pane_hosts, {"pane-1": {"buildbox"}}, clear=True),
+            patch.dict(herdr_relay.state.last_statuses, {("buildbox", "pane-1"): "working"}, clear=True),
             patch.dict(herdr_relay.state.pane_remote_map, {}, clear=True),
             patch.dict(herdr_relay.state.pane_dialogs, {}, clear=True),
             patch.dict(herdr_relay.state.pane_dialog_revisions, {}, clear=True),
@@ -2482,7 +2582,7 @@ class DialogResponseTests(unittest.TestCase):
             ):
                 await herdr_relay.transport._handle_pushed_event({
                     "type": "agent_event", "pane_id": "pane-1", "status": "blocked",
-                    "host": "buildbox", "agent": "claude", "project": "repo",
+                    "host_id": "buildbox", "host": "buildbox", "agent": "claude", "project": "repo",
                 })
                 socket = Socket()
                 await herdr_relay.handle_client(socket)
@@ -2490,7 +2590,9 @@ class DialogResponseTests(unittest.TestCase):
 
         with (
             patch.object(herdr_relay.state, "known_panes", {"pane-1"}),
-            patch.dict(herdr_relay.state.last_statuses, {"pane-1": "working"}, clear=True),
+            patch.object(herdr_relay.state, "known_pane_keys", {("buildbox", "pane-1")}),
+            patch.dict(herdr_relay.state.pane_hosts, {"pane-1": {"buildbox"}}, clear=True),
+            patch.dict(herdr_relay.state.last_statuses, {("buildbox", "pane-1"): "working"}, clear=True),
             patch.dict(herdr_relay.state.pane_remote_map, {}, clear=True),
             patch.dict(herdr_relay.state.pane_dialogs, {}, clear=True),
             patch.dict(herdr_relay.state.pane_dialog_revisions, {}, clear=True),
@@ -2506,6 +2608,8 @@ class DialogResponseTests(unittest.TestCase):
     def test_changed_prompt_rejects_old_dialog(self):
         with (
             patch.object(herdr_relay.state, "known_panes", {"pane-1"}),
+            patch.object(herdr_relay.state, "known_pane_keys", {("local", "pane-1")}),
+            patch.dict(herdr_relay.state.pane_hosts, {"pane-1": {"local"}}, clear=True),
             patch.dict(herdr_relay.state.pane_remote_map, {}, clear=True),
             patch.dict(herdr_relay.state.pane_dialogs, {}, clear=True),
             patch.dict(herdr_relay.state.pane_dialog_revisions, {}, clear=True),
