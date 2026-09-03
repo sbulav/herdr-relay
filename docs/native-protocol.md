@@ -1119,12 +1119,38 @@ Sends an allowlisted key sequence to a current pane.
 | `host_id` | string | Required for new clients | Configured host identity. Omit only for an unambiguous legacy pane ID. |
 | `keys` | array of strings | Optional | Key sequence; defaults to an empty array, which is accepted. |
 
-Literal allowed values are `y`, `n`, `a`, `Enter`, `Tab`, `Escape`, `Space`,
-`C-c`, `Ctrl+c`, `Up`, `Down`, `Left`, `Right`, `BSpace`, and the strings `1`
-through `9`. The relay also accepts a case-sensitive prefix of `ctrl+` or
-`shift+`, followed by a lowercase letter, `1` through `9`, or one of `Enter`,
-`Tab`, `Escape`, `Space`, `Up`, `Down`, `Left`, or `Right`. Any disallowed value
-rejects the whole frame.
+The allowlist tracks the key grammar Herdr 0.8 accepts, so a key the relay
+takes is a key the pane receives. Key *names* are matched
+case-insensitively — `Enter`, `enter` and `ENTER` are one key. Literals are
+not: a single character is delivered as that character, and `C-c` is accepted
+only in that spelling.
+
+| Form | Accepted values |
+| --- | --- |
+| Named keys | `Enter`, `Return`, `Tab`, `Escape`, `Esc`, `Space`, `Backspace`, `BS`, `Up`, `Down`, `Left`, `Right` |
+| Characters | `y`, `n`, `a`, and the strings `0` through `9` |
+| Function keys | `F1` through `F12` |
+| Modifier chords | One or two distinct modifiers from `ctrl` and `shift`, joined by `+` to a letter, a digit, a named key, or a function key — `ctrl+c`, `Ctrl+D`, `shift+Tab`, `ctrl+shift+c`, `ctrl+F5` |
+| Legacy chord | `C-c` exactly, the one `-` chord Herdr recognises. Prefer `ctrl+c`. |
+| Navigation keys | `Home`, `End`, `PageUp`, `PageDown` |
+
+Any other value rejects the whole frame, raw escape sequences included. The
+relay is deliberately narrower than Herdr: Herdr also accepts `alt+` and
+`meta+` chords, `F0` through `F255`, uppercase `Y`/`N`/`A`, and `c-c`
+alongside `C-c` — the relay accepts none of those. A modifier cannot be
+applied to a navigation key either: `ctrl+Home` is rejected, and so is
+`Home` as a name, because Herdr 0.8 has no name for it at all.
+
+Herdr 0.8 has no key name for the four navigation keys, so the relay sends
+them as the xterm CSI sequence instead — `Home` as `ESC [ H`, `End` as
+`ESC [ F`, `PageUp` as `ESC [ 5 ~`, `PageDown` as `ESC [ 6 ~`. A frame that
+mixes them with ordinary keys is delivered in the order the client wrote it.
+This is the relay's own translation; a client still cannot put escape bytes
+into `keys`.
+
+**Compatibility.** `BSpace` was previously listed here and is no longer
+accepted: it is a tmux spelling that Herdr answers with `invalid_key`, so it
+never reached a pane. Clients should send `Backspace` or `BS`.
 
 ```json
 {

@@ -1901,6 +1901,20 @@ class DetectOptionsTests(unittest.TestCase):
 
 
 class RelayInputValidationTests(unittest.TestCase):
+    def test_backspace_uses_a_key_name_herdr_08_accepts(self):
+        """`BSpace` is a tmux spelling Herdr 0.8 rejects as `invalid_key`.
+
+        Pinned against herdr 0.8.0: `Backspace` and `BS` are accepted (in any
+        case), `BSpace` and `bspace` are not.
+        """
+        for key in ("Backspace", "backspace", "BackSpace", "BS", "bs"):
+            with self.subTest(key=key):
+                self.assertTrue(herdr_relay.panes.is_safe_key(key))
+
+        for key in ("BSpace", "bspace"):
+            with self.subTest(key=key):
+                self.assertFalse(herdr_relay.panes.is_safe_key(key))
+
     def test_key_allowlist_covers_the_web_keyboard(self):
         for key in ("Enter", "Space", "1", "Ctrl+c", "ctrl+d", "shift+1"):
             with self.subTest(key=key):
@@ -1909,6 +1923,94 @@ class RelayInputValidationTests(unittest.TestCase):
         for key in ("--help", "ctrl+;", "arbitrary"):
             with self.subTest(key=key):
                 self.assertFalse(herdr_relay.panes.is_safe_key(key))
+
+    def test_modifier_chords_and_function_keys_pass_validation(self):
+        """Herdr 0.8 matches names case-insensitively, so the relay must too.
+
+        `Ctrl+d` used to be rejected while `ctrl+d` passed, because the old
+        pattern anchored on a lowercase prefix.
+        """
+        for key in (
+            "ctrl+c", "Ctrl+C", "CTRL+D", "ctrl+u", "ctrl+0", "ctrl+9",
+            "shift+Tab", "Shift+tab", "ctrl+Enter", "ctrl+Space", "ctrl+Up",
+            "ctrl+shift+c", "F1", "f1", "F12", "ctrl+F5",
+        ):
+            with self.subTest(key=key):
+                self.assertTrue(herdr_relay.panes.is_safe_key(key))
+
+    def test_keys_herdr_08_rejects_are_not_offered_to_clients(self):
+        """Accepting a name Herdr rejects would fail silently at the pane.
+
+        Every name here returns `invalid_key` from herdr 0.8.0, so the relay
+        must reject it rather than hand it over.
+        """
+        for key in (
+            "BSpace", "Delete", "Del", "Insert", "Ins", "BackTab", "BTab",
+            "CR", "C-a", "C-x", "c-u", "M-a", "S-Tab", "F13", "F256",
+        ):
+            with self.subTest(key=key):
+                self.assertFalse(herdr_relay.panes.is_safe_key(key))
+
+    def test_unsafe_and_withheld_forms_stay_rejected(self):
+        """The allowlist is narrower than Herdr, and denies by default."""
+        for key in (
+            "--help", "ctrl+;", "arbitrary", "", "\x1b[5~", "\x1b", "\n",
+            "alt+a", "meta+a", "ctrl+alt+a",   # Herdr takes these; relay does not
+            "ctrl+ctrl+c", "ctrl+", "+c", "b", "z",
+            "ctrl+Home", "shift+PageUp",   # no Herdr name to modify
+
+        ):
+            with self.subTest(key=key):
+                self.assertFalse(herdr_relay.panes.is_safe_key(key))
+        self.assertFalse(herdr_relay.panes.is_safe_key(None))
+
+    def test_literal_keys_stay_the_spellings_clients_are_offered(self):
+        """Case-insensitivity holds for key *names*, not for literals.
+
+        Herdr 0.8 does take `Y` and `c-c` (though not `C-C`), so this is the
+        allowlist choosing to be narrower than Herdr: a single character is
+        delivered as that character, and uppercase answers were never offered.
+        Every spelling a client is told to use stays accepted.
+        """
+        for key in ("y", "n", "a", "C-c", "ctrl+c", "Ctrl+C", "CTRL+C", "ctrl+Y"):
+            with self.subTest(accepted=key):
+                self.assertTrue(herdr_relay.panes.is_safe_key(key))
+        for key in ("Y", "N", "A", "c-c", "C-C"):
+            with self.subTest(rejected=key):
+                self.assertFalse(herdr_relay.panes.is_safe_key(key))
+
+    def test_navigation_keys_become_csi_sequences(self):
+        """Herdr 0.8 has no name for these four, so the relay generates them.
+
+        The sequences are the xterm encodings, verified against a live pane:
+        Home and End move the cursor in a readline prompt.
+        """
+        self.assertTrue(
+            all(herdr_relay.panes.is_safe_key(k)
+                for k in ("Home", "End", "PageUp", "PageDown", "pageup"))
+        )
+        self.assertEqual(herdr_relay.panes.key_action("Home"), ("text", "\x1b[H"))
+        self.assertEqual(herdr_relay.panes.key_action("End"), ("text", "\x1b[F"))
+        self.assertEqual(herdr_relay.panes.key_action("PageUp"), ("text", "\x1b[5~"))
+        self.assertEqual(herdr_relay.panes.key_action("PageDown"), ("text", "\x1b[6~"))
+        self.assertEqual(herdr_relay.panes.key_action("Enter"), ("keys", "Enter"))
+
+    def test_key_runs_keep_client_order_and_batch_send_keys(self):
+        """Adjacent send-keys arguments share one Herdr call; CSI text splits it."""
+        self.assertEqual(
+            herdr_relay.panes.key_runs(["Up", "Enter"]),
+            [("keys", ["Up", "Enter"])],
+        )
+        self.assertEqual(
+            herdr_relay.panes.key_runs(["Home", "y", "PageDown", "Enter", "Tab"]),
+            [
+                ("text", ["\x1b[H"]),
+                ("keys", ["y"]),
+                ("text", ["\x1b[6~"]),
+                ("keys", ["Enter", "Tab"]),
+            ],
+        )
+        self.assertEqual(herdr_relay.panes.key_runs([]), [])
 
     def test_read_pane_line_count_is_coerced_to_a_sane_int(self):
         coerce = herdr_relay.herdr._read_pane_lines
@@ -2044,6 +2146,94 @@ class RelayInputValidationTests(unittest.TestCase):
             "pane", "send-keys", "pane-1", "Enter", remote=None, host_id="local",
             command=[herdr_relay.config.HERDR]
         )
+
+
+    @patch.object(herdr_relay.herdr, "run_herdr_checked", return_value=(True, ""))
+    def test_send_keys_delivers_navigation_keys_as_csi_text(self, run_herdr_checked):
+        """A client may ask for PageUp; Herdr 0.8 only takes the sequence.
+
+        The frame stays one `send_keys`, so the calls must arrive in the
+        client's order: send-text for the navigation key, send-keys for the
+        rest, batched.
+        """
+        class Socket:
+            def __init__(self):
+                self.requests = iter([
+                    json.dumps({
+                        "type": "send_keys",
+                        "pane_id": "pane-1",
+                        "keys": ["PageUp", "Up", "Enter"],
+                    })
+                ])
+                self.sent = []
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                try:
+                    return next(self.requests)
+                except StopIteration:
+                    raise StopAsyncIteration
+
+            async def send(self, message):
+                self.sent.append(json.loads(message))
+
+        with (
+            patch.object(herdr_relay.state, "known_panes", {"pane-1"}),
+            patch.object(herdr_relay.state, "known_pane_keys", {("local", "pane-1")}),
+            patch.dict(herdr_relay.state.pane_hosts, {"pane-1": {"local"}}, clear=True),
+        ):
+            socket = Socket()
+            asyncio.run(herdr_relay.handle_client(socket))
+
+        self.assertEqual(after_handshake(socket.sent), [])
+        self.assertEqual(
+            [call.args for call in run_herdr_checked.call_args_list],
+            [
+                ("pane", "send-text", "pane-1", "\x1b[5~"),
+                ("pane", "send-keys", "pane-1", "Up", "Enter"),
+            ],
+        )
+
+    @patch.object(herdr_relay.herdr, "run_herdr_checked", return_value=(True, ""))
+    def test_send_keys_rejects_a_key_herdr_08_would_refuse(self, run_herdr_checked):
+        """`BSpace` must not reach Herdr, which answers `invalid_key`."""
+        class Socket:
+            def __init__(self):
+                self.requests = iter([
+                    json.dumps({
+                        "type": "send_keys",
+                        "pane_id": "pane-1",
+                        "keys": ["Backspace", "BSpace"],
+                    })
+                ])
+                self.sent = []
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                try:
+                    return next(self.requests)
+                except StopIteration:
+                    raise StopAsyncIteration
+
+            async def send(self, message):
+                self.sent.append(json.loads(message))
+
+        with (
+            patch.object(herdr_relay.state, "known_panes", {"pane-1"}),
+            patch.object(herdr_relay.state, "known_pane_keys", {("local", "pane-1")}),
+            patch.dict(herdr_relay.state.pane_hosts, {"pane-1": {"local"}}, clear=True),
+        ):
+            socket = Socket()
+            asyncio.run(herdr_relay.handle_client(socket))
+
+        frames = after_handshake(socket.sent)
+        self.assertEqual(["error"], [frame["type"] for frame in frames])
+        self.assertEqual("keys contain disallowed values", frames[0]["message"])
+        run_herdr_checked.assert_not_called()
 
 
 class RequestCacheTests(unittest.TestCase):

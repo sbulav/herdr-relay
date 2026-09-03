@@ -540,10 +540,20 @@ async def handle_client(ws):
                 remote = state.get(state.pane_remote_map, pane_key)
                 log.info("Keys from %s (%s): pane=%s keys=%s", ip, device, pane_id, keys)
                 audit("send_keys", ip, device, pane_id, f"keys={keys}")
-                await asyncio.to_thread(
-                    herdr.run_herdr, "pane", "send-keys", pane_id, *keys,
-                    remote=remote, host_id=pane_key[0],
-                )
+                # Herdr 0.8 has no key name for Home, End, PageUp or PageDown,
+                # so those travel as CSI text while everything else stays a
+                # batched send-keys call. key_runs keeps the client's order.
+                for kind, payload in panes.key_runs(keys):
+                    if kind == "keys":
+                        await asyncio.to_thread(
+                            herdr.run_herdr, "pane", "send-keys", pane_id, *payload,
+                            remote=remote, host_id=pane_key[0],
+                        )
+                    else:
+                        await asyncio.to_thread(
+                            herdr.run_herdr, "pane", "send-text", pane_id, payload[0],
+                            remote=remote, host_id=pane_key[0],
+                        )
             elif msg_type == "send_text":
                 pane_id = msg["pane_id"]
                 pane_key = state.resolve(msg.get("host_id"), pane_id)
