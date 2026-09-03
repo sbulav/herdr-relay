@@ -1,6 +1,6 @@
 {
   "durable_start": true,
   "min_client": 3,
-  "relay_version": "0.8.3",
+  "relay_version": "0.8.4",
   "type": "server_info"
 }
