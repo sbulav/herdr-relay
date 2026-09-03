@@ -688,6 +688,24 @@ function chooseHost() {
   return selectedHostId;
 }
 
+// The composer opens on the project you last started, as the app does
+// (herdr-mobile#90): a project names its host, so remembering it restores the
+// host for free. The seed keeps trying until it finds one or the user picks
+// something themselves — the projects frame may land after the composer opens
+// — and never fires again on the re-render every agents frame causes.
+let composerSeeded = false;
+function lastLaunchedProject() {
+  const ready = new Set(readyHosts().map(host => host.host_id));
+  let best = null;
+  for (const project of projects) {
+    if (project.archived || !project.available || !project.last_launch_at) continue;
+    if (!ready.has(project.host_id)) continue;
+    if (!best || project.last_launch_at > best.last_launch_at ||
+        (project.last_launch_at === best.last_launch_at && project.project_id > best.project_id)) best = project;
+  }
+  return best;
+}
+
 function renderHostSummary() {
   const el = document.getElementById('hostSummary');
   if (!el) return;
@@ -722,6 +740,7 @@ function renderOperationCards() {
 
 function openNewSession() {
   newSessionOpen = true;
+  composerSeeded = false;
   document.getElementById('agentListView').style.display = 'none';
   document.getElementById('timelineView').style.display = 'none';
   document.getElementById('settingsView').style.display = 'none';
@@ -736,6 +755,7 @@ function closeNewSession() {
 }
 
 function selectComposerHost(hostId) {
+  composerSeeded = true;
   selectedHostId = hostId;
   selectedHarnessId = '';
   selectedModelId = 'default';
@@ -768,6 +788,14 @@ function projectRootsForHost(hostId) {
 function renderProjectComposer() {
   const body = document.getElementById('composerBody');
   if (!body) return;
+  if (!composerSeeded) {
+    const seed = lastLaunchedProject();
+    if (seed) {
+      composerSeeded = true;
+      selectedProjectId = seed.project_id;
+      selectedHostId = seed.host_id;
+    }
+  }
   selectedHostId = chooseHost();
   const selected = projects.find(project => project.project_id === selectedProjectId);
   if (selected && hosts.some(host => host.host_id === selected.host_id)) selectedHostId = selected.host_id;
@@ -862,6 +890,7 @@ function setProjectQuery(value) { projectQuery = value; renderProjectComposer();
 function selectProject(projectId) {
   const project = projects.find(item => item.project_id === projectId);
   if (!project || project.archived || !project.available) return;
+  composerSeeded = true;
   selectedProjectId = projectId;
   selectedHostId = project.host_id;
   localStorage.setItem('herdr_last_project', projectId);

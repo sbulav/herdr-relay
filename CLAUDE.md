@@ -7,9 +7,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 herdr-relay is a WebSocket relay for monitoring and approving [herdr](https://herdr.dev) AI agents remotely. It bridges the herdr CLI with the [herdr-mobile](https://github.com/sbulav/herdr-mobile) Android app, a single-file web PWA, and Telegram.
 
 **herdr-mobile is the client that matters.** It is the one under active
-development, and it is the reason a change here is worth making. The web PWA is
-kept only until the app's WebView mode goes away (#14); code that exists solely
-for it is marked `LEGACY (#14)`.
+development, and the reason most changes here are made. The web PWA is a
+supported second client, kept at functional parity with the app
+(herdr-mobile#37 superseded #14's plan to retire it); code that exists only for
+the browser is marked `LEGACY (#14)` for historical reasons — the marker means
+"browser-only", not "scheduled for deletion".
 
 This repo is a hard fork of [dcolinmorgan/herdr-remote](https://github.com/dcolinmorgan/herdr-remote)
 (AGPL-3.0-or-later). There is no upstream remote and no merge target — do not
