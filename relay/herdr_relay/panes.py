@@ -13,7 +13,8 @@ SUBAGENT_OPTIONS = ["approve all pending", "configure individually", "exit (canc
 OPENCODE_OPTIONS = ["Allow once", "Allow always", "Reject"]
 # Claude Code numbered selection menus: "❯ 1. Yes" / "  2. No"
 CLAUDE_YES_NO = ["1. Yes", "2. No"]
-NUMBERED_OPT_RE = re.compile(r"(?:^|\n)[ \t]*[❯>]?[ \t]*(\d+)\.\s+(\S[^\n]*)")
+# The highlighted row carries a cursor marker: `❯` in Claude Code, `›` in Codex.
+NUMBERED_OPT_RE = re.compile(r"(?:^|\n)[ \t]*[❯›>]?[ \t]*(\d+)\.\s+(\S[^\n]*)")
 # Bullet-style free-text options: "> yes, single permission" or "• Allow once"
 BULLET_OPT_RE = re.compile(
     r"(?:^|\n)[ \t]*(?:[❯>•*-]|\[\s?\])[ \t]+([A-Za-z][^\n]{0,80})"
@@ -232,6 +233,57 @@ def detect_options(text):
         return ["allow once", "allow for this session", "deny"]
 
     return None
+
+
+# How far above the last option a question block may reach, in lines.
+QUESTION_BLOCK_LINES = 16
+CURSOR_PREFIX_RE = re.compile(r"^[❯›>][ \t]*")
+# A box-drawing line (a rule, or a box's edge) ends the region a TUI draws its
+# question in: Claude Code rules its permission prompt off from the transcript.
+BOX_LINE_RE = re.compile(r"^[\u2500-\u257f]")
+
+
+def _block_line(line):
+    """One screen line with its indentation and cursor marker removed."""
+    return CURSOR_PREFIX_RE.sub("", line.strip())
+
+
+def question_block(text, choices):
+    """Return the part of a blocked screen that states the question, or None.
+
+    Anchored on the last line that offers one of `choices`, it reaches upward
+    to the nearest rule or box edge, a run of two blank lines, or
+    QUESTION_BLOCK_LINES, whichever is closest. Everything a TUI redraws while
+    the question stands still -- the transcript and its spinners and timers
+    above, footer hints below, the moving cursor marker, rotating tips, blank
+    lines -- is left out.
+
+    None when no line offers a choice (a pushed prompt, a bare question): the
+    caller then has nothing narrower than the whole text.
+    """
+    labels = [choice.lower() for choice in choices or () if len(choice) >= 2]
+    lines = text.split("\n")
+    anchor = next((
+        index for index in range(len(lines) - 1, -1, -1)
+        if any(_block_line(lines[index]).lower().startswith(label) for label in labels)
+    ), None)
+    if anchor is None:
+        return None
+    start = anchor
+    while start > 0 and anchor - start < QUESTION_BLOCK_LINES:
+        above = lines[start - 1].strip()
+        if BOX_LINE_RE.match(above):
+            break
+        if not above and start > 1 and not lines[start - 2].strip():
+            break
+        start -= 1
+    kept = []
+    for line in lines[start:anchor + 1]:
+        cleaned = _block_line(line)
+        if not cleaned or CHROME_RE.search(cleaned) or cleaned.lower().startswith("tip:"):
+            continue
+        kept.append(cleaned)
+    return "\n".join(kept)
 
 
 def respond_action(text):

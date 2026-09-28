@@ -11,11 +11,16 @@ from . import panes, protocol, state
 
 
 def _prompt_key(prompt, choices, *, agent, project, host):
+    # The prompt is a whole captured screen, and a TUI redraws spinners,
+    # timers, banners and its cursor while one question stands. Only the
+    # question block (see panes.question_block) is identity; a prompt with no
+    # option line to anchor on is keyed on all of its text.
+    question = panes.question_block(prompt, choices)
     return json.dumps(
         # Agent/project labels are display metadata and may be absent on a
         # pushed hook event. Host plus pane identity (used by the caller) and
-        # the full prompt/choices define the answerable observation.
-        [host, prompt, choices],
+        # the question/choices define the answerable observation.
+        [host, prompt if question is None else question, choices],
         ensure_ascii=False,
         separators=(",", ":"),
     )
@@ -36,8 +41,8 @@ def ensure(
 ):
     """Return the current dialog, creating a new revision when it changed.
 
-    Dialog IDs remain stable while the observed prompt and choices remain the
-    same.  Counters survive pane cleanup so a pane ID reused by a later agent
+    Dialog IDs remain stable while the observed question and choices remain
+    the same, however the rest of the screen is redrawn.  Counters survive pane cleanup so a pane ID reused by a later agent
     cannot accidentally receive an old dialog ID.
     """
     display_prompt = (prompt or "")[:500]

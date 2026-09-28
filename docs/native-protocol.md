@@ -417,7 +417,7 @@ identity.
 | `prompt` | string | Required | Recent pane content, truncated to 500 characters. |
 | `options` | array of strings | Required | Detected choices, or the default tool choices when detection fails; retained for legacy clients. |
 | `choices` | array of strings | Required | Exact detected choices bound to this dialog revision; empty when the relay cannot verify selectable choices. |
-| `dialog_id` | string | Required | Stable identity while this prompt and choice set remain unchanged. |
+| `dialog_id` | string | Required | Stable identity while this question and choice set remain unchanged; see [Dialog identity](#dialog-identity). |
 | `revision` | integer | Required | Monotonically increasing dialog revision for this pane. |
 | `raw_input_allowed` | boolean | Required | Whether arbitrary text can be delivered. Currently always `false`; clients must use a listed choice. |
 | `workspace_id` | string | Optional | Workspace identifier reported by Herdr for this pane. |
@@ -444,6 +444,30 @@ identity.
 
 Poll and event forms are fan-out. The reduced form produced by `read_pane` is
 point-to-point to the requesting WebSocket.
+
+#### Dialog identity
+
+`dialog_id` and `revision` identify the question a pane is asking, not the
+screen it is drawn on. A TUI keeps redrawing while it waits — a spinner frame,
+an elapsed timer, a banner, a rotating tip, the cursor moving between options —
+and none of that makes a new dialog. Identity is the host, the pane, the
+**question block** and `choices`:
+
+- The block ends at the last line that offers one of `choices`, and reaches up
+  to the nearest horizontal rule or box edge, two consecutive blank lines, or
+  16 lines, whichever is closest. Lines below the last option (footer hints)
+  are not part of it.
+- Within the block, indentation, cursor markers (`❯`, `›`, `>`), blank lines,
+  UI chrome, and `Tip:` lines are ignored.
+- A prompt with no line offering a choice — a pushed event, a bare question, or
+  a one-letter `y`/`n` choice set, which never anchors a block — is identified
+  by all of its text.
+
+So a changed question, command, or option set is a new `dialog_id` and the next
+`revision`; a redraw of the same one is not, and a `respond_dialog` built from
+an earlier capture of it is still accepted. The `prompt` field is display text:
+it keeps the capture the dialog was first seen with, so a redraw leaves every
+field of the frame unchanged and the poll loop does not re-send it.
 
 Blocked and `pane_content` frames carry the same known `workspace_id`,
 `workspace_name`, `tab_id`, and `tab_name` fields. `pane_content` also carries
