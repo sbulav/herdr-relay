@@ -524,6 +524,12 @@ async def handle_client(ws):
                 previous = state.subscriptions.pop(ws, None)
                 if previous is not None:
                     state.stream_sigs.pop((id(ws), previous[0], previous[1]), None)
+            elif msg_type in {"send_keys", "send_text"} and request_id is not None:
+                # A request_id opts into acknowledged delivery (#70); without
+                # one the legacy branches below stay fire and forget.
+                response = await _acknowledged_input(msg, ip, device)
+                _remember_response(request_results, request_id, response, msg)
+                await ws.send(json.dumps(response))
             elif msg_type == "send_keys":
                 pane_id = msg["pane_id"]
                 pane_key = state.resolve(msg.get("host_id"), pane_id)
@@ -656,6 +662,70 @@ async def handle_client(ws):
 def require_auth_token():
     if not config.AUTH_TOKEN:
         raise SystemExit("HERDR_RELAY_TOKEN is required; set it before starting the relay")
+
+
+async def _acknowledged_input(msg, ip, device):
+    """Deliver a `send_keys` or `send_text` that carries a `request_id` (#70).
+
+    Validation mirrors `send_prompt`, and every Herdr call is checked: the
+    answer is `command_ack` only when each call exited cleanly. A `send_keys`
+    frame can take several calls (`panes.key_runs`), and delivery stops at the
+    first failure, so on `HERDR_FAILED` the runs before it may have reached the
+    pane.
+    """
+    msg_type = msg["type"]
+    request_id = msg["request_id"]
+    if not isinstance(request_id, str) or not projects.REQUEST_ID_RE.fullmatch(request_id):
+        return protocol.command_error(None, "INVALID_REQUEST", "request_id is required")
+    host_id = msg.get("host_id")
+    configured_host_ids = {host["id"] for host in herdr.configured_host_records()}
+    if host_id is not None and (
+        not isinstance(host_id, str)
+        or not projects.HOST_ID_RE.fullmatch(host_id)
+        or host_id not in configured_host_ids
+    ):
+        return protocol.command_error(request_id, "UNKNOWN_HOST", "Unknown host")
+    pane_id = msg.get("pane_id")
+    pane_key = state.resolve(host_id, pane_id)
+    if pane_key is state.AMBIGUOUS:
+        return protocol.command_error(request_id, "AMBIGUOUS_PANE", "host_id is required for this pane")
+    if pane_key is None:
+        return protocol.command_error(request_id, "UNKNOWN_PANE", "Unknown pane")
+
+    if msg_type == "send_keys":
+        keys = msg.get("keys")
+        # Legacy send_keys accepts an empty list as a no-op; an acknowledgement
+        # would then report a delivery that never happened.
+        if not isinstance(keys, list) or not keys:
+            return protocol.command_error(request_id, "INVALID_REQUEST", "keys must be a non-empty list")
+        if not all(panes.is_safe_key(k) for k in keys):
+            return protocol.command_error(request_id, "INVALID_REQUEST", "keys contain disallowed values")
+        calls = [
+            ("pane", "send-keys", pane_id, *payload) if kind == "keys"
+            else ("pane", "send-text", pane_id, payload[0])
+            for kind, payload in panes.key_runs(keys)
+        ]
+        log.info("Keys from %s (%s): pane=%s keys=%s", ip, device, pane_id, keys)
+        audit("send_keys", ip, device, pane_id, f"keys={keys}")
+        failure = "Herdr did not deliver the keys"
+    else:
+        text = msg.get("text", "")
+        if not isinstance(text, str) or not text or len(text) > config.MAX_SEND_TEXT_CHARS:
+            return protocol.command_error(request_id, "INVALID_REQUEST", "text empty or too long")
+        calls = [("pane", "send-text", pane_id, text)]
+        log.info("Text from %s (%s): pane=%s text=%r", ip, device, pane_id, text)
+        audit("send_text", ip, device, pane_id, f"text={text!r}")
+        failure = "Herdr did not deliver the text"
+
+    remote = state.get(state.pane_remote_map, pane_key)
+    command = herdr.command_for_host(pane_key[0])
+    for args in calls:
+        success, _output = await asyncio.to_thread(
+            herdr.run_herdr_checked, *args, remote=remote, host_id=pane_key[0], command=command,
+        )
+        if not success:
+            return protocol.command_error(request_id, "HERDR_FAILED", failure)
+    return protocol.command_ack(request_id, {"pane_id": pane_id, "host_id": pane_key[0]})
 
 
 def _request_fingerprint(msg):

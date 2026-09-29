@@ -131,6 +131,17 @@ class RejectionDialectTests(unittest.TestCase):
         frame = herdr_relay.ratelimit.rejection("send_keys", None)
         self.assertEqual({"type": "error", "message": "rate limited, slow down"}, frame)
 
+    def test_an_acknowledged_pane_command_is_refused_with_a_code(self):
+        """With a `request_id`, `send_keys` and `send_text` speak the typed dialect (#70)."""
+        for msg_type in ("send_keys", "send_text"):
+            with self.subTest(msg_type):
+                self.assertEqual({
+                    "type": "command_error",
+                    "request_id": "req-keys",
+                    "code": "RATE_LIMITED",
+                    "message": "Too many requests, slow down",
+                }, herdr_relay.ratelimit.rejection(msg_type, "req-keys"))
+
 
 class HandleClientRateLimitTests(unittest.TestCase):
     """The limit as a client experiences it: through the real dispatch loop."""
@@ -190,6 +201,28 @@ class HandleClientRateLimitTests(unittest.TestCase):
             [("rate_limited", "203.0.113.11", "Android", "pane-7", "type=send_keys")] * 3,
             [entry for entry in audited if entry[0] == "rate_limited"],
         )
+
+    def test_an_acknowledged_flood_is_refused_with_a_code(self):
+        """With a `request_id`, the limit answers in the typed dialect and sends nothing (#70)."""
+        with (
+            patch.object(herdr_relay.config, "RATE_INPUT_BURST", 1),
+            patch.object(herdr_relay.config, "RATE_INPUT_PER_SECOND", 0),
+            patch.object(herdr_relay.herdr, "command_for_host", return_value=None),
+            patch.object(herdr_relay.herdr, "run_herdr_checked", return_value=(True, "")) as checked,
+        ):
+            sent, _, run_herdr = self._drive([
+                {"type": "send_keys", "pane_id": "pane-7", "keys": ["Enter"], "request_id": "req-a"},
+                {"type": "send_text", "pane_id": "pane-7", "text": "ls", "request_id": "req-b"},
+            ])
+
+        self.assertEqual(1, checked.call_count)
+        run_herdr.assert_not_called()
+        self.assertEqual([
+            {"type": "command_ack", "request_id": "req-a",
+             "result": {"pane_id": "pane-7", "host_id": "local"}},
+            {"type": "command_error", "request_id": "req-b",
+             "code": "RATE_LIMITED", "message": "Too many requests, slow down"},
+        ], [frame for frame in sent if frame["type"] != "server_info"])
 
     def test_a_replayed_request_is_not_metered(self):
         """A remembered answer reaches no host, so it cannot be the thing limited.

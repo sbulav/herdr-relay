@@ -1,0 +1,8 @@
+{
+  "request_id": "req-keys-1",
+  "result": {
+    "host_id": "buildbox",
+    "pane_id": "pane-7"
+  },
+  "type": "command_ack"
+}
