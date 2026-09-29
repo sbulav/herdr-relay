@@ -429,7 +429,7 @@ identity.
 | `choices` | array of strings | Required | Exact detected choices bound to this dialog revision; empty when the relay cannot verify selectable choices. |
 | `dialog_id` | string | Required | Stable identity while this question and choice set remain unchanged; see [Dialog identity](#dialog-identity). |
 | `revision` | integer | Required | Monotonically increasing dialog revision for this pane. |
-| `raw_input_allowed` | boolean | Required | Whether `respond_dialog` also takes text that is not one of `choices`. `true` only for a Claude Code question offering a `N. Type something.` row; see [Free-text answers](#free-text-answers). Otherwise `false`, and clients must use a listed choice. |
+| `raw_input_allowed` | boolean | Required | Whether `respond_dialog` also takes text that is not one of `choices`. `true` only for a Claude Code question offering a `N. Type something.` row with its `Enter to select` footer line on screen; see [Free-text answers](#free-text-answers). A question first seen without its footer is re-sent with `true` once the footer is drawn; the flag is never withdrawn from a standing dialog. Otherwise `false`, and clients must use a listed choice. |
 | `workspace_id` | string | Optional | Workspace identifier reported by Herdr for this pane. |
 | `workspace_name` | string | Optional | Workspace label reported by Herdr. |
 | `tab_id` | string | Optional | Tab identifier reported by Herdr for this pane. |
@@ -495,8 +495,10 @@ and none of that makes a new dialog. Identity is the host, the pane, the
 
 - The block ends at the last line that offers one of `choices`, and reaches up
   to the nearest horizontal rule or box edge, two consecutive blank lines, or
-  16 lines, whichever is closest. Lines below the last option (footer hints)
-  are not part of it.
+  16 lines above the menu's first option row, whichever is closest. A rule
+  drawn inside the menu — one with an option line directly above it — does
+  not end the block. Lines below the last option (footer hints) are not part
+  of it.
 - Within the block, indentation, cursor markers (`❯`, `›`, `>`), blank lines,
   UI chrome, and `Tip:` lines are ignored.
 - A prompt with no line offering a choice — a pushed event, a bare question, or
@@ -1074,6 +1076,11 @@ When the dialog's `raw_input_allowed` is `true`, a `text` that is not one of
 one line of printable characters — no newline and no control or escape
 character — or it is refused with `RESPONSE_NOT_ALLOWED`, the same as any text
 on a dialog whose flag is `false`.
+
+The `N. Type something.` row is also one of `choices`, and answering with it
+is an ordinary listed choice: it opens the field empty and consumes the
+dialog. A client should render that row as the entry point for a free-text
+answer rather than as a button that submits.
 
 The relay presses the row's digit to focus the field, sends the text, then
 presses Enter, and acknowledges once all three succeed. While the field

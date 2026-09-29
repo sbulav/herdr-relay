@@ -104,6 +104,17 @@ class NumberedMenuTests(unittest.TestCase):
     def test_a_run_must_start_at_one(self):
         self.assertEqual([], herdr_relay.panes.numbered_menu("2. Yes\n3. No\n"))
 
+    def test_a_numbered_description_continues_its_row(self):
+        screen = " ❯ 1. First\n     2. looks numbered\n   2. Second\n"
+        self.assertEqual(
+            [(1, "First 2. looks numbered"), (2, "Second")],
+            herdr_relay.panes.numbered_menu(screen),
+        )
+
+    def test_an_indented_footer_ends_the_menu(self):
+        screen = "  1. Yes\n  2. No\n     Enter to select · Esc to cancel\n"
+        self.assertEqual([(1, "Yes"), (2, "No")], herdr_relay.panes.numbered_menu(screen))
+
     def test_question_block_reaches_the_question_across_the_menu_rule(self):
         block = herdr_relay.panes.question_block(CLAUDE_QUESTION_MENU, QUESTION_CHOICES)
         self.assertIn("Which way?", block)
@@ -127,6 +138,16 @@ class FreeTextCapabilityTests(unittest.TestCase):
     def test_focus_is_read_from_the_footer(self):
         self.assertFalse(herdr_relay.panes.text_field_focused(CLAUDE_QUESTION_MENU))
         self.assertTrue(herdr_relay.panes.text_field_focused(CLAUDE_QUESTION_FIELD))
+
+    def test_focus_hint_in_the_transcript_is_not_focus(self):
+        screen = "● Paste it, then press ctrl+g to edit in vim.\n" + CLAUDE_QUESTION_MENU
+        self.assertFalse(herdr_relay.panes.text_field_focused(screen))
+
+    def test_the_footer_must_start_its_line(self):
+        screen = CLAUDE_QUESTION_MENU.replace(
+            "Enter to select · ↑/↓ to navigate · Esc to cancel", "Esc to cancel"
+        ) + "● it said Enter to select\n"
+        self.assertIsNone(herdr_relay.panes.free_text_row(screen, QUESTION_CHOICES))
 
     def test_raw_input_is_allowed_only_for_the_question_shape(self):
         with (
@@ -158,6 +179,37 @@ class FreeTextCapabilityTests(unittest.TestCase):
         self.assertTrue(focused["text_field_focused"])
         self.assertNotIn("text_field_focused", herdr_relay.dialogs.frame(focused))
         self.assertNotIn("free_text_row", herdr_relay.dialogs.frame(focused))
+
+    def test_a_footer_drawn_after_the_question_grants_raw_input(self):
+        # The footer is outside the question's identity, so a capture taken
+        # before it was drawn creates the dialog, and a later one completes it.
+        bare = CLAUDE_QUESTION_MENU.replace("Enter to select · ↑/↓ to navigate · Esc to cancel", "")
+        with (
+            patch.dict(herdr_relay.state.pane_dialogs, {}, clear=True),
+            patch.dict(herdr_relay.state.pane_dialog_revisions, {}, clear=True),
+        ):
+            first = herdr_relay.dialogs.ensure("pane-1", bare, QUESTION_CHOICES)
+            self.assertFalse(first["raw_input_allowed"])
+            later = herdr_relay.dialogs.ensure("pane-1", CLAUDE_QUESTION_MENU, QUESTION_CHOICES)
+            # A capture missing the footer again does not take it back.
+            again = herdr_relay.dialogs.ensure("pane-1", bare, QUESTION_CHOICES)
+
+        self.assertIs(first, later)
+        self.assertIs(first, again)
+        self.assertTrue(again["raw_input_allowed"])
+        self.assertEqual(3, again["free_text_row"])
+
+    def test_a_delivery_in_flight_owns_focus(self):
+        with (
+            patch.dict(herdr_relay.state.pane_dialogs, {}, clear=True),
+            patch.dict(herdr_relay.state.pane_dialog_revisions, {}, clear=True),
+        ):
+            dialog = herdr_relay.dialogs.ensure("pane-1", CLAUDE_QUESTION_FIELD, QUESTION_CHOICES)
+            dialog["response_in_flight"] = True
+            # A poll captured before the delivery's first step landed.
+            herdr_relay.dialogs.ensure("pane-1", CLAUDE_QUESTION_MENU, QUESTION_CHOICES)
+
+        self.assertTrue(dialog["text_field_focused"])
 
     def test_free_text_must_be_one_printable_line_and_not_a_choice(self):
         dialog = {"raw_input_allowed": True, "choices": QUESTION_CHOICES}

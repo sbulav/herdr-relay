@@ -76,7 +76,18 @@ def ensure(
             if not current["consumed"] and observation is not None:
                 current["observation"] = observation
             # Focus moves while the question stands still; delivery reads it.
-            current["text_field_focused"] = panes.text_field_focused(prompt)
+            # While a delivery runs it owns focus, and a capture taken before
+            # its first step would otherwise undo what that step did.
+            if not current["response_in_flight"]:
+                current["text_field_focused"] = panes.text_field_focused(prompt)
+            # The footer is outside the identity, so it can arrive after the
+            # question did. The capability is only ever gained here: a capture
+            # that misses the footer does not take it back from a client.
+            if not current["raw_input_allowed"] and not current["consumed"]:
+                row = panes.free_text_row(prompt, current["choices"])
+                if row is not None:
+                    current["raw_input_allowed"] = True
+                    current["free_text_row"] = row
             if not current["agent"] and agent:
                 current["agent"] = agent
             if not current["project"] and project:

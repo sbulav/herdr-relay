@@ -164,18 +164,21 @@ def numbered_menu(text):
 
     A run starts at 1 and counts up by one per row. A line indented deeper
     than the number column continues the previous label (Claude wraps long
-    options, and draws a question's descriptions, that way); a rule is
-    stepped over, because Claude draws one between a question's answers and
-    the rows it always appends. Any other non-blank line -- the footer, which
-    sits left of the numbers -- ends the run. The last run of two or more
-    wins: a blocked pane draws its menu under whatever the agent printed, and
-    that may be a numbered list too.
+    options, and draws a question's descriptions, that way), even when it
+    reads like a numbered row itself; a rule is stepped over, because Claude
+    draws one between a question's answers and the rows it always appends.
+    Any other non-blank line -- the footer, which sits left of the numbers,
+    and is recognized however it is indented -- ends the run. The last run of
+    two or more wins: a blocked pane draws its menu under whatever the agent
+    printed, and that may be a numbered list too.
     """
     best = []
     current = []
     number_col = None
     for line in text.splitlines():
         match = NUMBERED_OPTION_RE.match(line)
+        if match and current and number_col is not None and len(match.group(1)) > number_col:
+            match = None
         if match:
             number = int(match.group(2))
             if number == 1:
@@ -194,6 +197,10 @@ def numbered_menu(text):
             continue
         if current and MENU_RULE_RE.match(stripped):
             continue
+        if _is_question_footer(stripped):
+            current = []
+            number_col = None
+            continue
         indent = len(line) - len(line.lstrip())
         if current and number_col is not None and indent > number_col:
             current[-1] = f"{current[-1]} {stripped}"
@@ -211,6 +218,22 @@ def _numbered_options(text):
     return options or None
 
 
+def _is_question_footer(line):
+    return line.strip().lower().startswith("enter to select")
+
+
+def _question_footer(text):
+    """The footer line under a Claude Code menu, lowercased, or None.
+
+    Only a line that starts with the hint counts, so transcript prose that
+    merely quotes it cannot stand in for the footer.
+    """
+    return next((
+        line.strip().lower() for line in reversed((text or "").splitlines())
+        if _is_question_footer(line)
+    ), None)
+
+
 def free_text_row(text, choices):
     """The row number of a Claude Code question's "Type something." field, or None.
 
@@ -219,7 +242,7 @@ def free_text_row(text, choices):
     must be on screen. Once text is typed into the field the row shows that
     text instead, so a half-typed answer is not offered as free text again.
     """
-    if "enter to select" not in (text or "").lower():
+    if _question_footer(text) is None:
         return None
     for choice in choices or ():
         match = FREE_TEXT_ROW_RE.match(choice.strip())
@@ -232,10 +255,12 @@ def text_field_focused(text):
     """True while a Claude Code question's text field has focus.
 
     The footer gains "ctrl+g to edit in <editor>" exactly then; the editor
-    name is the reader's $EDITOR, so only the invariant half is matched. With
-    the field focused a digit is typed into it instead of picking a row.
+    name is the reader's $EDITOR, so only the invariant half is matched, and
+    only on the footer line itself. With the field focused a digit is typed
+    into it instead of picking a row.
     """
-    return "ctrl+g to edit in" in (text or "").lower()
+    footer = _question_footer(text)
+    return footer is not None and "ctrl+g to edit in" in footer
 
 
 def _bullet_options(text):
