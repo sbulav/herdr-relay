@@ -50,6 +50,11 @@ logging.getLogger("websockets").setLevel(logging.WARNING)
 
 HERDR = os.environ.get("HERDR_BIN") or shutil.which("herdr") or "/opt/homebrew/bin/herdr"
 WS_PORT = int(os.environ.get("HERDR_RELAY_PORT", "8375"))
+# WebSocket keepalive (#68). The library's 20 s ping timeout drops a phone whose
+# radio naps or whose app is briefly backgrounded; 90 s rides that out and still
+# reaps a dead socket. A proxy's read timeout must exceed WS_PING_INTERVAL.
+WS_PING_INTERVAL = 20
+WS_PING_TIMEOUT = 90
 POLL_INTERVAL = 2
 # The ceiling the poll loop backs off to when nothing is happening — no client
 # connected, no agent working or blocked, no durable operation in flight,

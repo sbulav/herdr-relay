@@ -194,6 +194,6 @@ UPDATE_CONTRACT=1 make test
 ## Requirements
 
 - Python 3.10+ with [uv](https://docs.astral.sh/uv/), or Nix
-- herdr 0.7+
+- herdr 0.8+
 - A TLS-terminating reverse proxy, for access from outside the LAN —
   [`docs/deployment.md`](docs/deployment.md) says what it has to do
