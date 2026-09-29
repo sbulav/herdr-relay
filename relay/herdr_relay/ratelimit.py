@@ -128,8 +128,9 @@ class ConnectionLimits:
         return True if bucket is None else bucket.take()
 
 
-# Pane commands that speak the typed dialect when they carry a `request_id` (#70).
-_ACKNOWLEDGED_WITH_REQUEST_ID = frozenset({"send_keys", "send_text"})
+# Commands that speak the typed dialect when they carry a `request_id`: the pane
+# inputs (#70) and `create_tab` (#67).
+_ACKNOWLEDGED_WITH_REQUEST_ID = frozenset({"send_keys", "send_text", "create_tab"})
 
 
 def rejection(msg_type, request_id):

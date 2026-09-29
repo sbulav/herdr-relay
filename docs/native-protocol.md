@@ -100,8 +100,9 @@ result cache, so the work being limited has already happened.
 A rejected command **does not run**. The rejection is returned in the dialect the
 rejected command already speaks: a typed command gets `command_error` with code
 `RATE_LIMITED`, and a pane command gets `error` with message
-`rate limited, slow down`. A `send_keys` or `send_text` that carries a
-`request_id` is a typed command for this purpose and gets `RATE_LIMITED`.
+`rate limited, slow down`. A `send_keys`, `send_text`, or `create_tab` that
+carries a `request_id` is a typed command for this purpose and gets
+`RATE_LIMITED`.
 
 Neither frame carries a retry hint. A client that has been told to slow down
 knows the burst it just spent, and a backoff derived from the relay's clock
@@ -708,7 +709,8 @@ response to be cached under that original value.
 Reports validation failures for pane operations and `create_tab`. It is
 point-to-point and is not correlated with `request_id`. A `send_keys` or
 `send_text` that carries a `request_id` is answered with `command_error`
-instead.
+instead. `create_tab` keeps this frame only for a missing `workspace_id`; its
+host and Herdr failures are `command_error` (see [`create_tab`](#create_tab)).
 
 | Name | Type | Presence | Meaning |
 | --- | --- | --- | --- |
@@ -734,17 +736,26 @@ instead.
 
 ### `tab_created`
 
-Acknowledges a `create_tab` request after invoking `herdr tab create`. The
-relay does not inspect the command result before acknowledging it. This frame
-is point-to-point.
+Acknowledges a `create_tab` request once `herdr tab create` exited
+successfully on the named host. A failed create is a `command_error` instead.
+This frame is point-to-point.
 
 | Name | Type | Presence | Meaning |
 | --- | --- | --- | --- |
 | `type` | string | Required | Always `"tab_created"`. |
 | `ok` | boolean | Required | Always `true`. |
+| `workspace_id` | string | Required | The request's `workspace_id`. |
+| `host_id` | string | Optional | The request's `host_id`; absent when the request had none. |
+| `request_id` | string | Optional | The request's `request_id`; absent when the request had none. |
 
 ```json
-{"type": "tab_created", "ok": true}
+{
+  "type": "tab_created",
+  "ok": true,
+  "workspace_id": "workspace-2",
+  "host_id": "buildbox",
+  "request_id": "req-tab-1"
+}
 ```
 
 ### `push_subscribed`
@@ -1332,15 +1343,36 @@ Sends text verbatim to a current pane. It does not append a newline.
 
 ### `create_tab`
 
-Creates and focuses a tab in a workspace on the relay's local herdr instance.
+Creates and focuses a tab in a workspace on the host that owns it. Workspace
+IDs are per host, so a client names the host it saw the workspace on; the relay
+runs `herdr tab create` over that host's SSH target with its Herdr command.
 
 | Name | Type | Presence | Meaning |
 | --- | --- | --- | --- |
 | `type` | string | Required | Always `"create_tab"`. |
 | `workspace_id` | string | Required | Non-empty workspace identifier passed to `herdr tab create --workspace`. |
+| `host_id` | string | Optional | Configured host that owns the workspace. Absent means the relay's own Herdr, the meaning this frame had before `host_id` existed. |
+| `request_id` | string | Optional | Correlates the answer. Echoed on `tab_created` and carried on `command_error`. |
+
+The answer is exactly one frame:
+
+- [`tab_created`](#tab_created) once Herdr reported success.
+- `command_error` `HERDR_FAILED` when `herdr tab create` failed. No tab was
+  made, so this answer is not cached: repeating the `request_id` runs the
+  create again.
+- `command_error` `UNKNOWN_HOST` when `host_id` names no configured host,
+  `INVALID_REQUEST` for a malformed `request_id` (with a `null` `request_id`
+  in the reply), or `RATE_LIMITED`. None of these reaches Herdr.
+- [`error`](#error) `workspace_id required` when `workspace_id` is absent or
+  empty.
+
+A `tab_created` is cached per connection like any typed answer: repeating its
+`request_id` replays it without making a second tab, and reusing the ID with
+different fields returns `REQUEST_ID_REUSED`. Without a `request_id` a failure
+is still a `command_error`, with a `null` `request_id`.
 
 ```json
-{"type": "create_tab", "workspace_id": "workspace-2"}
+{"type": "create_tab", "request_id": "req-tab-1", "host_id": "buildbox", "workspace_id": "workspace-2"}
 ```
 
 ### `push_subscribe`
@@ -1395,14 +1427,14 @@ These are all code and message pairs produced through `command_error`.
 
 | Code | Exact message | Trigger |
 | --- | --- | --- |
-| `INVALID_REQUEST` | `request_id is required` | Any session, host, or project command has a `request_id` that is not a non-empty string, or a `send_keys` or `send_text` has a `request_id` that is not a valid one. The response's `request_id` is `null`. |
+| `INVALID_REQUEST` | `request_id is required` | Any session, host, or project command has a `request_id` that is not a non-empty string, or a `send_keys`, `send_text`, or `create_tab` has a `request_id` that is not a valid one. The response's `request_id` is `null`. |
 | `INVALID_REQUEST` | `text empty or too long` | A `send_prompt` or acknowledged `send_text` text is empty or over its limit. |
 | `INVALID_REQUEST` | `keys must be a non-empty list` | An acknowledged `send_keys` has no keys, or `keys` is not an array. |
 | `INVALID_REQUEST` | `keys contain disallowed values` | An acknowledged `send_keys` has a key outside the allowlist. |
 | `INVALID_PATH` | `Invalid folder path` | A project browse or save path is not a bounded list of individual relative names. |
 | `INVALID_NAME` | `Folder name is reserved on some platforms` | A create name violates the portable platform rules. Other invalid-name messages describe the same code more specifically. |
 | `INVALID_LABEL` | `Project label must be 1-128 characters` | A project save or rename label is empty or too long. |
-| `UNKNOWN_HOST` | `Unknown host` | A project operation, `send_prompt`, or acknowledged `send_keys` or `send_text` names a host absent from the configured host file. |
+| `UNKNOWN_HOST` | `Unknown host` | A project operation, `send_prompt`, `create_tab`, or acknowledged `send_keys` or `send_text` names a host absent from the configured host file. |
 | `UNKNOWN_PANE` | `Unknown pane` | A `send_prompt`, or an acknowledged `send_keys` or `send_text`, names a pane absent from the latest poll. |
 | `AMBIGUOUS_PANE` | `host_id is required for this pane` | A typed pane command omitted `host_id` while multiple current hosts expose that pane ID. |
 | `REQUEST_ID_REUSED` | `request_id was already used for another command` | A connection reuses a completed request ID with different command fields. |
@@ -1442,6 +1474,7 @@ These are all code and message pairs produced through `command_error`.
 | `HERDR_FAILED` | `Herdr did not deliver the keys` | A Herdr call for an acknowledged `send_keys` failed; delivery stopped there. |
 | `HERDR_FAILED` | `Herdr did not deliver the text` | The Herdr `pane send-text` call for an acknowledged `send_text` failed. |
 | `HERDR_FAILED` | `Herdr did not submit the response` | A Herdr call delivering a `respond_dialog` answer failed; delivery stopped there and the dialog stays answerable. |
+| `HERDR_FAILED` | `Herdr did not create the tab` | The Herdr `tab create` call for `create_tab` failed. Not cached; a repeated `request_id` tries again. |
 
 ## Source Of Truth
 

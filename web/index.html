@@ -338,6 +338,8 @@ function panePayload(extra = {}) {
 }
 let timeline = [], prevStatuses = {};
 let activeWorkspace = null;
+let createTabRequestId = null;
+let tabError = '';
 let activeTab = null;
 let newSessionOpen = false;
 let selectedHostId = localStorage.getItem('herdr_last_host') || '';
@@ -561,7 +563,15 @@ function handleMessage(msg) {
       localStorage.setItem('herdr_last_host', hostId);
       if (newSessionOpen) renderComposer();
     }
+  } else if (msg.type === 'tab_created') {
+    if (msg.request_id && msg.request_id === createTabRequestId) createTabRequestId = null;
   } else if (msg.type === 'command_error') {
+    if (msg.request_id && msg.request_id === createTabRequestId) {
+      createTabRequestId = null;
+      tabError = msg.message || 'Tab could not be created.';
+      render();
+      return;
+    }
     if (msg.request_id && msg.request_id === createRequestId) {
       createPending = false;
       createError = msg.message || 'Folder could not be created.';
@@ -1086,6 +1096,7 @@ function renderWorkspaces(workspaces) {
       html += `<button class="chip${activeTab===tid?' active':''}${hasBlocked?' alert':''}" onclick="selectTab('${tid}')">${tabLabel}</button>`;
     });
     html += `<button class="chip chip-add" onclick="createTab('${activeWorkspace}')">+</button>`;
+    if (tabError) html += `<span class="chip-label host-offline">${escapeHtml(tabError)}</span>`;
     html += `</div>`;
   }
   // Agent list (filtered)
@@ -1124,7 +1135,14 @@ function selectTab(id) { activeTab = id; render(); }
 function createTab(workspaceId) {
   if (!ws) return;
   if (window.cue) cue('sparkle');
-  ws.send(JSON.stringify({type:'create_tab', workspace_id: workspaceId}));
+  // Workspace IDs are per host: the tab goes to the host the workspace is on.
+  const owner = agents.find(a => a.workspace_id === workspaceId);
+  const hostId = owner ? (owner.host_id || owner.host) : null;
+  createTabRequestId = `tab-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  tabError = '';
+  const frame = {type:'create_tab', request_id: createTabRequestId, workspace_id: workspaceId};
+  if (hostId) frame.host_id = hostId;
+  ws.send(JSON.stringify(frame));
   setTimeout(() => { activeTab = null; }, 1500);
 }
 
