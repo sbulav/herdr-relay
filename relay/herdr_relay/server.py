@@ -564,7 +564,7 @@ async def handle_client(ws):
                     await ws.send(json.dumps(protocol.error("unknown pane_id")))
                     continue
                 text = msg.get("text", "")
-                if not text or len(text) > 1000:
+                if not text or len(text) > config.MAX_SEND_TEXT_CHARS:
                     await ws.send(json.dumps(protocol.error("text empty or too long")))
                     continue
                 remote = state.get(state.pane_remote_map, pane_key)
@@ -599,7 +599,7 @@ async def handle_client(ws):
                             response = protocol.command_error(request_id, "UNKNOWN_PANE", "Unknown pane")
                         else:
                             text = msg.get("text", "")
-                            if not isinstance(text, str) or not text or len(text) > 1000:
+                            if not isinstance(text, str) or not text or len(text) > config.MAX_PROMPT_CHARS:
                                 response = protocol.command_error(
                                     request_id, "INVALID_REQUEST", "text empty or too long"
                                 )

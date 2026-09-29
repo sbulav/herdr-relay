@@ -126,13 +126,15 @@ to one poll interval for the first `agents` broadcast.
 | `relay_version` | string | Required | The relay's own version, for display in a client's update prompt. |
 | `min_client` | integer | Required | Oldest client protocol revision this relay works with. |
 | `durable_start` | boolean | Required | Whether durable project starts, cancellation, recovery, and retry lineage are supported. |
+| `max_prompt_chars` | integer | Optional | Longest `send_prompt.text` this relay accepts, in characters. Absent from relays before 0.8.8. |
 
 ```json
 {
   "type": "server_info",
-  "relay_version": "0.8.0",
+  "relay_version": "0.8.8",
   "min_client": 3,
-  "durable_start": true
+  "durable_start": true,
+  "max_prompt_chars": 16384
 }
 ```
 
@@ -143,6 +145,8 @@ client's own declared revision. A client whose revision is below `min_client`
 must tell the user to update and must not attempt to interpret later frames.
 Clients must also keep durable-start controls disabled when `durable_start` is
 absent or false, which protects a newer client connecting to an older relay.
+A client caps its prompt composer at `max_prompt_chars`, and at 1,000 — the
+limit older relays enforce — when it is absent.
 
 The relay advertises and does not enforce. It never learns the client's revision
 and never refuses a connection over one: a rejected socket parks a client's
@@ -962,7 +966,7 @@ the client and does not append a newline itself; Herdr owns submission.
 | `request_id` | string | Required | 1–128 characters matching `[A-Za-z0-9._:-]+`; used for response correlation and replay. |
 | `pane_id` | string | Required | Must identify a pane from the latest poll within `host_id`. |
 | `host_id` | string | Required for new clients | Configured host identity. Omit only for an unambiguous legacy pane ID. |
-| `text` | string | Required | Non-empty text of at most 1,000 characters, matching the legacy `send_text` limit. |
+| `text` | string | Required | Non-empty text of at most `server_info.max_prompt_chars` (16,384) characters. Relays before 0.8.8 allow 1,000. |
 
 The relay returns one point-to-point `command_ack` on success, or a
 `command_error` on validation, host/pane, or Herdr failure. Both echo the
@@ -971,6 +975,12 @@ connection replays the cached frame and never invokes Herdr again. The cache is
 per connection, like the other typed commands. Reusing a request ID with
 different command fields, including a different host/pane target, returns
 `REQUEST_ID_REUSED` and never reaches Herdr.
+
+The limit is larger than `send_text`'s 1,000 because a prompt is one argument to
+`herdr agent prompt`, not a paste. It is bounded by SSH: a remote host receives
+the whole command as one shell string, which Linux caps at 131,072 bytes, and a
+character can take 5 bytes once quoted. Text over the limit is refused with
+`INVALID_REQUEST` `text empty or too long`.
 
 ```json
 {
