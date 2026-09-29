@@ -120,6 +120,18 @@ class CreateTabTests(unittest.TestCase):
             checked.call_args.kwargs,
         )
 
+    def test_a_failure_without_request_id_is_still_a_command_error(self):
+        frames, _ = self.drive(
+            [{"type": "create_tab", "host_id": "buildbox", "workspace_id": "workspace-2"}],
+            results=[(False, "")],
+        )
+
+        self.assertEqual(
+            [{"type": "command_error", "request_id": None, "code": "HERDR_FAILED",
+              "message": "Herdr did not create the tab"}],
+            frames,
+        )
+
     def test_missing_workspace_keeps_the_bare_error(self):
         frames, checked = self.drive([{"type": "create_tab", "request_id": "tab-1", "host_id": "buildbox"}])
 

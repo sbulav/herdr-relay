@@ -1366,9 +1366,11 @@ The answer is exactly one frame:
 - [`error`](#error) `workspace_id required` when `workspace_id` is absent or
   empty.
 
-A `tab_created` is cached per connection like any typed answer: repeating its
-`request_id` replays it without making a second tab, and reusing the ID with
-different fields returns `REQUEST_ID_REUSED`. Without a `request_id` a failure
+Every answer except `HERDR_FAILED` is cached per connection like any typed
+answer: repeating a `request_id` replays it — a `tab_created` without making a
+second tab, a refusal without re-checking — and reusing the ID with different
+fields returns `REQUEST_ID_REUSED`. To retry a refusal after correcting the
+frame, use a new ID. Without a `request_id` a failure
 is still a `command_error`, with a `null` `request_id`.
 
 ```json

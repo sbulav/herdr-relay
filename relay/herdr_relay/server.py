@@ -803,6 +803,10 @@ async def _create_tab(msg, ip, device):
     if host_id is None:
         remote, command = None, [config.HERDR]
     else:
+        # Matched by exact id against the configured records, without the
+        # HOST_ID_RE shape check the pane commands add: with no host file the
+        # fallback records are named by their `HERDR_REMOTES` targets, which
+        # that shape rejects, and those hosts own workspaces too.
         host = next((
             record for record in herdr.configured_host_records()
             if isinstance(host_id, str) and record["id"] == host_id
