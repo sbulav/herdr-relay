@@ -429,7 +429,7 @@ identity.
 | `choices` | array of strings | Required | Exact detected choices bound to this dialog revision; empty when the relay cannot verify selectable choices. |
 | `dialog_id` | string | Required | Stable identity while this question and choice set remain unchanged; see [Dialog identity](#dialog-identity). |
 | `revision` | integer | Required | Monotonically increasing dialog revision for this pane. |
-| `raw_input_allowed` | boolean | Required | Whether arbitrary text can be delivered. Currently always `false`; clients must use a listed choice. |
+| `raw_input_allowed` | boolean | Required | Whether `respond_dialog` also takes text that is not one of `choices`. `true` only for a Claude Code question offering a `N. Type something.` row with its `Enter to select` footer line on screen; see [Free-text answers](#free-text-answers). A question first seen without its footer is re-sent with `true` once the footer is drawn; the flag is never withdrawn from a standing dialog. Otherwise `false`, and clients must use a listed choice. |
 | `workspace_id` | string | Optional | Workspace identifier reported by Herdr for this pane. |
 | `workspace_name` | string | Optional | Workspace label reported by Herdr. |
 | `tab_id` | string | Optional | Tab identifier reported by Herdr for this pane. |
@@ -455,6 +455,36 @@ identity.
 Poll and event forms are fan-out. The reduced form produced by `read_pane` is
 point-to-point to the requesting WebSocket.
 
+A Claude Code question that takes free text sets `raw_input_allowed`
+(`contract/native/blocked_raw_input.json`):
+
+```json
+{
+  "type": "blocked",
+  "pane_id": "pane-7",
+  "host_id": "buildbox",
+  "choices": ["1. Red a warm color", "2. Blue a cool color", "3. Type something.", "4. Chat about this"],
+  "dialog_id": "dlg-d97e6addf7d5b33fcb21b5b0",
+  "revision": 1,
+  "raw_input_allowed": true
+}
+```
+
+#### Numbered menus
+
+A numbered menu is offered whole, as the last complete `1`..`N` run of two or
+more rows on screen:
+
+- A row is a number followed by `.` or `)`, optionally after a cursor marker
+  (`❯`, `>`, `›`, `»`, `▶`). A `N)` row is offered as `N. label`.
+- A line indented deeper than the row's number continues its label: a wrapped
+  option, or a question's description under its answer, joins the label with
+  one space.
+- A horizontal rule inside the run is stepped over (Claude Code draws one
+  between a question's answers and the rows it always appends). Any other line
+  at or left of the numbers, such as the footer, ends the run.
+- A numbered list printed above the menu is shadowed by it: the last run wins.
+
 #### Dialog identity
 
 `dialog_id` and `revision` identify the question a pane is asking, not the
@@ -465,8 +495,10 @@ and none of that makes a new dialog. Identity is the host, the pane, the
 
 - The block ends at the last line that offers one of `choices`, and reaches up
   to the nearest horizontal rule or box edge, two consecutive blank lines, or
-  16 lines, whichever is closest. Lines below the last option (footer hints)
-  are not part of it.
+  16 lines above the menu's first option row, whichever is closest. A rule
+  drawn inside the menu — one with an option line directly above it — does
+  not end the block. Lines below the last option (footer hints) are not part
+  of it.
 - Within the block, indentation, cursor markers (`❯`, `›`, `>`), blank lines,
   UI chrome, and `Tip:` lines are ignored.
 - A prompt with no line offering a choice — a pushed event, a bare question, or
@@ -1027,7 +1059,7 @@ does not provide correlation or stale-dialog protection.
 | `host_id` | string | Required for new clients | Configured host identity. Omit only for an unambiguous legacy pane ID. |
 | `dialog_id` | string | Required | Must match the currently active blocked dialog. |
 | `revision` | integer | Optional | When supplied, must match the dialog revision. |
-| `text` | string | Required | One of the choices in the current dialog revision. |
+| `text` | string | Required | One of the choices in the current dialog revision, or free text when the dialog's `raw_input_allowed` is `true`. At most `server_info.max_prompt_chars` characters. |
 
 The relay accepts a response only while the pane is still blocked and the dialog
 has not already been answered. A changed prompt or choice set creates a new
@@ -1036,6 +1068,31 @@ with the same request ID replays its acknowledgement, while another request for
 the consumed dialog receives `DIALOG_ALREADY_ANSWERED`. Stale or missing dialogs
 return `STALE_DIALOG` or `DIALOG_NOT_ACTIVE`. Failed Herdr delivery does not
 consume the dialog and returns `HERDR_FAILED`.
+
+#### Free-text answers
+
+When the dialog's `raw_input_allowed` is `true`, a `text` that is not one of
+`choices` is typed into the question's `N. Type something.` field. It must be
+one line of printable characters — no newline and no control or escape
+character — or it is refused with `RESPONSE_NOT_ALLOWED`, the same as any text
+on a dialog whose flag is `false`.
+
+The `N. Type something.` row is also one of `choices`, and answering with it
+is an ordinary listed choice: it opens the field empty and consumes the
+dialog. A client should render that row as the entry point for a free-text
+answer rather than as a button that submits.
+
+The relay presses the row's digit to focus the field, sends the text, then
+presses Enter, and acknowledges once all three succeed. While the field
+already has focus a digit would be typed into it, so the relay leaves the
+digit out; for the same reason a listed numbered choice answered while the
+field has focus is preceded by an `Up` that moves off the field. Delivery
+stops at the first failed step with `HERDR_FAILED` and the dialog stays
+answerable; a retry does not press the digit again once it went through.
+
+The typed text replaces the row's label on screen, so a question left
+half-answered from the terminal redraws as a new dialog without the free-text
+row and with `raw_input_allowed` `false`.
 
 ```json
 {
@@ -1352,7 +1409,9 @@ These are all code and message pairs produced through `command_error`.
 | `DIALOG_NOT_ACTIVE` | `Dialog is no longer active` | A `respond_dialog` command names a pane with no current blocked dialog. |
 | `STALE_DIALOG` | `Dialog is stale` or `Dialog revision is stale` | A `respond_dialog` command names a replaced dialog or mismatched revision. |
 | `DIALOG_ALREADY_ANSWERED` | `Dialog was already answered` | A different request attempts to answer a consumed dialog. |
-| `RESPONSE_NOT_ALLOWED` | `Response is not an option for this dialog` | The response is not globally safe or bound to the current dialog choices. |
+| `INVALID_REQUEST` | `text is required` | A `respond_dialog` has no `text`, or only whitespace. |
+| `INVALID_REQUEST` | `text is too long` | A `respond_dialog` `text` is longer than `server_info.max_prompt_chars`. |
+| `RESPONSE_NOT_ALLOWED` | `Response is not an option for this dialog` | The response is not bound to the current dialog choices, and is not [free text](#free-text-answers) the dialog accepts. |
 | `ROOT_NOT_ALLOWED` | `Folder root is not configured for this host` | A project operation names a root handle absent from the host configuration. |
 | `FOLDER_NOT_FOUND` | `Folder is unavailable` | The requested directory disappeared before the descriptor-relative open. |
 | `FOLDER_EXISTS` | `A folder with that name already exists` | Atomic create found any existing entry with the requested name. |
@@ -1382,6 +1441,7 @@ These are all code and message pairs produced through `command_error`.
 | `HERDR_FAILED` | `Herdr did not submit the prompt` | The Herdr `agent prompt` operation failed for `send_prompt`. |
 | `HERDR_FAILED` | `Herdr did not deliver the keys` | A Herdr call for an acknowledged `send_keys` failed; delivery stopped there. |
 | `HERDR_FAILED` | `Herdr did not deliver the text` | The Herdr `pane send-text` call for an acknowledged `send_text` failed. |
+| `HERDR_FAILED` | `Herdr did not submit the response` | A Herdr call delivering a `respond_dialog` answer failed; delivery stopped there and the dialog stays answerable. |
 
 ## Source Of Truth
 

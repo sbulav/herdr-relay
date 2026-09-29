@@ -1,0 +1,28 @@
+{
+  "agent": "claude",
+  "choices": [
+    "1. Red a warm color",
+    "2. Blue a cool color",
+    "3. Type something.",
+    "4. Chat about this"
+  ],
+  "dialog_id": "dlg-d97e6addf7d5b33fcb21b5b0",
+  "host": "buildbox",
+  "host_id": "buildbox",
+  "options": [
+    "1. Red a warm color",
+    "2. Blue a cool color",
+    "3. Type something.",
+    "4. Chat about this"
+  ],
+  "pane_id": "pane-7",
+  "project": "herdr-remote",
+  "prompt": " Which color do you prefer?\n\n \u276f 1. Red\n     a warm color\n   2. Blue\n     a cool color\n   3. Type something.\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n   4. Chat about this\n\nEnter to select \u00b7 \u2191/\u2193 to navigate \u00b7 Esc to cancel",
+  "raw_input_allowed": true,
+  "revision": 1,
+  "tab_id": "tab-4",
+  "tab_name": "API",
+  "type": "blocked",
+  "workspace_id": "workspace-2",
+  "workspace_name": "Relay"
+}
