@@ -1,0 +1,6 @@
+{
+  "code": "HERDR_FAILED",
+  "message": "Herdr did not create the tab",
+  "request_id": "req-tab-1",
+  "type": "command_error"
+}

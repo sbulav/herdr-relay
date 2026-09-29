@@ -547,6 +547,46 @@ class NativeContractTests(unittest.TestCase):
     def test_send_keys_error(self):
         self.assert_contract("command_error_send_keys", self._acknowledged_keys((False, "")))
 
+    def _create_tab(self, checked_return):
+        """One `create_tab` for a remote host, through the real dispatch loop (#67)."""
+        class Socket:
+            request_headers = {}
+
+            def __init__(self):
+                self.requests = iter([json.dumps({
+                    "type": "create_tab", "request_id": "req-tab-1",
+                    "host_id": "buildbox", "workspace_id": "workspace-2",
+                })])
+                self.sent = []
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                try:
+                    return next(self.requests)
+                except StopIteration:
+                    raise StopAsyncIteration
+
+            async def send(self, raw):
+                self.sent.append(json.loads(raw))
+
+        socket = Socket()
+        host = {"id": "buildbox", "ssh": {"target": "deploy@buildbox"}, "herdr": {"wrapper": []}}
+        with (
+            patch.object(herdr_relay.herdr, "configured_host_records", return_value=[host]),
+            patch.object(herdr_relay.herdr, "run_herdr_checked", return_value=checked_return),
+        ):
+            asyncio.run(herdr_relay.handle_client(socket))
+        return socket.sent[1]
+
+    def test_tab_created(self):
+        # The SSH target it ran over stays on the server.
+        self.assert_contract("tab_created", self._create_tab((True, "")))
+
+    def test_create_tab_error(self):
+        self.assert_contract("command_error_create_tab", self._create_tab((False, "")))
+
     def test_rate_limited_command_error(self):
         """RATE_LIMITED goes on the wire like any other code, so it is pinned too.
 

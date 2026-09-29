@@ -12,7 +12,7 @@ except ImportError:
     from websockets.server import serve
 from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
 
-from . import catalogs, config, dialogs, herdr, lifecycle, panes, projects, protocol, push, ratelimit, state, transcripts, transport
+from . import catalogs, config, dialogs, herdr, hosts, lifecycle, panes, projects, protocol, push, ratelimit, state, transcripts, transport
 from .audit import audit
 from .config import log
 
@@ -650,14 +650,12 @@ async def handle_client(ws):
                 _remember_response(request_results, request_id, response, msg)
                 await ws.send(json.dumps(response))
             elif msg_type == "create_tab":
-                workspace_id = msg.get("workspace_id", "")
-                if workspace_id:
-                    log.info("Create tab from %s (%s): workspace=%s", ip, device, workspace_id)
-                    audit("create_tab", ip, device, "", f"workspace={workspace_id}")
-                    await asyncio.to_thread(herdr.run_herdr, "tab", "create", "--workspace", workspace_id, "--focus")
-                    await ws.send(json.dumps({"type": "tab_created", "ok": True}))
-                else:
-                    await ws.send(json.dumps(protocol.error("workspace_id required")))
+                response = await _create_tab(msg, ip, device)
+                # A failed create made no tab, so a retry must be allowed to
+                # make one; a remembered success keeps a retry from making two.
+                if response.get("code") != "HERDR_FAILED":
+                    _remember_response(request_results, request_id, response, msg)
+                await ws.send(json.dumps(response))
             # Browser client only: herdr-mobile watches the socket in a
             # foreground service and never subscribes.
             elif msg_type == "push_subscribe":
@@ -783,6 +781,54 @@ async def _acknowledged_input(msg, ip, device):
         if not success:
             return protocol.command_error(request_id, "HERDR_FAILED", failure)
     return protocol.command_ack(request_id, {"pane_id": pane_id, "host_id": pane_key[0]})
+
+
+async def _create_tab(msg, ip, device):
+    """Create a tab in `workspace_id` on the host `host_id` names (#67).
+
+    Workspace IDs are per host, so the tab is made where the client saw the
+    workspace: over that host's SSH target, with its Herdr command. A frame
+    without `host_id` (older clients) keeps the old meaning, the relay's own
+    Herdr. The reply is `tab_created` only once Herdr reports success.
+    """
+    request_id = msg.get("request_id")
+    if request_id is not None and (
+        not isinstance(request_id, str) or not projects.REQUEST_ID_RE.fullmatch(request_id)
+    ):
+        return protocol.command_error(None, "INVALID_REQUEST", "request_id is required")
+    workspace_id = msg.get("workspace_id")
+    if not isinstance(workspace_id, str) or not workspace_id:
+        return protocol.error("workspace_id required")
+    host_id = msg.get("host_id")
+    if host_id is None:
+        remote, command = None, [config.HERDR]
+    else:
+        # Matched by exact id against the configured records, without the
+        # HOST_ID_RE shape check the pane commands add: with no host file the
+        # fallback records are named by their `HERDR_REMOTES` targets, which
+        # that shape rejects, and those hosts own workspaces too.
+        host = next((
+            record for record in herdr.configured_host_records()
+            if isinstance(host_id, str) and record["id"] == host_id
+        ), None)
+        if host is None:
+            return protocol.command_error(request_id, "UNKNOWN_HOST", "Unknown host")
+        remote, command = hosts.ssh_target(host), hosts.herdr_command(host)
+    log.info("Create tab from %s (%s): host=%s workspace=%s", ip, device, host_id, workspace_id)
+    audit("create_tab", ip, device, "", f"host={host_id} workspace={workspace_id}")
+    success, _output = await asyncio.to_thread(
+        herdr.run_herdr_checked,
+        "tab", "create", "--workspace", workspace_id, "--focus",
+        remote=remote, host_id=host_id, command=command,
+    )
+    if not success:
+        return protocol.command_error(request_id, "HERDR_FAILED", "Herdr did not create the tab")
+    response = {"type": "tab_created", "ok": True, "workspace_id": workspace_id}
+    if host_id is not None:
+        response["host_id"] = host_id
+    if request_id is not None:
+        response["request_id"] = request_id
+    return response
 
 
 def _request_fingerprint(msg):
