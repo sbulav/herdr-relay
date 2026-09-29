@@ -19,7 +19,8 @@ class KeepaliveTests(unittest.TestCase):
         # pauses briefly; #68 pins a 90 s timeout on the real call site.
         seen = {}
 
-        async def fake_serve(*_args, **kwargs):
+        async def fake_serve(*args, **kwargs):
+            seen["handler"] = args[0]
             seen.update(kwargs)
             raise _Served
 
@@ -36,6 +37,7 @@ class KeepaliveTests(unittest.TestCase):
 
         self.assertEqual(20, seen["ping_interval"])
         self.assertEqual(90, seen["ping_timeout"])
+        self.assertIs(server.handle_client, seen["handler"])
         self.assertIs(server.process_request, seen["process_request"])
 
 
