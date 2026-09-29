@@ -2443,13 +2443,74 @@ class SendPromptTests(unittest.TestCase):
         self.assertEqual("prompt-fail", frames[0]["request_id"])
         checked.assert_called_once()
 
-    def test_text_validation_matches_legacy_send_text_limit(self):
+    def test_empty_text_is_refused(self):
         frames, checked = self.drive([{
             "type": "send_prompt", "request_id": "prompt-empty",
             "pane_id": "pane-1", "text": "",
         }])
         self.assertEqual("INVALID_REQUEST", frames[0]["code"])
         checked.assert_not_called()
+
+    def test_text_at_the_advertised_limit_is_accepted_and_one_more_refused(self):
+        limit = herdr_relay.protocol.server_info()["max_prompt_chars"]
+        self.assertEqual(16384, limit)
+
+        frames, checked = self.drive([{
+            "type": "send_prompt", "request_id": "prompt-max",
+            "pane_id": "pane-1", "text": "x" * limit,
+        }])
+        self.assertEqual("command_ack", frames[0]["type"])
+        checked.assert_called_once()
+
+        frames, checked = self.drive([{
+            "type": "send_prompt", "request_id": "prompt-over",
+            "pane_id": "pane-1", "text": "x" * (limit + 1),
+        }])
+        self.assertEqual({
+            "type": "command_error", "request_id": "prompt-over",
+            "code": "INVALID_REQUEST", "message": "text empty or too long",
+        }, frames[0])
+        checked.assert_not_called()
+
+    def test_worst_case_prompt_fits_one_remote_argument(self):
+        # Over SSH the remote side receives the whole command as one string,
+        # handed to its login shell as a single argument, so the kernel's
+        # MAX_ARG_STRLEN (131 072 bytes) bounds it. `'` is the worst character
+        # (shlex.quote expands it to 5 bytes); a 4-byte character is the other
+        # candidate. Both at the cap must fit, through the real quoting path.
+        max_arg_strlen = 131072
+        limit = herdr_relay.config.MAX_PROMPT_CHARS
+        remote = "builder@buildbox"
+        for text in ("'" * limit, "\U0001F600" * limit, "'\U0001F600" * (limit // 2)):
+            with self.subTest(first=repr(text[:2])):
+                socket = self.socket([{
+                    "type": "send_prompt", "request_id": "prompt-worst",
+                    "host_id": "buildbox", "pane_id": "pane-1", "text": text,
+                }])
+                commands = []
+                with (
+                    patch.object(herdr_relay.state, "known_panes", {"pane-1"}),
+                    patch.object(herdr_relay.state, "known_pane_keys", {("buildbox", "pane-1")}),
+                    patch.dict(herdr_relay.state.pane_hosts, {"pane-1": {"buildbox"}}, clear=True),
+                    patch.dict(herdr_relay.state.pane_remote_map, {("buildbox", "pane-1"): remote}, clear=True),
+                    patch.object(
+                        herdr_relay.herdr, "configured_host_records",
+                        return_value=[host_record("buildbox")],
+                    ),
+                    patch.object(
+                        herdr_relay.herdr, "run_process_checked",
+                        side_effect=lambda cmd, **_kwargs: commands.append(cmd) or (True, ""),
+                    ),
+                ):
+                    asyncio.run(herdr_relay.handle_client(socket))
+
+                self.assertEqual("command_ack", after_handshake(socket.sent)[0]["type"])
+                [cmd] = commands
+                self.assertEqual("ssh", cmd[0])
+                # ssh joins everything after the destination with spaces.
+                remote_command = " ".join(cmd[cmd.index(remote) + 1:])
+                self.assertIn(" agent prompt pane-1 ", remote_command)
+                self.assertLess(len(remote_command.encode("utf-8")), max_arg_strlen)
 
 
 class DialogResponseTests(unittest.TestCase):

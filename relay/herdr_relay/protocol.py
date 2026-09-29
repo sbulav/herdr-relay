@@ -46,6 +46,7 @@ def server_info():
         "relay_version": config.RELAY_VERSION,
         "min_client": config.MIN_CLIENT,
         "durable_start": True,
+        "max_prompt_chars": config.MAX_PROMPT_CHARS,
     }
 
 

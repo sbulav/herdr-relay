@@ -100,6 +100,14 @@ RELAY_VERSION = "0.8.7"  # this relay's own version; shown to a client that must
 # way to start an agent is gone, so it is told to update rather than left with a
 # composer whose button does nothing.
 MIN_CLIENT = 3
+# Longest `send_prompt.text`, advertised as `server_info.max_prompt_chars` (#69).
+# The prompt is one argv to `herdr agent prompt`, but over SSH the remote side gets
+# a single shell string, and Linux caps one argument at MAX_ARG_STRLEN (131 072
+# bytes). The worst case is 5 bytes per character — `'` becomes `'"'"'` under
+# shlex.quote — so 16 384 fits with room for the command and 32 768 does not.
+MAX_PROMPT_CHARS = 16384
+# `send_text` is a raw paste into the pane and keeps its historical limit.
+MAX_SEND_TEXT_CHARS = 1000
 AUTH_TOKEN = os.environ.get("HERDR_RELAY_TOKEN", "")  # Shared secret for relay auth
 # Public-edge rate limiting (#18), applied per connection. Each tier is a token
 # bucket: BURST commands available at once, refilling at PER_SECOND. The defaults

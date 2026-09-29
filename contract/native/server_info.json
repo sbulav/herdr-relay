@@ -1,5 +1,6 @@
 {
   "durable_start": true,
+  "max_prompt_chars": 16384,
   "min_client": 3,
   "relay_version": "0.8.7",
   "type": "server_info"
