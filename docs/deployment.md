@@ -86,9 +86,11 @@ Requirements, not a configuration:
 - **Forward `Authorization`.** Stripping it turns every request into a `401`.
 - **Serve `/native/ws`** and do not rewrite it (see above), or add or drop a
   trailing slash — the app's URL validation is exact.
-- **Allow long-lived idle connections.** The relay's WebSocket library pings
-  every 20 s by default, so an idle socket stays warm, but set the read timeout
-  to at least 60 s — a proxy default of 30 s or less will still cut it.
+- **Allow long-lived idle connections.** The relay pings every client every
+  20 s and closes a socket only after 90 s without a pong, so a phone that
+  pauses briefly keeps its connection. Set the proxy's read timeout well above
+  the 20 s ping interval — at least 60 s; a proxy default of 30 s or less will
+  still cut it.
 - **Do not buffer.** Responses are streamed frames, not documents.
 
 ### nginx

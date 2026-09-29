@@ -684,7 +684,14 @@ async def main():
     await asyncio.to_thread(projects.public_snapshot)
     await asyncio.to_thread(catalogs.refresh_all)
     await asyncio.to_thread(lifecycle.recover_start_operations)
-    server = await serve(handle_client, "0.0.0.0", config.WS_PORT, process_request=process_request)
+    server = await serve(
+        handle_client,
+        "0.0.0.0",
+        config.WS_PORT,
+        process_request=process_request,
+        ping_interval=config.WS_PING_INTERVAL,
+        ping_timeout=config.WS_PING_TIMEOUT,
+    )
     background_tasks = [
         asyncio.create_task(transport.poll_loop(), name="poll-loop"),
         asyncio.create_task(transport.event_push(), name="event-push"),
