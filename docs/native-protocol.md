@@ -100,7 +100,8 @@ result cache, so the work being limited has already happened.
 A rejected command **does not run**. The rejection is returned in the dialect the
 rejected command already speaks: a typed command gets `command_error` with code
 `RATE_LIMITED`, and a pane command gets `error` with message
-`rate limited, slow down`.
+`rate limited, slow down`. A `send_keys` or `send_text` that carries a
+`request_id` is a typed command for this purpose and gets `RATE_LIMITED`.
 
 Neither frame carries a retry hint. A client that has been told to slow down
 knows the burst it just spent, and a backoff derived from the relay's clock
@@ -127,14 +128,16 @@ to one poll interval for the first `agents` broadcast.
 | `min_client` | integer | Required | Oldest client protocol revision this relay works with. |
 | `durable_start` | boolean | Required | Whether durable project starts, cancellation, recovery, and retry lineage are supported. |
 | `max_prompt_chars` | integer | Optional | Longest `send_prompt.text` this relay accepts, in characters. Absent from relays before 0.8.8. |
+| `acknowledged_input` | boolean | Optional | Whether `send_keys` and `send_text` answer a `request_id` with `command_ack` or `command_error`. Absent from relays before 0.8.9. |
 
 ```json
 {
   "type": "server_info",
-  "relay_version": "0.8.8",
+  "relay_version": "0.8.9",
   "min_client": 3,
   "durable_start": true,
-  "max_prompt_chars": 16384
+  "max_prompt_chars": 16384,
+  "acknowledged_input": true
 }
 ```
 
@@ -146,7 +149,10 @@ must tell the user to update and must not attempt to interpret later frames.
 Clients must also keep durable-start controls disabled when `durable_start` is
 absent or false, which protects a newer client connecting to an older relay.
 A client caps its prompt composer at `max_prompt_chars`, and at 1,000 — the
-limit older relays enforce — when it is absent.
+limit older relays enforce — when it is absent. A client sends `request_id` on
+`send_keys` and `send_text` only when `acknowledged_input` is true: an older
+relay ignores the field and answers nothing, so a client waiting for an
+acknowledgement from one would wait forever.
 
 The relay advertises and does not enforce. It never learns the client's revision
 and never refuses a connection over one: a rejected socket parks a client's
@@ -550,7 +556,8 @@ configured store root, and returns no blocks when an exact reference is missing.
 
 Acknowledges a successful `start_session`, `cancel_start`, `terminate_session`, `wake_host`,
 `shutdown_host`, `project_create`, `project_save`, `project_rename`, `project_remove`, or
-`project_restore` request. The frame is point-to-point. Responses are cached
+`project_restore` request, a delivered `send_prompt`, or a delivered `send_keys` or
+`send_text` that carried a `request_id`. The frame is point-to-point. Responses are cached
 by non-empty `request_id`; repeating a cached ID returns the cached frame before
 the new frame's `type` is considered.
 
@@ -559,7 +566,8 @@ the new frame's `type` is considered.
 | `type` | string | Required | Always `"command_ack"`. |
 | `request_id` | string | Required | ID copied from the command. |
 | `result` | object | Required | Command-specific result. |
-| `result.host_id` | string | Launch, wake, and shutdown acknowledgements | Host ID from the command. |
+| `result.host_id` | string | Launch, wake, shutdown, and terminal input acknowledgements | Host ID from the command; for terminal input, the host the pane resolved to. |
+| `result.pane_id` | string | Terminal input acknowledgements | Pane the input was delivered to. |
 | `result.output` | string | Terminate acknowledgement | Standard output from `herdr pane close`, stripped. |
 | `result.created` | boolean | Create acknowledgement | `true` for the first completion; `false` for durable replay after reconnect. |
 | `result.project` | object | Project acknowledgements | Relay-owned saved-project record, including its opaque ID. |
@@ -628,9 +636,20 @@ Shutdown acknowledgement:
 }
 ```
 
+Key acknowledgement (`send_keys` or `send_text` with a `request_id`):
+
+```json
+{
+  "type": "command_ack",
+  "request_id": "req-keys-1",
+  "result": {"host_id": "buildbox", "pane_id": "pane-7"}
+}
+```
+
 ### `command_error`
 
-Rejects one of the session, host, or project commands. It is point-to-point and is
+Rejects one of the session, host, or project commands, a `send_prompt`, or a
+`send_keys` or `send_text` that carried a `request_id`. It is point-to-point and is
 cached under a truthy incoming `request_id` in the same way as `command_ack`.
 For `INVALID_REQUEST`, the response's `request_id` is `null`. A missing or empty
 incoming ID is not cached; a truthy non-string incoming ID can still cause this
@@ -655,7 +674,9 @@ response to be cached under that original value.
 ### `error`
 
 Reports validation failures for pane operations and `create_tab`. It is
-point-to-point and is not correlated with `request_id`.
+point-to-point and is not correlated with `request_id`. A `send_keys` or
+`send_text` that carries a `request_id` is answered with `command_error`
+instead.
 
 | Name | Type | Presence | Meaning |
 | --- | --- | --- | --- |
@@ -1151,7 +1172,8 @@ Sends an allowlisted key sequence to a current pane.
 | `type` | string | Required | Always `"send_keys"`. |
 | `pane_id` | string | Required | Must identify a pane from the latest poll within `host_id`. |
 | `host_id` | string | Required for new clients | Configured host identity. Omit only for an unambiguous legacy pane ID. |
-| `keys` | array of strings | Optional | Key sequence; defaults to an empty array, which is accepted. |
+| `keys` | array of strings | Optional | Key sequence; defaults to an empty array, which is accepted. With `request_id`, it must be a non-empty array. |
+| `request_id` | string | Optional | 1–128 characters matching `[A-Za-z0-9._:-]+`. Opts into [acknowledged delivery](#acknowledged-delivery). |
 
 The allowlist tracks the key grammar Herdr 0.8 accepts, so a key the relay
 takes is a key the pane receives. Key *names* are matched
@@ -1186,11 +1208,47 @@ into `keys`.
 accepted: it is a tmux spelling that Herdr answers with `invalid_key`, so it
 never reached a pane. Clients should send `Backspace` or `BS`.
 
+#### Acknowledged delivery
+
+Without `request_id`, `send_keys` and `send_text` are fire and forget: a
+refusal is an [`error`](#error) frame, and a delivered or failed send produces
+no frame at all. With a `request_id`, the relay answers every frame exactly
+once, the way it answers `send_prompt`:
+
+- `command_ack` with `result.host_id` and `result.pane_id` once every Herdr call
+  exited successfully.
+- `command_error` `HERDR_FAILED` when one did not. A `send_keys` frame can take
+  several Herdr calls — navigation keys travel as separate `send-text` calls —
+  and delivery stops at the first failure, so the keys before it may already
+  have reached the pane.
+- `command_error` for a refusal: `INVALID_REQUEST` (invalid `request_id`, with
+  a `null` `request_id` in the reply; disallowed or empty `keys`; empty or
+  over-long `text`), `UNKNOWN_HOST`, `AMBIGUOUS_PANE`, `UNKNOWN_PANE`, or
+  `RATE_LIMITED`. None of these reaches Herdr.
+
+Answers are cached per connection like every typed command's. Repeating a
+request ID replays the cached frame, a `HERDR_FAILED` included, and never sends
+again; to retry a failed send, use a new ID. Reusing an ID with different
+fields returns `REQUEST_ID_REUSED`. Send `request_id` only to a relay whose
+`server_info.acknowledged_input` is true.
+
 ```json
 {
   "type": "send_keys",
   "pane_id": "pane-7",
   "keys": ["Ctrl+c"]
+}
+```
+
+Acknowledged:
+
+```json
+{
+  "type": "send_keys",
+  "request_id": "req-keys-1",
+  "host_id": "buildbox",
+  "pane_id": "pane-7",
+  "keys": ["ctrl+c"]
 }
 ```
 
@@ -1204,6 +1262,7 @@ Sends text verbatim to a current pane. It does not append a newline.
 | `pane_id` | string | Required | Must identify a pane from the latest poll. |
 | `host_id` | string | Required for new clients | Configured host identity. Omit only for an unambiguous legacy pane ID. |
 | `text` | string | Required | Non-empty text of at most 1,000 characters. |
+| `request_id` | string | Optional | Opts into [acknowledged delivery](#acknowledged-delivery), as for `send_keys`. |
 
 ```json
 {
@@ -1279,12 +1338,15 @@ These are all code and message pairs produced through `command_error`.
 
 | Code | Exact message | Trigger |
 | --- | --- | --- |
-| `INVALID_REQUEST` | `request_id is required` | Any session, host, or project command has a `request_id` that is not a non-empty string. The response's `request_id` is `null`. |
+| `INVALID_REQUEST` | `request_id is required` | Any session, host, or project command has a `request_id` that is not a non-empty string, or a `send_keys` or `send_text` has a `request_id` that is not a valid one. The response's `request_id` is `null`. |
+| `INVALID_REQUEST` | `text empty or too long` | A `send_prompt` or acknowledged `send_text` text is empty or over its limit. |
+| `INVALID_REQUEST` | `keys must be a non-empty list` | An acknowledged `send_keys` has no keys, or `keys` is not an array. |
+| `INVALID_REQUEST` | `keys contain disallowed values` | An acknowledged `send_keys` has a key outside the allowlist. |
 | `INVALID_PATH` | `Invalid folder path` | A project browse or save path is not a bounded list of individual relative names. |
 | `INVALID_NAME` | `Folder name is reserved on some platforms` | A create name violates the portable platform rules. Other invalid-name messages describe the same code more specifically. |
 | `INVALID_LABEL` | `Project label must be 1-128 characters` | A project save or rename label is empty or too long. |
-| `UNKNOWN_HOST` | `Unknown host` | A project operation names a host absent from the configured host file. |
-| `UNKNOWN_PANE` | `Unknown pane` | A `send_prompt` command names a pane absent from the latest poll. |
+| `UNKNOWN_HOST` | `Unknown host` | A project operation, `send_prompt`, or acknowledged `send_keys` or `send_text` names a host absent from the configured host file. |
+| `UNKNOWN_PANE` | `Unknown pane` | A `send_prompt`, or an acknowledged `send_keys` or `send_text`, names a pane absent from the latest poll. |
 | `AMBIGUOUS_PANE` | `host_id is required for this pane` | A typed pane command omitted `host_id` while multiple current hosts expose that pane ID. |
 | `REQUEST_ID_REUSED` | `request_id was already used for another command` | A connection reuses a completed request ID with different command fields. |
 | `DIALOG_NOT_ACTIVE` | `Dialog is no longer active` | A `respond_dialog` command names a pane with no current blocked dialog. |
@@ -1318,6 +1380,8 @@ These are all code and message pairs produced through `command_error`.
 | `SHUTDOWN_FAILED` | `Host shutdown command failed` | The fixed SSH shutdown process raises or exits unsuccessfully. |
 | `RATE_LIMITED` | `Too many requests, slow down` | The connection exceeded its [rate limit](#rate-limiting) on a typed command. The command did not run. |
 | `HERDR_FAILED` | `Herdr did not submit the prompt` | The Herdr `agent prompt` operation failed for `send_prompt`. |
+| `HERDR_FAILED` | `Herdr did not deliver the keys` | A Herdr call for an acknowledged `send_keys` failed; delivery stopped there. |
+| `HERDR_FAILED` | `Herdr did not deliver the text` | The Herdr `pane send-text` call for an acknowledged `send_text` failed. |
 
 ## Source Of Truth
 

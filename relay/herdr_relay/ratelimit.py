@@ -128,8 +128,14 @@ class ConnectionLimits:
         return True if bucket is None else bucket.take()
 
 
+# Pane commands that speak the typed dialect when they carry a `request_id` (#70).
+_ACKNOWLEDGED_WITH_REQUEST_ID = frozenset({"send_keys", "send_text"})
+
+
 def rejection(msg_type, request_id):
     """The frame a rate-limited command answers with, in that command's dialect."""
+    if msg_type in _ACKNOWLEDGED_WITH_REQUEST_ID and request_id is not None:
+        return protocol.command_error(request_id, "RATE_LIMITED", "Too many requests, slow down")
     if msg_type in _UNTYPED_COMMANDS:
         return protocol.error("rate limited, slow down")
     return protocol.command_error(request_id, "RATE_LIMITED", "Too many requests, slow down")

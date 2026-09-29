@@ -1,4 +1,5 @@
 {
+  "acknowledged_input": true,
   "durable_start": true,
   "max_prompt_chars": 16384,
   "min_client": 3,

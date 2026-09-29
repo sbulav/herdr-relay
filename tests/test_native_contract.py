@@ -486,6 +486,51 @@ class NativeContractTests(unittest.TestCase):
             ),
         )
 
+    def _acknowledged_keys(self, checked_return):
+        """One `send_keys` with a `request_id`, through the real dispatch loop (#70)."""
+        class Socket:
+            request_headers = {}
+
+            def __init__(self):
+                self.requests = iter([json.dumps({
+                    "type": "send_keys", "request_id": "req-keys-1",
+                    "host_id": "buildbox", "pane_id": "pane-7", "keys": ["ctrl+c"],
+                })])
+                self.sent = []
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                try:
+                    return next(self.requests)
+                except StopIteration:
+                    raise StopAsyncIteration
+
+            async def send(self, raw):
+                self.sent.append(json.loads(raw))
+
+        socket = Socket()
+        with (
+            patch.object(herdr_relay.state, "known_pane_keys", {("buildbox", "pane-7")}),
+            patch.dict(herdr_relay.state.pane_hosts, {"pane-7": {"buildbox"}}, clear=True),
+            patch.dict(
+                herdr_relay.state.pane_remote_map, {("buildbox", "pane-7"): "deploy@buildbox"}, clear=True
+            ),
+            patch.object(herdr_relay.herdr, "configured_host_records", return_value=[{"id": "buildbox"}]),
+            patch.object(herdr_relay.herdr, "command_for_host", return_value=["herdr"]),
+            patch.object(herdr_relay.herdr, "run_herdr_checked", return_value=checked_return),
+        ):
+            asyncio.run(herdr_relay.handle_client(socket))
+        return socket.sent[1]
+
+    def test_send_keys_ack(self):
+        # The routing target stays on the server: the ack names host and pane only.
+        self.assert_contract("command_ack_send_keys", self._acknowledged_keys((True, "")))
+
+    def test_send_keys_error(self):
+        self.assert_contract("command_error_send_keys", self._acknowledged_keys((False, "")))
+
     def test_rate_limited_command_error(self):
         """RATE_LIMITED goes on the wire like any other code, so it is pinned too.
 

@@ -2513,6 +2513,219 @@ class SendPromptTests(unittest.TestCase):
                 self.assertLess(len(remote_command.encode("utf-8")), max_arg_strlen)
 
 
+class AcknowledgedInputTests(unittest.TestCase):
+    """`send_keys` and `send_text` with a `request_id` report delivery (#70)."""
+
+    def drive(self, messages, checked=None, configured_hosts=None, remote_map=None):
+        socket = SendPromptTests.socket(messages)
+        with (
+            patch.object(herdr_relay.state, "known_panes", {"pane-1"}),
+            patch.object(herdr_relay.state, "known_pane_keys", {("local", "pane-1")}),
+            patch.dict(herdr_relay.state.pane_hosts, {"pane-1": {"local"}}, clear=True),
+            patch.dict(herdr_relay.state.pane_remote_map, remote_map or {}, clear=True),
+            patch.object(
+                herdr_relay.herdr,
+                "configured_host_records",
+                return_value=configured_hosts or [host_record("local")],
+            ),
+            patch.object(
+                herdr_relay.herdr,
+                "run_herdr_checked",
+                **(checked or {"return_value": (True, "")}),
+            ) as run_checked,
+            # The legacy path goes through run_herdr; an acked frame must not.
+            patch.object(herdr_relay.herdr, "run_herdr", side_effect=AssertionError("legacy path")),
+        ):
+            asyncio.run(herdr_relay.handle_client(socket))
+        return after_handshake(socket.sent), run_checked
+
+    def test_keys_are_acknowledged_after_every_run_succeeds(self):
+        frames, checked = self.drive([{
+            "type": "send_keys", "request_id": "keys-1",
+            "pane_id": "pane-1", "keys": ["PageUp", "Up", "Enter"],
+        }])
+
+        self.assertEqual([{
+            "type": "command_ack",
+            "request_id": "keys-1",
+            "result": {"pane_id": "pane-1", "host_id": "local"},
+        }], frames)
+        self.assertEqual(
+            [call.args for call in checked.call_args_list],
+            [
+                ("pane", "send-text", "pane-1", "\x1b[5~"),
+                ("pane", "send-keys", "pane-1", "Up", "Enter"),
+            ],
+        )
+        for call in checked.call_args_list:
+            self.assertEqual(
+                {"remote": None, "host_id": "local", "command": [herdr_relay.config.HERDR]},
+                call.kwargs,
+            )
+
+    def test_text_is_acknowledged(self):
+        frames, checked = self.drive([{
+            "type": "send_text", "request_id": "text-1",
+            "pane_id": "pane-1", "text": "pytest -q",
+        }])
+
+        self.assertEqual([{
+            "type": "command_ack",
+            "request_id": "text-1",
+            "result": {"pane_id": "pane-1", "host_id": "local"},
+        }], frames)
+        checked.assert_called_once_with(
+            "pane", "send-text", "pane-1", "pytest -q", remote=None, host_id="local",
+            command=[herdr_relay.config.HERDR]
+        )
+
+    def test_remote_pane_is_sent_over_its_host(self):
+        frames, checked = self.drive(
+            [{
+                "type": "send_text", "request_id": "text-remote",
+                "host_id": "local", "pane_id": "pane-1", "text": "ls",
+            }],
+            remote_map={("local", "pane-1"): "builder@buildbox"},
+        )
+
+        self.assertEqual("command_ack", frames[0]["type"])
+        self.assertEqual("builder@buildbox", checked.call_args.kwargs["remote"])
+
+    def test_a_failed_run_is_herdr_failed_and_stops_delivery(self):
+        frames, checked = self.drive(
+            [{
+                "type": "send_keys", "request_id": "keys-fail",
+                "pane_id": "pane-1", "keys": ["Home", "Enter"],
+            }],
+            checked={"side_effect": [(False, ""), (True, "")]},
+        )
+
+        self.assertEqual([{
+            "type": "command_error", "request_id": "keys-fail",
+            "code": "HERDR_FAILED", "message": "Herdr did not deliver the keys",
+        }], frames)
+        checked.assert_called_once()
+
+    def test_failed_text_is_herdr_failed(self):
+        frames, _checked = self.drive(
+            [{"type": "send_text", "request_id": "text-fail", "pane_id": "pane-1", "text": "x"}],
+            checked={"return_value": (False, "")},
+        )
+
+        self.assertEqual({
+            "type": "command_error", "request_id": "text-fail",
+            "code": "HERDR_FAILED", "message": "Herdr did not deliver the text",
+        }, frames[0])
+
+    def test_retry_replays_the_answer_without_sending_again(self):
+        for checked_return in ((True, ""), (False, "")):
+            with self.subTest(success=checked_return[0]):
+                message = {
+                    "type": "send_keys", "request_id": "keys-retry",
+                    "pane_id": "pane-1", "keys": ["Enter"],
+                }
+                frames, checked = self.drive(
+                    [message, message], checked={"return_value": checked_return}
+                )
+
+                self.assertEqual(2, len(frames))
+                self.assertEqual(frames[0], frames[1])
+                checked.assert_called_once()
+
+    def test_reused_request_id_with_other_input_is_refused(self):
+        frames, checked = self.drive([
+            {"type": "send_keys", "request_id": "keys-2", "pane_id": "pane-1", "keys": ["Enter"]},
+            {"type": "send_keys", "request_id": "keys-2", "pane_id": "pane-1", "keys": ["Escape"]},
+        ])
+
+        self.assertEqual("command_ack", frames[0]["type"])
+        self.assertEqual("REQUEST_ID_REUSED", frames[1]["code"])
+        checked.assert_called_once()
+
+    def test_refusals_are_typed_and_reach_no_host(self):
+        cases = {
+            "invalid request_id": (
+                {"type": "send_keys", "request_id": "has space", "pane_id": "pane-1", "keys": ["Enter"]},
+                (None, "INVALID_REQUEST", "request_id is required"),
+            ),
+            "non-string request_id": (
+                {"type": "send_text", "request_id": 7, "pane_id": "pane-1", "text": "x"},
+                (None, "INVALID_REQUEST", "request_id is required"),
+            ),
+            "unknown host": (
+                {"type": "send_keys", "request_id": "r", "host_id": "missing", "pane_id": "pane-1", "keys": ["Enter"]},
+                ("r", "UNKNOWN_HOST", "Unknown host"),
+            ),
+            "unknown pane": (
+                {"type": "send_text", "request_id": "r", "pane_id": "pane-9", "text": "x"},
+                ("r", "UNKNOWN_PANE", "Unknown pane"),
+            ),
+            "missing pane": (
+                {"type": "send_text", "request_id": "r", "text": "x"},
+                ("r", "UNKNOWN_PANE", "Unknown pane"),
+            ),
+            "disallowed key": (
+                {"type": "send_keys", "request_id": "r", "pane_id": "pane-1", "keys": ["Enter", "BSpace"]},
+                ("r", "INVALID_REQUEST", "keys contain disallowed values"),
+            ),
+            "empty keys": (
+                {"type": "send_keys", "request_id": "r", "pane_id": "pane-1", "keys": []},
+                ("r", "INVALID_REQUEST", "keys must be a non-empty list"),
+            ),
+            "keys not a list": (
+                {"type": "send_keys", "request_id": "r", "pane_id": "pane-1", "keys": "Enter"},
+                ("r", "INVALID_REQUEST", "keys must be a non-empty list"),
+            ),
+            "empty text": (
+                {"type": "send_text", "request_id": "r", "pane_id": "pane-1", "text": ""},
+                ("r", "INVALID_REQUEST", "text empty or too long"),
+            ),
+            "text too long": (
+                {"type": "send_text", "request_id": "r", "pane_id": "pane-1",
+                 "text": "x" * (herdr_relay.config.MAX_SEND_TEXT_CHARS + 1)},
+                ("r", "INVALID_REQUEST", "text empty or too long"),
+            ),
+        }
+        for name, (message, (request_id, code, text)) in cases.items():
+            with self.subTest(name):
+                frames, checked = self.drive([message])
+
+                self.assertEqual([{
+                    "type": "command_error", "request_id": request_id,
+                    "code": code, "message": text,
+                }], frames)
+                checked.assert_not_called()
+
+    def test_text_at_the_limit_is_accepted(self):
+        frames, checked = self.drive([{
+            "type": "send_text", "request_id": "text-max", "pane_id": "pane-1",
+            "text": "x" * herdr_relay.config.MAX_SEND_TEXT_CHARS,
+        }])
+
+        self.assertEqual("command_ack", frames[0]["type"])
+        checked.assert_called_once()
+
+    def test_ambiguous_pane_is_typed(self):
+        socket = SendPromptTests.socket([{
+            "type": "send_keys", "request_id": "keys-amb", "pane_id": "pane-1", "keys": ["Enter"],
+        }])
+        with (
+            patch.object(herdr_relay.state, "known_panes", {"pane-1"}),
+            patch.object(
+                herdr_relay.state, "known_pane_keys", {("local", "pane-1"), ("buildbox", "pane-1")}
+            ),
+            patch.dict(herdr_relay.state.pane_hosts, {"pane-1": {"local", "buildbox"}}, clear=True),
+            patch.object(herdr_relay.herdr, "run_herdr_checked") as checked,
+        ):
+            asyncio.run(herdr_relay.handle_client(socket))
+
+        self.assertEqual({
+            "type": "command_error", "request_id": "keys-amb",
+            "code": "AMBIGUOUS_PANE", "message": "host_id is required for this pane",
+        }, after_handshake(socket.sent)[0])
+        checked.assert_not_called()
+
+
 class DialogResponseTests(unittest.TestCase):
     @staticmethod
     def socket(messages):

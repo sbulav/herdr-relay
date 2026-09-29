@@ -47,6 +47,7 @@ def server_info():
         "min_client": config.MIN_CLIENT,
         "durable_start": True,
         "max_prompt_chars": config.MAX_PROMPT_CHARS,
+        "acknowledged_input": True,
     }
 
 
@@ -178,9 +179,10 @@ def command_ack(request_id, result=None):
 def error(message):
     """A refusal in the dialect the pane commands speak.
 
-    `respond`, `read_pane`, `send_keys` and `send_text` carry no `request_id`, so
-    their refusals cannot name what they are refusing: all a client gets is a
-    message. Kept here beside [command_error] so both dialects have one source
+    `respond`, `read_pane`, and legacy `send_keys` and `send_text` carry no
+    `request_id`, so their refusals cannot name what they are refusing: all a
+    client gets is a message. (With a `request_id`, the two send commands answer
+    in the typed dialect instead, #70.) Kept here beside [command_error] so both dialects have one source
     and the contract golden pins the shape rather than one caller's wording (#63).
     """
     return {"type": "error", "message": message}

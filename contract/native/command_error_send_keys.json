@@ -1,0 +1,6 @@
+{
+  "code": "HERDR_FAILED",
+  "message": "Herdr did not deliver the keys",
+  "request_id": "req-keys-1",
+  "type": "command_error"
+}

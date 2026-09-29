@@ -131,6 +131,17 @@ class RejectionDialectTests(unittest.TestCase):
         frame = herdr_relay.ratelimit.rejection("send_keys", None)
         self.assertEqual({"type": "error", "message": "rate limited, slow down"}, frame)
 
+    def test_an_acknowledged_pane_command_is_refused_with_a_code(self):
+        """With a `request_id`, `send_keys` and `send_text` speak the typed dialect (#70)."""
+        for msg_type in ("send_keys", "send_text"):
+            with self.subTest(msg_type):
+                self.assertEqual({
+                    "type": "command_error",
+                    "request_id": "req-keys",
+                    "code": "RATE_LIMITED",
+                    "message": "Too many requests, slow down",
+                }, herdr_relay.ratelimit.rejection(msg_type, "req-keys"))
+
 
 class HandleClientRateLimitTests(unittest.TestCase):
     """The limit as a client experiences it: through the real dispatch loop."""
