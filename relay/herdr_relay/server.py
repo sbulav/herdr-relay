@@ -303,6 +303,13 @@ async def handle_client(ws):
                         response = protocol.command_error(request_id, "DIALOG_ALREADY_ANSWERED", "Dialog was already answered")
                     elif not isinstance(text, str) or not text.strip():
                         response = protocol.command_error(request_id, "INVALID_REQUEST", "text is required")
+                    elif len(text) > config.MAX_PROMPT_CHARS:
+                        response = protocol.command_error(request_id, "INVALID_REQUEST", "text is too long")
+                    elif dialogs.free_text_allowed(dialog, text):
+                        dialog["response_in_flight"] = True
+                        log.info("Dialog free text from %s (%s): pane=%s text=%r", ip, device, pane_id, text)
+                        audit("respond_dialog", ip, device, pane_id, f"free_text={text!r}")
+                        response = await _free_text_answer(request_id, pane_key, dialog, text)
                     elif not dialogs.response_allowed(dialog, text):
                         response = protocol.command_error(request_id, "RESPONSE_NOT_ALLOWED", "Response is not an option for this dialog")
                     else:
@@ -314,14 +321,26 @@ async def handle_client(ws):
                         audit("respond_dialog", ip, device, pane_id, f"text={text!r}")
                         kind, payload = panes.respond_action(text)
                         try:
-                            if kind == "keys":
+                            success = True
+                            if dialog["text_field_focused"] and kind == "text" and payload.isdigit():
+                                # A digit would be typed into the focused
+                                # "Type something." field; Up leaves it (#72).
+                                success, _output = await asyncio.to_thread(
+                                    herdr.run_herdr_checked,
+                                    "pane", "send-keys", pane_id, "Up",
+                                    remote=remote, host_id=pane_key[0],
+                                    command=herdr.command_for_host(pane_key[0]),
+                                )
+                                if success:
+                                    dialog["text_field_focused"] = False
+                            if success and kind == "keys":
                                 success, _output = await asyncio.to_thread(
                                     herdr.run_herdr_checked,
                                     "pane", "send-keys", pane_id, *payload,
                                     remote=remote, host_id=pane_key[0],
                                     command=herdr.command_for_host(pane_key[0]),
                                 )
-                            else:
+                            elif success:
                                 success, _output = await asyncio.to_thread(
                                     herdr.run_herdr_checked,
                                     "pane", "send-text", pane_id, payload + "\n",
@@ -662,6 +681,44 @@ async def handle_client(ws):
 def require_auth_token():
     if not config.AUTH_TOKEN:
         raise SystemExit("HERDR_RELAY_TOKEN is required; set it before starting the relay")
+
+
+async def _free_text_answer(request_id, pane_key, dialog, text):
+    """Type `text` into a Claude Code question's "Type something." field (#72).
+
+    The row's digit focuses the field, the text fills it, and Enter submits
+    it. A digit pressed while the field already has focus is typed into it,
+    so the digit is left out then. Delivery stops at the first failed call;
+    once the digit has gone through, the field is focused whatever happens
+    next, and a retry must not press it again.
+    """
+    host_id, pane_id = pane_key
+    remote = state.get(state.pane_remote_map, pane_key)
+    steps = [("send-text", text), ("send-keys", "Enter")]
+    if not dialog["text_field_focused"]:
+        steps.insert(0, ("send-keys", str(dialog["free_text_row"])))
+    for index, (action, value) in enumerate(steps):
+        try:
+            success, _output = await asyncio.to_thread(
+                herdr.run_herdr_checked,
+                "pane", action, pane_id, value,
+                remote=remote, host_id=host_id, command=herdr.command_for_host(host_id),
+            )
+        except Exception:
+            log.exception("Dialog free text delivery failed: pane=%s", pane_id)
+            success = False
+        if not success:
+            dialog["response_in_flight"] = False
+            return protocol.command_error(request_id, "HERDR_FAILED", "Herdr did not submit the response")
+        if index == 0 and len(steps) == 3:
+            dialog["text_field_focused"] = True
+    dialog["consumed"] = True
+    return protocol.command_ack(request_id, {
+        "pane_id": pane_id,
+        "host_id": host_id,
+        "dialog_id": dialog["dialog_id"],
+        "revision": dialog["revision"],
+    })
 
 
 async def _acknowledged_input(msg, ip, device):

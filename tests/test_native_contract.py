@@ -350,6 +350,23 @@ class NativeContractTests(unittest.TestCase):
                 )
 
     def test_blocked_transition(self):
+        self.assert_contract("blocked", self.blocked_frame("Do you want to proceed?\n1. Yes\n2. No"))
+
+    def test_blocked_raw_input(self):
+        # A Claude Code question whose "Type something." row takes free text (#72).
+        prompt = (
+            " Which color do you prefer?\n\n"
+            " ❯ 1. Red\n     a warm color\n"
+            "   2. Blue\n     a cool color\n"
+            "   3. Type something.\n"
+            "────────────────────────────────────────\n"
+            "   4. Chat about this\n\n"
+            "Enter to select · ↑/↓ to navigate · Esc to cancel"
+        )
+        self.assert_contract("blocked_raw_input", self.blocked_frame(prompt))
+
+    def blocked_frame(self, prompt):
+        """The `blocked` frame one poll broadcasts for a pane showing `prompt`."""
         agents = [{
             "pane_id": "pane-7",
             "host_id": "buildbox",
@@ -373,7 +390,6 @@ class NativeContractTests(unittest.TestCase):
         async def send_web_push(*_args, **_kwargs):
             pass
 
-        prompt = "Do you want to proceed?\n1. Yes\n2. No"
         with (
             patch.object(herdr_relay.herdr, "get_all_agents", return_value=(agents, [])),
             patch.object(herdr_relay.transport, "broadcast", side_effect=broadcast),
@@ -392,7 +408,7 @@ class NativeContractTests(unittest.TestCase):
         ):
             asyncio.run(herdr_relay._poll_once())
 
-        self.assert_contract("blocked", sent[1])
+        return sent[1]
 
     def test_pane_content_stream(self):
         class Socket:

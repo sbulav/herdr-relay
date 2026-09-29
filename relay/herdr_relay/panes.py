@@ -14,7 +14,15 @@ OPENCODE_OPTIONS = ["Allow once", "Allow always", "Reject"]
 # Claude Code numbered selection menus: "❯ 1. Yes" / "  2. No"
 CLAUDE_YES_NO = ["1. Yes", "2. No"]
 # The highlighted row carries a cursor marker: `❯` in Claude Code, `›` in Codex.
-NUMBERED_OPT_RE = re.compile(r"(?:^|\n)[ \t]*[❯›>]?[ \t]*(\d+)\.\s+(\S[^\n]*)")
+# One row of a numbered menu: an optional cursor marker, then `N.` or `N)`.
+# Group 1 is everything before the number, whose width is the menu's number
+# column; a deeper-indented line that follows continues the row's label.
+NUMBERED_OPTION_RE = re.compile(r"^(\s*(?:[❯>›»▶]\s*)?)(\d{1,2})[.)]\s+(\S.*?)\s*$")
+# A horizontal rule drawn inside a menu: box-drawing or ASCII dashes only.
+MENU_RULE_RE = re.compile(r"^[\u2500-\u257f\u2014\u2013\-=_]{3,}$")
+# The row Claude Code appends to every AskUserQuestion menu. Choosing it turns
+# the row into an inline text field; the menu itself stays on screen.
+FREE_TEXT_ROW_RE = re.compile(r"^(\d{1,2})\. type something\.?$", re.IGNORECASE)
 # Bullet-style free-text options: "> yes, single permission" or "• Allow once"
 BULLET_OPT_RE = re.compile(
     r"(?:^|\n)[ \t]*(?:[❯>•*-]|\[\s?\])[ \t]+([A-Za-z][^\n]{0,80})"
@@ -151,16 +159,83 @@ def key_runs(keys):
     return runs
 
 
+def numbered_menu(text):
+    """The last complete `1.`..`N.` menu on screen, as (number, label) pairs.
+
+    A run starts at 1 and counts up by one per row. A line indented deeper
+    than the number column continues the previous label (Claude wraps long
+    options, and draws a question's descriptions, that way); a rule is
+    stepped over, because Claude draws one between a question's answers and
+    the rows it always appends. Any other non-blank line -- the footer, which
+    sits left of the numbers -- ends the run. The last run of two or more
+    wins: a blocked pane draws its menu under whatever the agent printed, and
+    that may be a numbered list too.
+    """
+    best = []
+    current = []
+    number_col = None
+    for line in text.splitlines():
+        match = NUMBERED_OPTION_RE.match(line)
+        if match:
+            number = int(match.group(2))
+            if number == 1:
+                current = [match.group(3)]
+                number_col = len(match.group(1))
+            elif current and number == len(current) + 1:
+                current.append(match.group(3))
+            else:
+                current = []
+                number_col = None
+            if len(current) >= 2:
+                best = list(current)
+            continue
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if current and MENU_RULE_RE.match(stripped):
+            continue
+        indent = len(line) - len(line.lstrip())
+        if current and number_col is not None and indent > number_col:
+            current[-1] = f"{current[-1]} {stripped}"
+            if len(current) >= 2:
+                best = list(current)
+            continue
+        current = []
+        number_col = None
+    return list(enumerate(best, 1))
+
+
 def _numbered_options(text):
-    numbered = NUMBERED_OPT_RE.findall(text)
-    if len(numbered) < 2:
+    # A `N)` row is offered as `N. label`, the form respond_action maps to N.
+    options = [f"{number}. {label}" for number, label in numbered_menu(text)]
+    return options or None
+
+
+def free_text_row(text, choices):
+    """The row number of a Claude Code question's "Type something." field, or None.
+
+    The field is offered only on the question menu itself: the row must be
+    one of the detected `choices` and the menu's own "Enter to select" footer
+    must be on screen. Once text is typed into the field the row shows that
+    text instead, so a half-typed answer is not offered as free text again.
+    """
+    if "enter to select" not in (text or "").lower():
         return None
-    seen = {}
-    for num, label in numbered:
-        if num not in seen:
-            seen[num] = f"{num}. {label.strip()}"
-    opts = [seen[k] for k in sorted(seen, key=int)]
-    return opts if len(opts) >= 2 else None
+    for choice in choices or ():
+        match = FREE_TEXT_ROW_RE.match(choice.strip())
+        if match:
+            return int(match.group(1))
+    return None
+
+
+def text_field_focused(text):
+    """True while a Claude Code question's text field has focus.
+
+    The footer gains "ctrl+g to edit in <editor>" exactly then; the editor
+    name is the reader's $EDITOR, so only the invariant half is matched. With
+    the field focused a digit is typed into it instead of picking a row.
+    """
+    return "ctrl+g to edit in" in (text or "").lower()
 
 
 def _bullet_options(text):
@@ -248,15 +323,33 @@ def _block_line(line):
     return CURSOR_PREFIX_RE.sub("", line.strip())
 
 
+def _offers(line, labels):
+    """True when one screen line draws one of `labels`.
+
+    A numbered row is compared in its `N. label` form, and matches when it is
+    the start of a label too: a label joined from wrapped or described rows
+    is longer than its first screen line.
+    """
+    cleaned = _block_line(line).lower()
+    row = NUMBERED_OPTION_RE.match(line)
+    if row:
+        cleaned = f"{row.group(2)}. {row.group(3)}".lower()
+    return any(
+        cleaned.startswith(label) or (row is not None and label.startswith(cleaned))
+        for label in labels
+    )
+
+
 def question_block(text, choices):
     """Return the part of a blocked screen that states the question, or None.
 
     Anchored on the last line that offers one of `choices`, it reaches upward
     to the nearest rule or box edge, a run of two blank lines, or
-    QUESTION_BLOCK_LINES, whichever is closest. Everything a TUI redraws while
-    the question stands still -- the transcript and its spinners and timers
-    above, footer hints below, the moving cursor marker, rotating tips, blank
-    lines -- is left out.
+    QUESTION_BLOCK_LINES above the menu's first row, whichever is closest. A
+    rule drawn inside the menu, directly under one of its rows, does not end
+    it. Everything a TUI redraws while the question stands still -- the
+    transcript and its spinners and timers above, footer hints below, the
+    moving cursor marker, rotating tips, blank lines -- is left out.
 
     None when no line offers a choice (a pushed prompt, a bare question): the
     caller then has nothing narrower than the whole text.
@@ -265,15 +358,21 @@ def question_block(text, choices):
     lines = text.split("\n")
     anchor = next((
         index for index in range(len(lines) - 1, -1, -1)
-        if any(_block_line(lines[index]).lower().startswith(label) for label in labels)
+        if _offers(lines[index], labels)
     ), None)
     if anchor is None:
         return None
-    start = anchor
-    while start > 0 and anchor - start < QUESTION_BLOCK_LINES:
+    start = top = anchor
+    while start > 0 and top - start < QUESTION_BLOCK_LINES:
         above = lines[start - 1].strip()
         if BOX_LINE_RE.match(above):
-            break
+            nearest = next((
+                lines[index] for index in range(start - 2, -1, -1) if lines[index].strip()
+            ), None)
+            if nearest is None or not _offers(nearest, labels):
+                break
+        elif _offers(lines[start - 1], labels):
+            top = start - 1
         if not above and start > 1 and not lines[start - 2].strip():
             break
         start -= 1

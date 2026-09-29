@@ -75,6 +75,8 @@ def ensure(
             # consumed until a concrete revision proves a new observation.
             if not current["consumed"] and observation is not None:
                 current["observation"] = observation
+            # Focus moves while the question stands still; delivery reads it.
+            current["text_field_focused"] = panes.text_field_focused(prompt)
             if not current["agent"] and agent:
                 current["agent"] = agent
             if not current["project"] and project:
@@ -87,6 +89,7 @@ def ensure(
                     current[field] = metadata[field] or ""
             return current
 
+    free_text_row = panes.free_text_row(prompt, normalized_choices)
     revision = state.get(state.pane_dialog_revisions, key, 0) + 1
     state.pane_dialog_revisions[key] = revision
     digest = hashlib.sha256(f"{pane_id}\0{revision}\0{prompt_key}".encode("utf-8")).hexdigest()[:24]
@@ -98,9 +101,11 @@ def ensure(
         "prompt_key": prompt_key,
         "observation": observation,
         "choices": normalized_choices,
-        # The relay currently only supports allowlisted labels.  It must not
-        # claim that arbitrary text can be delivered to a blocked TUI.
-        "raw_input_allowed": False,
+        # Arbitrary text is claimed only where the relay knows how to deliver
+        # it: a Claude Code question's "Type something." row (#72).
+        "raw_input_allowed": free_text_row is not None,
+        "free_text_row": free_text_row,
+        "text_field_focused": panes.text_field_focused(prompt),
         "agent": agent,
         "project": project,
         "host": host,
@@ -153,6 +158,21 @@ def clear(pane_id):
         key = pane_id
     state.pop(state.pane_dialogs, key)
     state.pop(state.pane_response_options, key)
+
+
+def free_text_allowed(dialog, text):
+    """True when `text` is a free-text answer this dialog can take.
+
+    A listed choice is never free text, so the two delivery paths cannot
+    overlap. The text is typed into a one-line field of a live TUI, so it must
+    be printable: a newline would submit early, and an escape sequence would
+    drive the TUI instead of filling the field.
+    """
+    return (
+        dialog["raw_input_allowed"]
+        and not response_allowed(dialog, text)
+        and text.isprintable()
+    )
 
 
 def response_allowed(dialog, text):
