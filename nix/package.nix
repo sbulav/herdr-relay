@@ -10,7 +10,7 @@
   withWebPush ? false,
 }:
 let
-  version = "0.8.9";
+  version = "0.8.10";
 
   pythonEnv = python3.withPackages (
     ps:
