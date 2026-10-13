@@ -5,7 +5,8 @@
 <!-- This page holds the relay token: no script from another origin. 'unsafe-inline' stays while
      the app is one file of inline script; connect-src stays open because the relay URL is the
      user's to set; manifest-src takes data: for the inline manifest below. frame-ancestors cannot
-     be set from a meta tag, so the relay also sends this policy as a header. Keep the two in sync
+     be set from a meta tag, nor can one cover a script placed ahead of it, so the relay and
+     web/_headers (Cloudflare Pages) send this policy as a header. Keep the three in sync
      (relay/herdr_relay/server.py, WEB_APP_CSP). -->
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; manifest-src 'self' data:; connect-src 'self' ws: wss: http: https:; object-src 'none'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -705,7 +706,7 @@ function hostCard(host, selectable = false) {
   const canWake = capability.wake && (host.status === 'offline' || (!host.status && !host.online));
   const canShutdown = capability.shutdown && (host.status ? host.status !== 'offline' : host.online);
   const action = selectable
-    ? `<button class="composer-host${selected ? ' selected' : ''}" onclick="selectComposerHost('${escapeHtml(host.host_id)}')" aria-pressed="${selected}">
+    ? `<button class="composer-host${selected ? ' selected' : ''}" onclick="selectComposerHost(${escapeJs(host.host_id)})" aria-pressed="${selected}">
         <span class="host-head"><span class="host-name">${escapeHtml(host.display_name || host.host_id)}</span><strong class="${hostStatusClass(host)}">${escapeHtml(status)}</strong></span>
         <span class="host-detail">${escapeHtml(host.host_id)}${canWake ? ' · Wake-on-LAN available' : ''}${host.message ? ` · ${escapeHtml(host.message)}` : ''}</span>
       </button>`
@@ -714,8 +715,8 @@ function hostCard(host, selectable = false) {
         <div class="host-id">${escapeHtml(host.host_id)}</div>
         ${host.message ? `<div class="host-detail">${escapeHtml(host.message)}</div>` : ''}
         <div class="host-actions">
-          ${canWake ? `<button onclick="wakeHost('${escapeHtml(host.host_id)}')">Wake</button>` : ''}
-          ${canShutdown ? `<button onclick="shutdownHost('${escapeHtml(host.host_id)}')">Shut down</button>` : ''}
+          ${canWake ? `<button onclick="wakeHost(${escapeJs(host.host_id)})">Wake</button>` : ''}
+          ${canShutdown ? `<button onclick="shutdownHost(${escapeJs(host.host_id)})">Shut down</button>` : ''}
         </div>
       </div>`;
   return action;

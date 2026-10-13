@@ -30,9 +30,10 @@ def fail_on_background_exit(task, stop):
 
 
 # The browser client's page holds the relay token, so it runs no script from
-# another origin. web/index.html carries the same policy as a <meta> tag, which
-# is what protects the Cloudflare Pages copy; the header adds frame-ancestors,
-# which a <meta> policy cannot set. Keep the two in sync.
+# another origin. web/_headers sends this same policy from Cloudflare Pages, and
+# web/index.html repeats it as a <meta> tag for any other static host — a <meta>
+# cannot cover a script placed ahead of it, nor set frame-ancestors. Keep all
+# three in sync; tests/test_relay_hygiene.py compares them.
 WEB_APP_CSP = (
     "default-src 'self'; script-src 'self' 'unsafe-inline'; "
     "style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; "
