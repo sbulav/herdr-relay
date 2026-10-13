@@ -7,3 +7,5 @@ dist/
 *.dmg
 result
 result-*
+web/node_modules/
+web/test-results/
