@@ -390,6 +390,7 @@ class CatalogWakeTests(unittest.TestCase):
                 patch.object(herdr_relay.herdr, "get_all_agents", side_effect=get_all_agents),
                 patch.object(herdr_relay.transport, "broadcast", side_effect=broadcast),
                 patch.object(herdr_relay.operations, "public_recovery", return_value=[]),
+                patch.object(herdr_relay.projects, "public_snapshot", return_value={"projects": [], "roots": []}),
                 patch.object(herdr_relay.catalogs, "public_frame", return_value={}),
                 patch.object(herdr_relay.catalogs, "refresh_stale_host", side_effect=lambda host_id: seen.append(host_id)),
             ):
