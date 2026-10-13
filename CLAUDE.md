@@ -9,9 +9,10 @@ herdr-relay is a WebSocket relay for monitoring and approving [herdr](https://he
 **herdr-mobile is the client that matters.** It is the one under active
 development, and the reason most changes here are made. The web PWA is a
 supported second client, kept at functional parity with the app
-(herdr-mobile#37 superseded #14's plan to retire it); code that exists only for
-the browser is marked `LEGACY (#14)` for historical reasons — the marker means
-"browser-only", not "scheduled for deletion".
+(herdr-mobile#37 superseded #14's plan to retire it). Code that exists only for
+the browser — the static routes, Web Push, the `HERDR_VAPID_*` variables — says
+"browser client" in its comments: that scopes it, it does not schedule it for
+deletion.
 
 This repo is a hard fork of [dcolinmorgan/herdr-remote](https://github.com/dcolinmorgan/herdr-remote)
 (AGPL-3.0-or-later). There is no upstream remote and no merge target — do not

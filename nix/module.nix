@@ -50,8 +50,19 @@ let
     export HERDR_RELAY_TOKEN="$(cat "$CREDENTIALS_DIRECTORY/token")"
     exec ${lib.getExe cfg.package}
   '';
+
+  # #45 retired preset launching and the single-host power pair; the host file
+  # now declares every host and its wake/shutdown capability. Setting one of
+  # these fails evaluation with a pointer instead of "option does not exist".
+  removedBecause = "The relay no longer reads it (sbulav/herdr-relay#45); declare hosts and their power capabilities in services.herdr-relay.hostsFile.";
 in
 {
+  imports = [
+    (lib.mkRemovedOptionModule [ "services" "herdr-relay" "presetsFile" ] removedBecause)
+    (lib.mkRemovedOptionModule [ "services" "herdr-relay" "power" "hostId" ] removedBecause)
+    (lib.mkRemovedOptionModule [ "services" "herdr-relay" "power" "hostMac" ] removedBecause)
+  ];
+
   options.services.herdr-relay = {
     enable = lib.mkEnableOption "the herdr-relay WebSocket relay";
 
@@ -149,16 +160,6 @@ in
       };
     };
 
-    presetsFile = lib.mkOption {
-      type = lib.types.nullOr lib.types.path;
-      default = null;
-      description = ''
-        JSON file of launch presets. Each preset's `target` is an SSH login
-        string, so this is treated as a secret and passed in as a systemd
-        credential.
-      '';
-    };
-
     hostsFile = lib.mkOption {
       type = lib.types.nullOr lib.types.path;
       default = null;
@@ -170,31 +171,14 @@ in
     };
 
     power = {
-      hostId = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        description = ''
-          Legacy preset-mode host id for `wake_host` and `shutdown_host`.
-          Host-file deployments declare power capabilities per host instead.
-          Both legacy operations are refused unless this and
-          {option}`services.herdr-relay.power.hostMac` are set.
-        '';
-      };
-
-      hostMac = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        example = "00:11:22:33:44:55";
-        description = "MAC address woken by `wake_host`.";
-      };
-
       wakeBin = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
         example = "/run/current-system/sw/bin/wakeonlan";
         description = ''
           Absolute path to the wake-on-LAN binary. Defaults to `wakeonlan` on
-          the unit's PATH.
+          the unit's PATH. Which hosts can be woken, and their MAC addresses,
+          come from {option}`services.herdr-relay.hostsFile`.
         '';
       };
     };
@@ -233,18 +217,11 @@ in
         '';
       }
       {
-         assertion = usesSsh -> (cfg.ssh.identityFile != null && cfg.ssh.knownHostsFile != null);
-         message = ''
-           services.herdr-relay uses SSH targets, so both ssh.identityFile and
-           ssh.knownHostsFile are required: the relay polls hosts with
-           BatchMode=yes and no fallback to an interactive prompt.
-        '';
-      }
-      {
-        assertion = (cfg.power.hostId == null) == (cfg.power.hostMac == null);
+        assertion = usesSsh -> (cfg.ssh.identityFile != null && cfg.ssh.knownHostsFile != null);
         message = ''
-          services.herdr-relay.power.hostId and power.hostMac must be set
-          together when using legacy preset-mode power controls.
+          services.herdr-relay uses SSH targets, so both ssh.identityFile and
+          ssh.knownHostsFile are required: the relay polls hosts with
+          BatchMode=yes and no fallback to an interactive prompt.
         '';
       }
     ];
@@ -265,10 +242,7 @@ in
           HOME = stateDir;
           HERDR_BIN = cfg.herdrBin;
           HERDR_REMOTES = if usesRemotes then lib.concatStringsSep "," cfg.remotes else null;
-          HERDR_PRESETS_FILE = if cfg.presetsFile != null then "%d/presets" else null;
           HERDR_HOSTS_FILE = if cfg.hostsFile != null then "%d/hosts" else null;
-          HERDR_POWER_HOST_ID = cfg.power.hostId;
-          HERDR_POWER_HOST_MAC = cfg.power.hostMac;
           HERDR_WAKE_BIN = cfg.power.wakeBin;
         }
         // cfg.extraEnvironment
@@ -276,18 +250,17 @@ in
 
       serviceConfig = {
         ExecStart = startScript;
-         ExecStartPre = lib.optional usesSsh sshSetup;
+        ExecStartPre = lib.optional usesSsh sshSetup;
         Restart = "on-failure";
         RestartSec = "5s";
 
         LoadCredential = [
           "token:${cfg.tokenFile}"
         ]
-         ++ lib.optionals usesSsh [
+        ++ lib.optionals usesSsh [
           "ssh-key:${cfg.ssh.identityFile}"
           "ssh-known-hosts:${cfg.ssh.knownHostsFile}"
         ]
-        ++ lib.optional (cfg.presetsFile != null) "presets:${cfg.presetsFile}"
         ++ lib.optional (cfg.hostsFile != null) "hosts:${cfg.hostsFile}";
 
         EnvironmentFile = cfg.environmentFile;
