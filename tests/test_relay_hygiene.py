@@ -89,6 +89,16 @@ class WebPageScriptOriginTests(unittest.TestCase):
         self.assertEqual(header.pop("frame-ancestors"), ["'none'"])
         self.assertEqual(self._directives(self._meta_policy()), header)
 
+    def test_pages_headers_carry_the_relay_policy(self):
+        # The Cloudflare Pages copy of web/ gets the policy as a header too: a
+        # <meta> cannot cover a script injected ahead of it.
+        lines = (REPO / "web" / "_headers").read_text(encoding="utf-8").splitlines()
+        rules = [line for line in lines if line and not line.startswith("#")]
+        self.assertEqual(rules[0], "/*")
+        name, _, value = rules[1].strip().partition(": ")
+        self.assertEqual(name, "Content-Security-Policy")
+        self.assertEqual(value, herdr_relay.server.WEB_APP_CSP)
+
     def test_policy_allows_scripts_from_this_origin_and_inline_only(self):
         self.assertEqual(
             self._directives(herdr_relay.server.WEB_APP_CSP)["script-src"],
