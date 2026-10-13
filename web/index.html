@@ -442,7 +442,7 @@ function renderTimeline() {
   el.innerHTML = timeline.map(e => {
     const t = e.time.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
     const color = e.status==='blocked'?'var(--red)':e.status==='working'?'var(--green)':'var(--muted)';
-    return `<div style="display:flex;gap:8px;padding:4px 0;border-bottom:1px solid var(--border)"><span style="color:var(--muted)">${t}</span><span style="flex:1">${e.project} (${e.agent})</span><span style="color:${color}">${e.status}</span></div>`;
+    return `<div style="display:flex;gap:8px;padding:4px 0;border-bottom:1px solid var(--border)"><span style="color:var(--muted)">${t}</span><span style="flex:1">${escapeHtml(e.project)} (${escapeHtml(e.agent)})</span><span style="color:${color}">${escapeHtml(e.status)}</span></div>`;
   }).join('');
 }
 
@@ -1114,7 +1114,7 @@ function renderWorkspaces(workspaces) {
     const wsAgents = agents.filter(a => a.workspace_id === wsId);
     const hasBlocked = wsAgents.some(a => a.status === 'blocked');
     const name = wsAgents[0]?.project || wsId.slice(0, 8);
-    html += `<button class="chip${activeWorkspace===wsId?' active':''}${hasBlocked?' alert':''}" onclick="selectWorkspace('${wsId}')">${name}</button>`;
+    html += `<button class="chip${activeWorkspace===wsId?' active':''}${hasBlocked?' alert':''}" onclick="selectWorkspace(${escapeJs(wsId)})">${escapeHtml(name)}</button>`;
   }
   html += `</div>`;
   // Tab chip strip (always show when workspace selected)
@@ -1128,9 +1128,9 @@ function renderWorkspaces(workspaces) {
       const tabAgents = agents.filter(a => a.tab_id === tid);
       const hasBlocked = tabAgents.some(a => a.status === 'blocked');
       const tabLabel = tabAgents[0]?.label || 'Tab '+(i+1);
-      html += `<button class="chip${activeTab===tid?' active':''}${hasBlocked?' alert':''}" onclick="selectTab('${tid}')">${tabLabel}</button>`;
+      html += `<button class="chip${activeTab===tid?' active':''}${hasBlocked?' alert':''}" onclick="selectTab(${escapeJs(tid)})">${escapeHtml(tabLabel)}</button>`;
     });
-    html += `<button class="chip chip-add" onclick="createTab('${activeWorkspace}')">+</button>`;
+    html += `<button class="chip chip-add" onclick="createTab(${escapeJs(activeWorkspace)})">+</button>`;
     if (tabError) html += `<span class="chip-label host-offline">${escapeHtml(tabError)}</span>`;
     html += `</div>`;
   }
@@ -1184,12 +1184,13 @@ function createTab(workspaceId) {
 function agentCard(a) {
   const color = a.status==='blocked'?'var(--red)':a.status==='working'?'var(--green)':'var(--muted)';
   const pulseClass = a.status==='working'?' pulse':'';
-  const host = a.host&&a.host!=='local'?` <span style="color:var(--orange);font-size:0.6rem">@${a.host}</span>`:'';
-  const cwd = a.cwd ? `<span style="font-family:monospace;opacity:0.7">${a.cwd.split('/').slice(-2).join('/')}</span>` : '';
-  const label = a.label||a.project||a.agent;
-  return `<div class="agent${a.status==='blocked'?' blocked':''}" role="button" tabindex="0" aria-label="${label}, ${a.status}" onclick="openTerminal('${a.pane_id}', '${a.host_id || a.host || 'local'}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openTerminal('${a.pane_id}', '${a.host_id || a.host || 'local'}')}">
+  const host = a.host&&a.host!=='local'?` <span style="color:var(--orange);font-size:0.6rem">@${escapeHtml(a.host)}</span>`:'';
+  const cwd = a.cwd ? `<span style="font-family:monospace;opacity:0.7">${escapeHtml(a.cwd.split('/').slice(-2).join('/'))}</span>` : '';
+  const label = escapeHtml(a.label||a.project||a.agent);
+  const open = `openTerminal(${escapeJs(a.pane_id)}, ${escapeJs(a.host_id || a.host || 'local')})`;
+  return `<div class="agent${a.status==='blocked'?' blocked':''}" role="button" tabindex="0" aria-label="${label}, ${escapeHtml(a.status)}" onclick="${open}" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();${open}}">
     <span class="dot${pulseClass}" style="background:${color}" aria-hidden="true"></span>
-    <div class="info"><div class="project">${label}${host}</div><div class="meta">${a.agent} · ${cwd}</div></div>
+    <div class="info"><div class="project">${label}${host}</div><div class="meta">${escapeHtml(a.agent)} · ${cwd}</div></div>
     <span style="color:var(--muted);font-size:1.2rem" aria-hidden="true">›</span>
   </div>`;
 }
@@ -1218,10 +1219,9 @@ function renderQuickActions(a) {
   const qa = document.getElementById('quickActions');
   if (!a || a.status !== 'blocked') { qa.innerHTML = ''; return; }
   const opts = a.options || ['1. Yes', '2. No'];
-  qa.innerHTML = opts.map(o => {
-    const safe = o.replace(/\\/g,'\\\\').replace(/'/g,"\\'");
-    return `<button class="${optionClass(o)}" onclick="respond('${safe}')">${optionLabel(o)}</button>`;
-  }).join('');
+  qa.innerHTML = opts.map(o =>
+    `<button class="${optionClass(o)}" onclick="respond(${escapeJs(o)})">${escapeHtml(optionLabel(o))}</button>`
+  ).join('');
 }
 
 function openTerminal(paneId, hostId) {
