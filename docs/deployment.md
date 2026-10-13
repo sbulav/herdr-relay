@@ -273,22 +273,37 @@ until it sends a frame the relay drops.
 **Back up the database before every upgrade.** On start the relay migrates
 `HERDR_PROJECTS_DB` forward, and it refuses to start on a database whose
 `PRAGMA user_version` is newer than it knows ("unsupported project database
-schema version"). There is no down-migration, so a rolled-back relay needs the
-copy taken before the upgrade. `.backup` is consistent while the relay runs:
+schema version"). There is no down-migration. `.backup` is consistent while the
+relay runs; check the copy and note its schema version:
 
 ```sh
 sqlite3 "$HERDR_PROJECTS_DB" ".backup '/backup/projects.sqlite3'"
+sqlite3 /backup/projects.sqlite3 'PRAGMA integrity_check; PRAGMA user_version;'
 ```
 
-Keep a copy of the `HERDR_HOSTS_FILE` that is in use as well, unless the
-configuration repo that renders it already versions it.
+`integrity_check` must print `ok`. Keep a copy of the `HERDR_HOSTS_FILE` that is
+in use as well, unless the configuration repo that renders it already versions
+it.
 
-**To roll back:** stop the unit, restore the previous package (the previous
-generation, or the earlier flake pin), copy the database backup over
-`HERDR_PROJECTS_DB`, start the unit, and check that `server_info.relay_version`
-reports the old version. Projects saved after the backup are lost. Rolling back
-past 0.8.0 also means restoring the preset settings that release removed;
-clients that speak revision 3 cannot start agents on such a relay.
+**To roll back:** stop the unit and restore the previous package (the previous
+generation, or the earlier flake pin) and the previous hosts file. Then compare
+`PRAGMA user_version` of the live database with the backup's:
+
+- **Unchanged** — the upgrade did not migrate the schema, and the old relay
+  starts on the live database as it is. Keep it: projects saved since the
+  upgrade survive.
+- **Raised** — the old relay refuses this database. Copy the backup over
+  `HERDR_PROJECTS_DB`, writing into the existing file (`cp`, not `mv`) so it
+  stays owned by the service user under `DynamicUser`, and remove any
+  `projects.sqlite3-journal` beside it first. Projects saved after the backup
+  are lost.
+
+Start the unit and check the `server_info` frame: `relay_version` must report
+the old version, `acknowledged_input` must be `true` (herdr-mobile refuses a
+relay without it, so do not roll back past 0.8.9), and `min_client` must not
+exceed the protocol of the clients in use. Rolling back past 0.8.0 also means
+restoring the preset settings that release removed; clients that speak revision
+3 cannot start agents on such a relay.
 
 **Upgrade herdr on every polled host at the same time as its server.** The
 herdr CLI refuses to talk to a server with a different protocol number, so a
