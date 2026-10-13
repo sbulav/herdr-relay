@@ -262,6 +262,41 @@ Dependencies are `websockets` (required) and `pywebpush` plus `py-vapid` (Web
 Push — the relay logs a warning and carries on without them).
 `uv run relay/herdr-relay.py` installs them from that launcher's PEP 723 metadata.
 
+## Upgrading and rolling back
+
+**Deploy the relay before the clients.** When a release raises
+`server_info.min_client`, older clients show an update notice, and the new
+client never sends frames an older relay does not know. The relay advertises
+`min_client` but does not enforce it: an out-of-date client keeps working
+until it sends a frame the relay drops.
+
+**Back up the database before every upgrade.** On start the relay migrates
+`HERDR_PROJECTS_DB` forward, and it refuses to start on a database whose
+`PRAGMA user_version` is newer than it knows ("unsupported project database
+schema version"). There is no down-migration, so a rolled-back relay needs the
+copy taken before the upgrade. `.backup` is consistent while the relay runs:
+
+```sh
+sqlite3 "$HERDR_PROJECTS_DB" ".backup '/backup/projects.sqlite3'"
+```
+
+Keep a copy of the `HERDR_HOSTS_FILE` that is in use as well, unless the
+configuration repo that renders it already versions it.
+
+**To roll back:** stop the unit, restore the previous package (the previous
+generation, or the earlier flake pin), copy the database backup over
+`HERDR_PROJECTS_DB`, start the unit, and check that `server_info.relay_version`
+reports the old version. Projects saved after the backup are lost. Rolling back
+past 0.8.0 also means restoring the preset settings that release removed;
+clients that speak revision 3 cannot start agents on such a relay.
+
+**Upgrade herdr on every polled host at the same time as its server.** The
+herdr CLI refuses to talk to a server with a different protocol number, so a
+new binary in front of an old server makes that host read `herdr_unavailable`.
+Restart the herdr server after upgrading the binary (this ends the processes in
+its panes), and check that `HERDR_BIN`, the module's `herdrBin`, or a host's
+`herdr.binary` does not still name the old store path.
+
 ## SSH access to remotes and hosts
 
 Polling `HERDR_REMOTES` or SSH targets declared by `HERDR_HOSTS_FILE` shells out
