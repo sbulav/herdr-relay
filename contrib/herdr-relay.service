@@ -4,8 +4,8 @@
 # Install:
 #   1. Put relay/ and web/ somewhere stable, keeping the launcher at
 #      <root>/relay/herdr-relay.py next to the <root>/relay/herdr_relay/
-#      package, and the PWA at <root>/web — the relay resolves its LEGACY
-#      static routes relative to the package directory.
+#      package, and the PWA at <root>/web — the relay resolves the browser
+#      client's static routes relative to the package directory.
 #   2. Write /etc/herdr-relay/config.env, owned by root and mode 0600:
 #        HERDR_RELAY_TOKEN=...
 #        HERDR_BIN=/usr/local/bin/herdr

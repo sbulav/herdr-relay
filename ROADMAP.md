@@ -82,6 +82,10 @@ four static HTTP routes, and the Web Push stack (`_load_push_subs`,
 vars) — mobile uses foreground WS monitoring, never Web Push. Until the app
 change lands, keep all of it and mark it `LEGACY` in comments.
 
+(Superseded: herdr-mobile#37 made the web PWA a supported client at functional
+parity with the app, so `web/` and Web Push stay. The `LEGACY` comment markers
+were removed under herdr-mobile#45; browser-only code now says "browser client".)
+
 **Retarget the test suite.** `tests/run.sh` is 17 assertions of upstream
 marketing: it asserts the macOS updater points at `dcolinmorgan/herdr-remote`
 (#13), that `README.md` links `herdr-demo.pages.dev` (#15) and
@@ -217,6 +221,10 @@ This also changes the Phase 5 calculus: opaque session IDs are cheap if you
 are allowed to break the wire.
 
 ### 4. Retire the WebView fallback on a date
+
+(Superseded for the relay side: herdr-mobile#37 decided the web PWA stays as a
+supported client at parity with the app, so `web/`, its static routes, and Web
+Push are not being dropped.)
 
 Phase 0c leaves `web/` alive because the app embeds it. With both sides in
 play this stops being conditional: delete the WebView mode from
@@ -385,6 +393,34 @@ volume, not latency:
   after Phase 1, and only as an additive frame the app may ignore.
 - Feed the existing HTTP/UDP push path from a herdr hook so state changes
   arrive on an edge instead of being discovered by the next poll.
+
+---
+
+## After #64 — open, not yet specified
+
+#64 (the native mobile experience after the upstream v0.8.x and herdr 0.9
+review) closes with its child slices done. These items from its "not yet
+specified" list stay open. None has an issue; each needs a spec before one is
+filed.
+
+- **Multi-select questions** — toggling options and submitting the set. #72
+  landed full Claude Code menu parsing and free-text answers, which was the
+  precondition; the toggle-and-submit interaction itself is not designed.
+- **UnifiedPush via ntfy**, with Allow/Deny notification actions and
+  settle/cooldown. Needs a design session first: payload shape, who owns the
+  subscription, VAPID, and a completion push.
+- **herdr 0.9.x adoption** — `agent prompt --wait` confirmation,
+  `api snapshot`, and the event bridge. The precondition #64 set ("once every
+  polled host runs 0.9.1") is met: the polled hosts run herdr 0.9.3. What is
+  left is deciding which of the three to adopt and in what order.
+- **Read-only shell panes.**
+- **Image attachments.**
+
+### Considered and rejected
+
+**QR per-device pairing** and **Telegram keyed on `dialog_id`, answering
+through `respond_dialog`** were on the same list. The owner dropped both: they
+are not wanted, and neither should be picked up again without a new reason.
 
 ---
 

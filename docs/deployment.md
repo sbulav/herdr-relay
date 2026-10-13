@@ -277,7 +277,8 @@ writing `~/.ssh/config` from systemd credentials on each start. On the remote
 side an unprivileged account with the herdr binary is enough, plus
 `sudo -n systemctl poweroff` if `shutdown_host` is used. The relay never sends
 client-supplied shell text to a remote: `wake_host` and `shutdown_host` are
-allowlisted against the configured power host and run fixed commands.
+refused for any host whose `HERDR_HOSTS_FILE` entry does not grant that
+capability, and run fixed commands.
 
 ## Hardened units and local transcripts
 

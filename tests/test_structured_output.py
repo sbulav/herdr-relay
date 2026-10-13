@@ -3282,7 +3282,7 @@ class EventPushRouteTests(unittest.TestCase):
         self.assertEqual(events, [event])
 
     def test_event_on_root_beats_the_static_pwa_route(self):
-        # Regression: "/" matched the LEGACY (#14) index.html route first, so the
+        # Regression: "/" matched the browser client's index.html route first, so the
         # relay answered 200 with the PWA and dropped the event silently.
         event = {"type": "agent_event", "pane_id": "%2", "status": "idle"}
         response, events = self._push("/" + self._query(event))

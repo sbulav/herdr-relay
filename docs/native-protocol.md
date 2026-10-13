@@ -1379,9 +1379,9 @@ is still a `command_error`, with a `null` `request_id`.
 
 ### `push_subscribe`
 
-> **LEGACY (#14).** Web Push exists for the browser PWA only. herdr-mobile
-> monitors the WebSocket in a foreground service and never subscribes; these two
-> frames are retired together with `web/`.
+> **Browser client only.** Web Push exists for the web PWA, a supported client
+> kept at parity with herdr-mobile (herdr-mobile#37). herdr-mobile monitors the
+> WebSocket in a foreground service and never subscribes.
 
 Stores a Web Push subscription if it is truthy and not already present. The
 relay performs no schema validation and always acknowledges the frame.

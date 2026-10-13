@@ -25,8 +25,8 @@ stdenvNoCC.mkDerivation {
   pname = "herdr-relay";
   inherit version;
 
-  # web/ is here because the relay resolves its LEGACY (#14) static routes
-  # relative to its own file — see the installPhase layout below.
+  # web/ is here because the relay serves the browser client from static routes
+  # it resolves relative to its own file — see the installPhase layout below.
   src = lib.fileset.toSource {
     root = ../.;
     fileset = lib.fileset.unions [
