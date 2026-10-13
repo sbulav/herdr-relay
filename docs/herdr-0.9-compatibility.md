@@ -60,6 +60,19 @@ Sources: `relay/herdr_relay/herdr.py`, `relay/herdr_relay/operations.py`,
 [tab CLI](https://github.com/herdrdev/herdr/blob/v0.9.3/src/cli/tab.rs),
 [API schemas](https://github.com/herdrdev/herdr/tree/v0.9.3/src/api/schema).
 
+A pane's `agent` is Herdr's effective agent label, and it is the only field
+the relay takes as "an agent runs here". `agent_session` is not a substitute:
+when the detected process stops matching the reporting hook — the agent quit
+and left a shell — Herdr drops `agent` but keeps the session ref as a
+persisted session for resume, so a pane carrying `agent_session` without
+`agent` is a shell. Upstream herdr-remote 15eaf30 reads `agent_session.agent`
+as a fallback; this fork deliberately does not, and
+`test_pane_with_only_an_agent_session_is_not_an_agent` pins that. Sources:
+`effective_agent_label` and the hook-conflict branch of the detection update in
+[terminal state](https://github.com/herdrdev/herdr/blob/v0.9.3/src/terminal/state.rs),
+and `pane_info` / `terminal_agent_session_info` in
+[creation.rs](https://github.com/herdrdev/herdr/blob/v0.9.3/src/app/creation.rs).
+
 The plugin runner still supplies `HERDR_PLUGIN_EVENT_JSON`, and the relay
 subscribes to the retained `pane.agent_status_changed` event. Sources:
 `herdr-plugin.toml`, `relay/on_event.py`,
