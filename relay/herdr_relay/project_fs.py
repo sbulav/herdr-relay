@@ -147,6 +147,32 @@ def browse_local(root, components):
         os.close(fd)
 
 
+def _components_below(path, canonical_root):
+    """Split a stored canonical path into components below the canonical root.
+
+    Both sides are canonical: the path came from a descriptor opened under the
+    root's realpath, so it is compared with that realpath, never with the
+    configured spelling, which may traverse a symlink (herdr-mobile#45).
+    """
+    if not isinstance(path, str) or not os.path.isabs(path) or not _within(path, canonical_root):
+        raise FilesystemError("PATH_NOT_ALLOWED", "Folder left the configured root")
+    relative = os.path.relpath(path, canonical_root)
+    return validate_components([] if relative == "." else relative.split(os.sep))
+
+
+def resolve_local(root, canonical_path):
+    """Reopen a stored canonical path below a root and return where it is now.
+
+    The walk is the same descriptor-relative one browsing uses, so a component
+    that has become a symlink since the path was saved is refused rather than
+    followed.
+    """
+    canonical_root = os.path.realpath(os.path.abspath(os.path.normpath(root)))
+    fd, canonical = _open_directory(root, _components_below(canonical_path, canonical_root))
+    os.close(fd)
+    return canonical
+
+
 def create_local(root, components, name):
     """Atomically create one empty directory below an opened parent."""
     name = validate_name(name)
@@ -248,10 +274,21 @@ def fd_path(fd, root):
 
 request = json.load(sys.stdin)
 configured_root = os.path.abspath(os.path.normpath(request.get("root", "")))
-parts = components(request.get("components", []))
 operation = request.get("op", "browse")
 if not os.path.isabs(configured_root):
     fail("ROOT_UNSAFE")
+if operation == "resolve":
+    # A stored path is canonical on this host, so it is split against this
+    # host's realpath of the root, never the configured spelling.
+    target = request.get("path")
+    real_root = os.path.realpath(configured_root)
+    if (not isinstance(target, str) or not os.path.isabs(target) or
+            os.path.commonpath((os.path.abspath(target), real_root)) != real_root):
+        fail("PATH_NOT_ALLOWED")
+    relative = os.path.relpath(target, real_root)
+    parts = components([] if relative == "." else relative.split("/"))
+else:
+    parts = components(request.get("components", []))
 try:
     root_stat = os.lstat(configured_root)
     if not stat.S_ISDIR(root_stat.st_mode) or stat.S_ISLNK(root_stat.st_mode):
@@ -275,6 +312,9 @@ try:
                 entries.append({"name": child_name, "kind": "directory"})
         os.close(fd)
         print(json.dumps({"ok": True, "canonical_path": canonical, "entries": entries}))
+    elif operation == "resolve":
+        os.close(fd)
+        print(json.dumps({"ok": True, "canonical_path": canonical}))
     elif operation == "create":
         child_name = name(request.get("name"))
         created = False
@@ -326,13 +366,15 @@ _REMOTE_PYTHON = (
 _REMOTE_COMMAND = f"python3 -c {shlex.quote(_REMOTE_PYTHON)}"
 
 
-def _remote(host, root, components, operation, name=None):
+def _remote(host, root, components, operation, name=None, path=None):
     target = hosts.ssh_target(host)
     if not target:
         raise FilesystemError("REMOTE_UNAVAILABLE")
     request = {"op": operation, "root": root, "components": validate_components(components)}
     if name is not None:
         request["name"] = validate_name(name)
+    if path is not None:
+        request["path"] = path
     try:
         result = subprocess.run(
             # Browsing walks a tree one request at a time, so these reuse the
@@ -383,12 +425,30 @@ def create_remote(host, root, components, name):
     return {"canonical_path": response["canonical_path"]}
 
 
+def resolve_remote(host, root, canonical_path):
+    """`resolve_local`, run on the host that owns the path.
+
+    Only that host can say what its root's realpath is; the relay's own
+    filesystem has nothing to do with a remote host's symlinks.
+    """
+    if not isinstance(canonical_path, str) or not os.path.isabs(canonical_path):
+        raise FilesystemError("PATH_NOT_ALLOWED", "Folder left the configured root")
+    response = _remote(host, root, [], "resolve", path=canonical_path)
+    if not isinstance(response.get("canonical_path"), str):
+        raise FilesystemError("REMOTE_UNAVAILABLE")
+    return response["canonical_path"]
+
+
 def remove_empty_remote(host, root, components, name):
     _remote(host, root, components, "remove_empty", name)
 
 
 def browse(host, root, components):
     return browse_remote(host, root, components) if hosts.ssh_target(host) else browse_local(root, components)
+
+
+def resolve(host, root, canonical_path):
+    return resolve_remote(host, root, canonical_path) if hosts.ssh_target(host) else resolve_local(root, canonical_path)
 
 
 def create(host, root, components, name):

@@ -7,6 +7,7 @@ capture frames patches it here.
 """
 import asyncio
 import json
+import time
 
 from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
 
@@ -107,6 +108,55 @@ async def catalog_loop():
         except Exception:
             log.exception("catalog refresh failed; retaining last-successful catalogs")
         await asyncio.sleep(60)
+
+
+def _woken_hosts(public_hosts):
+    """Record each host's readiness; return the IDs that just became ready.
+
+    Only a host last seen not ready counts as woken: one ready at first sight
+    was caught by the startup refresh, and one ready all along needs nothing.
+    """
+    woken = []
+    for host in public_hosts or []:
+        host_id = host.get("host_id") if isinstance(host, dict) else None
+        if not isinstance(host_id, str):
+            continue
+        ready = host.get("status") == "ready"
+        if ready and state.host_ready.get(host_id) is False:
+            woken.append(host_id)
+        state.host_ready[host_id] = ready
+    return woken
+
+
+def _refresh_woken_catalogs(public_hosts, now=None):
+    """Re-read the model catalog of each host that just woke (herdr-mobile#45).
+
+    A host asleep during the daily refresh keeps a stale (or failed) catalog for
+    up to a day. Whether the host woke through a relay wake operation or on its
+    own, the poll loop sees the same offline -> ready edge here. One refresh per
+    host at a time, and at most one per WAKE_REFRESH_INTERVAL_SECONDS.
+    """
+    now = time.monotonic() if now is None else now
+    for host_id in _woken_hosts(public_hosts):
+        running = state.catalog_refresh_tasks.get(host_id)
+        if running is not None and not running.done():
+            continue
+        last = state.catalog_wake_refresh_at.get(host_id)
+        if last is not None and now - last < catalogs.WAKE_REFRESH_INTERVAL_SECONDS:
+            continue
+        state.catalog_wake_refresh_at[host_id] = now
+        state.catalog_refresh_tasks[host_id] = asyncio.create_task(
+            _refresh_woken_catalog(host_id), name=f"catalog-wake-{host_id}"
+        )
+
+
+async def _refresh_woken_catalog(host_id):
+    try:
+        frame = await asyncio.to_thread(catalogs.refresh_stale_host, host_id)
+        if frame is not None:
+            await broadcast({"type": "catalogs", **frame})
+    except Exception:
+        log.exception("catalog refresh after wake failed for host=%s; retaining cached catalog", host_id)
 
 
 async def _poll_once():
@@ -211,6 +261,7 @@ async def _poll_once():
         "operations": recovery,
         **catalogs.public_frame(),
     })
+    _refresh_woken_catalogs(hosts)
     # Pace the next cycle (#19). Any of these means the next two seconds could
     # carry something a client needs promptly; none of them means nobody is
     # watching and nothing is moving, so the loop may cost less. Filtered from

@@ -15,6 +15,10 @@ from . import config, herdr, hosts
 
 
 REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000
+# A host coming back (offline or Herdr-unavailable -> ready) re-reads its
+# catalog when it went stale while away, at most this often per host so a
+# flapping link cannot turn into an ssh probe storm (herdr-mobile#45).
+WAKE_REFRESH_INTERVAL_SECONDS = 5 * 60
 MAX_MODELS = 500
 MODEL_ID_RE = re.compile(r"[^\x00-\x1f]{1,256}\Z")
 
@@ -408,46 +412,87 @@ def refresh_all(hosts_records=None, host_id=None):
     """Refresh every configured harness, retaining cache entries on transient errors."""
     if not _refresh_lock.acquire(blocking=False):
         return public_frame()
-    store = CatalogStore()
+    try:
+        records = hosts_records if hosts_records is not None else herdr.configured_host_records()
+        _refresh(records, host_id)
+    finally:
+        _refresh_lock.release()
+    return public_frame()
+
+
+def host_catalog_stale(host, store=None):
+    """Whether any enabled harness on `host` lacks a current catalog.
+
+    A transient failure marks a row stale (keeping its last models), so this is
+    true for a host that was unreachable at the last refresh and for one never
+    catalogued at all. A permanently missing or disabled harness is not stale:
+    probing it again would only repeat the same answer.
+    """
+    store = store or CatalogStore()
+    for harness in host.get("harnesses", []):
+        if harness.get("enabled", True) is False:
+            continue
+        row = store.get(host["id"], harness["id"])
+        if row is None or row.get("stale"):
+            return True
+    return False
+
+
+def refresh_stale_host(host_id, hosts_records=None):
+    """Re-read one host's catalog if it is stale; return the frame, or None.
+
+    Unlike `refresh_all`, this waits for a refresh already in progress instead
+    of dropping the request, then re-checks under the lock: if the running
+    refresh already caught the host, nothing is probed twice (herdr-mobile#45).
+    """
     records = hosts_records if hosts_records is not None else herdr.configured_host_records()
+    host = next((item for item in records if item.get("id") == host_id), None)
+    if host is None:
+        return None
+    with _refresh_lock:
+        if not host_catalog_stale(host):
+            return None
+        _refresh(records, host_id)
+    return public_frame()
+
+
+def _refresh(records, host_id):
+    """Probe the configured harnesses (one host's, or all); caller holds the lock."""
+    store = CatalogStore()
     configured = {(host["id"], harness["id"]) for host, harness in configured_harnesses(records)}
     store.reconcile(configured)
     now = _now_ms()
     if host_id is None:
         store.set_metadata({"state": "refreshing", "error": None})
     errors = []
-    try:
-        for host, harness in configured_harnesses(records):
-            if host_id is not None and host["id"] != host_id:
-                continue
-            if harness.get("enabled", True) is False:
-                store.failure(host["id"], harness, "HARNESS_DISABLED", "Harness is disabled", permanent=True, now=now)
-                continue
-            result = discover_harness(host, harness)
-            if result["ok"]:
-                store.success(host["id"], harness, result.get("version"), result["models"], now=now)
-            else:
-                store.failure(host["id"], harness, result["code"], result["message"], result.get("permanent", False), now=now)
-                errors.append(f"{host['id']}/{harness['id']}: {result['message']}")
-        if host_id is None:
-            metadata = {
-                "state": "error" if errors else "success",
-                "error": "; ".join(errors) if errors else None,
-            }
-            # Only a full refresh advances the global 24-hour schedule.
-            metadata["last_refresh_at"] = now
-            store.set_metadata(metadata)
+    for host, harness in configured_harnesses(records):
+        if host_id is not None and host["id"] != host_id:
+            continue
+        if harness.get("enabled", True) is False:
+            store.failure(host["id"], harness, "HARNESS_DISABLED", "Harness is disabled", permanent=True, now=now)
+            continue
+        result = discover_harness(host, harness)
+        if result["ok"]:
+            store.success(host["id"], harness, result.get("version"), result["models"], now=now)
         else:
-            # Targeted refresh results are kept separately so a manual check
-            # cannot hide the last full-refresh status from other hosts.
-            store.set_metadata({
-                "targeted_state": "error" if errors else "success",
-                "targeted_error": "; ".join(errors) if errors else None,
-                "last_targeted_refresh_at": now,
-            })
-    finally:
-        _refresh_lock.release()
-    return public_frame()
+            store.failure(host["id"], harness, result["code"], result["message"], result.get("permanent", False), now=now)
+            errors.append(f"{host['id']}/{harness['id']}: {result['message']}")
+    if host_id is None:
+        metadata = {
+            "state": "error" if errors else "success",
+            "error": "; ".join(errors) if errors else None,
+        }
+        # Only a full refresh advances the global 24-hour schedule.
+        metadata["last_refresh_at"] = now
+        store.set_metadata(metadata)
+    else:
+        # Targeted refresh results are kept separately so a manual check
+        # cannot hide the last full-refresh status from other hosts.
+        store.set_metadata({
+            "targeted_state": "error" if errors else "success",
+            "targeted_error": "; ".join(errors) if errors else None,
+            "last_targeted_refresh_at": now,
+        })
 
 
 def refresh_due():

@@ -88,3 +88,9 @@ def resolve(host_id, pane_id):
 # current backoff short instead of waiting it out.
 poll_idle_streak = 0
 poll_wakeup = asyncio.Event()
+# Catalog refresh on wake (herdr-mobile#45). `host_ready` is the last observed
+# readiness per host ID, so the poll loop can see an offline -> ready edge;
+# the other two bound how often, and how many at once, a woken host is probed.
+host_ready = {}               # host_id -> bool, as of the previous poll
+catalog_wake_refresh_at = {}  # host_id -> monotonic seconds of the last wake refresh
+catalog_refresh_tasks = {}    # host_id -> asyncio.Task of the running wake refresh

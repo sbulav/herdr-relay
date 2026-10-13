@@ -285,7 +285,11 @@ Each catalog includes `available`, `disabled`, `version`, `models`, `stale`,
 contains the no-argument `default` choice for a healthy harness. OpenCode and
 Codex use fixed machine-readable model adapters; Claude uses configured aliases
 until it exposes stable discovery. Catalogs are refreshed at relay startup, at
-most once every 24 hours, and by the typed `catalog_refresh` command. A
+most once every 24 hours, and by the typed `catalog_refresh` command. A host
+seen going from `offline` or `herdr_unavailable` to `ready` — after a
+`wake_host` or on its own — re-reads its catalog when any row is stale or
+missing, at most once per host every five minutes; the result is broadcast as
+a `catalogs` frame. A
 transient failure retains the last-successful models and marks the row stale;
 removed, disabled, or permanently missing harnesses have no selectable models.
 
