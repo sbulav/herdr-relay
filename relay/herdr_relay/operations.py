@@ -358,17 +358,27 @@ def _project_context(operation, verify_path=True):
     root = hosts.project_root(configured_host, saved["root_id"])
     if root is None:
         return None
-    if not _path_is_within(saved["canonical_path"], root["path"]):
-        return None
+    # The saved path is canonical on its host — browsing resolved it through
+    # the root's realpath — so containment is checked against the root's
+    # canonical form, never its configured spelling, which may traverse a
+    # symlink (herdr-mobile#45).
     if verify_path:
+        # The host canonicalises its own root and reopens the path below it,
+        # one component at a time without following a symlink.
         try:
-            relative = os.path.relpath(saved["canonical_path"], root["path"])
-            components = [] if relative == "." else relative.split(os.sep)
-            current = project_fs.browse(configured_host, root["path"], components)["canonical_path"]
+            current = project_fs.resolve(configured_host, root["path"], saved["canonical_path"])
         except (ValueError, project_fs.FilesystemError):
             return None
         if current != saved["canonical_path"]:
             return None
+    elif not hosts.ssh_target(configured_host):
+        # A local root's canonical form is this machine's realpath.
+        if not _path_is_within(saved["canonical_path"], os.path.realpath(root["path"])):
+            return None
+    # An unverified remote check has no host-side realpath to compare with
+    # without reaching a host that may be asleep. The matching root_id already
+    # pins the configured root, and every launch passes the verified check
+    # above once the host answers.
     configured_harnesses = {item["id"]: item for item in configured_host.get("harnesses", [])}
     harness = configured_harnesses.get(operation["harness"])
     if configured_harnesses and harness is None:

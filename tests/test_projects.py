@@ -171,6 +171,83 @@ class ProjectStoreTests(unittest.TestCase):
                 herdr_relay.project_fs.create_local(str(self.root), [], "raced")
         self.assertFalse((self.root / "raced").exists())
 
+    def symlinked_root(self):
+        """A root configured through a symlinked ancestor (herdr-mobile#45 staging).
+
+        Returns the configured path, which traverses the link, and the real
+        directory it lands in, with one project folder, one sibling outside the
+        root, and one symlink inside the root that points at that sibling.
+        """
+        real = Path(self.directory.name) / "real-home"
+        (real / "projects" / "app").mkdir(parents=True)
+        (real / "sibling").mkdir()
+        os.symlink(real / "sibling", real / "projects" / "escape", target_is_directory=True)
+        link = Path(self.directory.name) / "home"
+        os.symlink(real, link, target_is_directory=True)
+        return link / "projects", real
+
+    def run_helper_locally(self):
+        """Route the SSH helper call to a local `sh -c`, as the real host would run it."""
+        real_run = subprocess.run
+
+        def run(argv, input=None, timeout=None, **_kwargs):
+            return real_run(["sh", "-c", argv[-1]], input=input, capture_output=True, text=True, timeout=timeout)
+
+        return patch.object(herdr_relay.project_fs.subprocess, "run", side_effect=run)
+
+    def test_resolve_reopens_a_saved_path_below_a_root_reached_through_a_symlink(self):
+        root, real = self.symlinked_root()
+        saved = herdr_relay.project_fs.browse_local(str(root), ["app"])["canonical_path"]
+        self.assertEqual(os.path.realpath(real / "projects" / "app"), saved)
+
+        self.assertEqual(saved, herdr_relay.project_fs.resolve_local(str(root), saved))
+        self.assertEqual(
+            os.path.realpath(real / "projects"),
+            herdr_relay.project_fs.resolve_local(str(root), os.path.realpath(real / "projects")),
+        )
+        # Resolving canonically must not widen the root: the real root's
+        # sibling, the configured (non-canonical) spelling, a symlink out of
+        # the root, and anything elsewhere are all still refused.
+        for outside in (
+            os.path.realpath(real / "sibling"),
+            str(root / "app"),
+            os.path.join(os.path.realpath(real / "projects"), "escape"),
+            os.path.join(os.path.realpath(real / "projects"), "app", "..", "..", "sibling"),
+            "/etc",
+            "relative/app",
+        ):
+            with self.subTest(path=outside), self.assertRaises(herdr_relay.project_fs.FilesystemError) as error:
+                herdr_relay.project_fs.resolve_local(str(root), outside)
+            self.assertIn(error.exception.code, {"PATH_NOT_ALLOWED", "INVALID_PATH"})
+
+    def test_remote_resolve_canonicalises_on_the_host(self):
+        root, real = self.symlinked_root()
+        with (
+            patch.object(herdr_relay.project_fs.hosts, "ssh_target", return_value="deploy@workstation"),
+            self.run_helper_locally() as run,
+        ):
+            saved = herdr_relay.project_fs.browse_remote(self.host, str(root), ["app"])["canonical_path"]
+            resolved = herdr_relay.project_fs.resolve_remote(self.host, str(root), saved)
+            refused = []
+            for outside in (
+                os.path.realpath(real / "sibling"),
+                str(root / "app"),
+                os.path.join(os.path.realpath(real / "projects"), "escape"),
+                "/etc",
+            ):
+                with self.assertRaises(herdr_relay.project_fs.FilesystemError) as error:
+                    herdr_relay.project_fs.resolve_remote(self.host, str(root), outside)
+                refused.append(error.exception.code)
+
+        self.assertEqual(os.path.realpath(real / "projects" / "app"), saved)
+        self.assertEqual(saved, resolved)
+        self.assertEqual(["PATH_NOT_ALLOWED"] * 4, refused)
+        # The configured path, not a relay-side realpath, is what the host receives.
+        self.assertEqual(
+            {"op": "resolve", "root": str(root), "components": [], "path": saved},
+            json.loads(run.call_args_list[1].kwargs["input"]),
+        )
+
     @patch.object(herdr_relay.project_fs.subprocess, "run")
     @patch.object(herdr_relay.project_fs.hosts, "ssh_target", return_value="deploy@workstation")
     def test_remote_create_uses_the_same_fixed_helper(self, _ssh_target, run):

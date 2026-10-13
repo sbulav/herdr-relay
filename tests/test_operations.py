@@ -3,6 +3,7 @@ import queue
 import os
 import json
 import threading
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -497,9 +498,9 @@ class StartOperationTests(unittest.TestCase):
         })
         browses = []
 
-        def browse(*_args, **_kwargs):
+        def resolve(*_args, **_kwargs):
             browses.append(True)
-            return {"canonical_path": os.path.realpath(self.root), "entries": []}
+            return os.path.realpath(self.root)
 
         def wake(*_args, **_kwargs):
             self.assertEqual([], browses)
@@ -509,7 +510,7 @@ class StartOperationTests(unittest.TestCase):
             patch.object(herdr_relay.state, "event_queue", queue.Queue()),
             patch.object(herdr_relay.operations, "_probe_existing", side_effect=observed),
             patch.object(herdr_relay.operations, "_wake_host", side_effect=wake),
-            patch.object(herdr_relay.project_fs, "browse", side_effect=browse),
+            patch.object(herdr_relay.project_fs, "resolve", side_effect=resolve),
             patch.object(herdr_relay.herdr, "run_herdr_checked", side_effect=herdr_cli((True, started))),
         ):
             herdr_relay.operations._start_operation(operation["operation_id"])
@@ -625,6 +626,120 @@ class StartOperationTests(unittest.TestCase):
         self.assertEqual("CONFIGURATION_CHANGED", result["error_code"])
         probe.assert_not_called()
         run.assert_not_called()
+
+    def symlinked_project(self):
+        """Save a project under a root configured through a symlinked ancestor.
+
+        This is the staging setup of herdr-mobile#45: browsing and saving
+        worked, and every start then failed CONFIGURATION_CHANGED because the
+        saved path is canonical and the configured root is not.
+        """
+        real = Path(self.directory.name) / "real-home"
+        (real / "projects" / "app").mkdir(parents=True)
+        (real / "outside").mkdir()
+        link = Path(self.directory.name) / "home"
+        os.symlink(real, link, target_is_directory=True)
+        self.host["project_roots"] = [str(link / "projects")]
+        root_id = herdr_relay.hosts.project_roots(self.host)[0]["id"]
+        ack = herdr_relay.projects.handle_command({
+            "type": "project_save",
+            "request_id": "save-linked",
+            "host_id": "workstation",
+            "root_id": root_id,
+            "path": ["app"],
+        })
+        self.assertEqual("command_ack", ack["type"], ack)
+        project = ack["result"]["project"]
+        self.assertEqual(os.path.realpath(real / "projects" / "app"), project["canonical_path"])
+        return project, real
+
+    def run_helper_locally(self):
+        """Run the project-folder SSH helper locally, as the remote host would."""
+        real_run = subprocess.run
+
+        def run(argv, input=None, timeout=None, **_kwargs):
+            return real_run(["sh", "-c", argv[-1]], input=input, capture_output=True, text=True, timeout=timeout)
+
+        return patch.object(herdr_relay.project_fs.subprocess, "run", side_effect=run)
+
+    def start_saved(self, project):
+        with patch.object(herdr_relay.operations, "ensure_worker"):
+            return herdr_relay.lifecycle.start_session({
+                **self.operation_message("start-linked"),
+                "project_id": project["project_id"],
+            })
+
+    def run_ready_start(self, operation_id):
+        ready = {"ssh_reachable": True, "herdr_ready": True}
+        started = json.dumps({
+            "result": {
+                "type": "agent_started",
+                "agent": {"pane_id": "pane-linked", "name": "unused"},
+            },
+        })
+        with (
+            patch.object(herdr_relay.state, "event_queue", queue.Queue()),
+            patch.object(herdr_relay.herdr, "get_agent_by_name", return_value=([], ready)),
+            patch.object(herdr_relay.herdr, "run_herdr_checked", side_effect=herdr_cli((True, started))) as run,
+        ):
+            herdr_relay.operations._start_operation(operation_id)
+        return herdr_relay.operations.OperationStore(str(self.db)).get(operation_id), run
+
+    def test_a_root_configured_through_a_symlink_starts(self):
+        project, _real = self.symlinked_project()
+
+        response = self.start_saved(project)
+        self.assertEqual("command_ack", response["type"], response)
+        result, run = self.run_ready_start(response["result"]["operation"]["operation_id"])
+
+        self.assertEqual("started", result["stage"], result)
+        self.assertEqual(project["canonical_path"], call_args(run, "tab", "create")[3])
+
+    def test_a_remote_root_configured_through_a_symlink_is_resolved_on_the_host(self):
+        self.host["ssh"] = {"target": "deploy@workstation"}
+        with self.run_helper_locally():
+            project, _real = self.symlinked_project()
+            response = self.start_saved(project)
+            self.assertEqual("command_ack", response["type"], response)
+            result, run = self.run_ready_start(response["result"]["operation"]["operation_id"])
+
+        self.assertEqual("started", result["stage"], result)
+        self.assertEqual(project["canonical_path"], call_args(run, "tab", "create")[3])
+
+    def move_saved_path(self, project, path):
+        connection = herdr_relay.projects.ProjectStore(str(self.db))._connect()
+        try:
+            connection.execute(
+                "UPDATE projects SET canonical_path = ? WHERE project_id = ?",
+                (path, project["project_id"]),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+    def test_a_symlinked_root_still_refuses_a_path_beside_it(self):
+        project, real = self.symlinked_project()
+        self.move_saved_path(project, os.path.realpath(real / "outside"))
+
+        response = self.start_saved(project)
+
+        self.assertEqual("CONFIGURATION_CHANGED", response["code"])
+
+    def test_a_remote_symlinked_root_refuses_a_path_beside_it_before_launch(self):
+        self.host["ssh"] = {"target": "deploy@workstation"}
+        with self.run_helper_locally():
+            project, real = self.symlinked_project()
+            operation, _created = herdr_relay.operations.OperationStore(str(self.db)).begin(
+                "start-linked", "workstation", project["project_id"], "claude", "default",
+            )
+            # Moved after the start was accepted: only the host-side check
+            # right before launch can see it.
+            self.move_saved_path(project, os.path.realpath(real / "outside"))
+            operation_id = operation["operation_id"]
+            result, run = self.run_ready_start(operation_id)
+
+        self.assertEqual("CONFIGURATION_CHANGED", result["error_code"])
+        self.assertEqual([], [call for call in run.call_args_list if call.args[:2] == ("tab", "create")])
 
     def test_pane_observability_contract_keeps_start_name_internal(self):
         pane = {
