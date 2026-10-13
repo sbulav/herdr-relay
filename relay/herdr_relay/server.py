@@ -29,6 +29,18 @@ def fail_on_background_exit(task, stop):
     stop.set_exception(exception)
 
 
+# The browser client's page holds the relay token, so it runs no script from
+# another origin. web/index.html carries the same policy as a <meta> tag, which
+# is what protects the Cloudflare Pages copy; the header adds frame-ancestors,
+# which a <meta> policy cannot set. Keep the two in sync.
+WEB_APP_CSP = (
+    "default-src 'self'; script-src 'self' 'unsafe-inline'; "
+    "style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; "
+    "manifest-src 'self' data:; connect-src 'self' ws: wss: http: https:; "
+    "object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+)
+
+
 async def process_request(connection, request):
     """Serve plain HTTP on the same port as WebSocket.
 
@@ -110,6 +122,7 @@ async def process_request(connection, request):
             headers = Headers([
                 ("Content-Type", "text/html; charset=utf-8"),
                 ("Cache-Control", "no-cache"),
+                ("Content-Security-Policy", WEB_APP_CSP),
             ])
             return Response(200, "OK", headers, body)
 

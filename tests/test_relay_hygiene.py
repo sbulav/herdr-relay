@@ -1,5 +1,6 @@
 import asyncio
 import pathlib
+import re
 import unittest
 from unittest.mock import patch
 
@@ -55,3 +56,58 @@ class HerdrFloorTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WebPageScriptOriginTests(unittest.TestCase):
+    """The browser client's page holds the relay token, so it runs no script from another origin."""
+
+    PAGE = REPO / "web" / "index.html"
+
+    @staticmethod
+    def _directives(policy):
+        return {
+            part.split()[0]: part.split()[1:]
+            for part in (piece.strip() for piece in policy.split(";")) if part
+        }
+
+    def _meta_policy(self):
+        match = re.search(
+            r'<meta http-equiv="Content-Security-Policy" content="([^"]+)">',
+            self.PAGE.read_text(encoding="utf-8"),
+        )
+        self.assertIsNotNone(match, "index.html carries no CSP <meta>")
+        return match.group(1)
+
+    def test_page_names_no_script_on_another_origin(self):
+        page = self.PAGE.read_text(encoding="utf-8")
+        self.assertNotRegex(page, r"<script[^>]*\bsrc\s*=\s*[\"']?(?:https?:)?//")
+        self.assertNotRegex(page, r"\bimport\b[^;\n]*[\"'](?:https?:)?//")
+        self.assertNotRegex(page, r"\bimport\s*\(\s*[\"'](?:https?:)?//")
+
+    def test_meta_policy_matches_the_header_except_frame_ancestors(self):
+        header = self._directives(herdr_relay.server.WEB_APP_CSP)
+        self.assertEqual(header.pop("frame-ancestors"), ["'none'"])
+        self.assertEqual(self._directives(self._meta_policy()), header)
+
+    def test_policy_allows_scripts_from_this_origin_and_inline_only(self):
+        self.assertEqual(
+            self._directives(herdr_relay.server.WEB_APP_CSP)["script-src"],
+            ["'self'", "'unsafe-inline'"],
+        )
+
+    def test_relay_serves_the_page_with_the_policy(self):
+        class Headers:
+            def raw_items(self):
+                return [("Authorization", "Bearer token")]
+
+        class Request:
+            headers = Headers()
+            path = "/"
+
+        with patch.object(herdr_relay.config, "AUTH_TOKEN", "token"):
+            response = asyncio.run(herdr_relay.process_request(None, Request()))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.headers["Content-Security-Policy"], herdr_relay.server.WEB_APP_CSP,
+        )
