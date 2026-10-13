@@ -1,0 +1,6 @@
+# Cloudflare Pages response headers for the browser client. The page holds the
+# relay token, so this is the policy the relay sends with "/" (WEB_APP_CSP in
+# relay/herdr_relay/server.py), in force before any HTML is parsed. The <meta>
+# copy in index.html cannot cover a script placed ahead of it.
+/*
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; manifest-src 'self' data:; connect-src 'self' ws: wss: http: https:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'

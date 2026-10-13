@@ -1508,6 +1508,29 @@ class StructuredOutputTests(unittest.TestCase):
         ):
             self.assertEqual(herdr_relay.transcripts.blocks.pane_blocks("pane-id"), (None, None))
 
+    def test_pane_with_only_an_agent_session_is_not_an_agent(self):
+        # Herdr 0.9.3 drops `agent` once the agent leaves the pane but keeps its
+        # session ref for resume, so `agent_session` alone names a shell.
+        pane_list = json.dumps({"result": {"panes": [
+            {
+                "pane_id": "w1:p1", "cwd": "/work/repo", "agent_status": "idle",
+                "agent_session": {
+                    "agent": "claude", "kind": "id",
+                    "value": "0f9c6b1e-2a3d-4c5b-8e7f-123456789abc",
+                },
+            },
+            {"pane_id": "w1:p2", "agent": "claude", "cwd": "/work/repo"},
+        ]}})
+        with (
+            patch.dict(herdr_relay.state.pane_session_refs, {}, clear=True),
+            patch.object(herdr_relay.herdr, "run_herdr_checked", return_value=(True, pane_list)),
+        ):
+            agents, _online = herdr_relay.herdr.get_agents_from_host()
+            refs = dict(herdr_relay.state.pane_session_refs)
+
+        self.assertEqual([a["pane_id"] for a in agents], ["w1:p2"])
+        self.assertNotIn(("local", "w1:p1"), refs)
+
     def test_malformed_agent_session_refs_are_ignored(self):
         pane_list = json.dumps({"result": {"panes": [
             {

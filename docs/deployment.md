@@ -61,6 +61,16 @@ Non-upgrade requests do match on path:
 | `GET` | `/api/vapid-public-key` | Web Push key, browser client only |
 | `GET` | any, with `?d=<url-encoded JSON>` | queues a push event, answers `200 ok` |
 
+The browser client's page holds the relay token, so it runs no script from
+another origin: `/` answers with a `Content-Security-Policy` header,
+`web/_headers` gives the Cloudflare Pages copy the same header, and
+`web/index.html` repeats the policy as a `<meta>` tag for any other static
+host. A proxy that injects a script from elsewhere (analytics, a challenge
+page) will see it blocked. The policy still allows inline script — the page is
+one inline file — and connections to any relay URL, so it does not contain
+markup injected into the page itself; the page escapes every value a relay
+frame carries before rendering it.
+
 **Every HTTP request is a `GET`.** The websockets library parses the request line
 before the relay sees it and accepts no other method, and rejects any request
 carrying `Content-Length` — so a push event travels in the query string, not a
