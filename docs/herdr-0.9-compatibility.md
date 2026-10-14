@@ -92,6 +92,7 @@ subscribes to the retained `pane.agent_status_changed` event. Sources:
 `herdr-plugin.toml`, `relay/on_event.py`,
 [plugin runtime](https://github.com/herdrdev/herdr/blob/v0.9.3/src/app/api/plugins/runtime.rs#L61),
 [event schema](https://github.com/herdrdev/herdr/blob/v0.9.3/src/api/schema/events.rs).
+Replacing that plugin with an event subscription over SSH: [`event-bridge.md`](event-bridge.md).
 
 0.9.2 removes the custom pane graphics API, which this relay does not call.
 0.9.0 removes `--no-session`, which this relay does not use. Sources:
