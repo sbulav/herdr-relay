@@ -295,7 +295,9 @@ def get_agents_from_host(remote=None, host_id=None, host=None, cancel_event=None
         tab_names = _snapshot_names(snapshot.get("tabs"), "tab_id")
         agents = []
         for p in pane_list:
-            if not p.get("agent"):
+            # One malformed row must not cost the host, or — raised out of
+            # the gather — every other host's poll with it.
+            if not isinstance(p, dict) or not p.get("agent"):
                 continue
             # A pane can relaunch under another harness, or stop reporting a
             # session altogether. Do not let a previous poll's ref survive

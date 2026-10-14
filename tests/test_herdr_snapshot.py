@@ -73,6 +73,14 @@ class HerdrSnapshotTests(unittest.TestCase):
                 self.assertFalse(probe["herdr_ready"])
                 self.assertIsNone(probe["active_agent_count"])
 
+    def test_a_malformed_pane_row_is_skipped_not_fatal(self):
+        body = {"result": {"type": "session_snapshot", "snapshot": {
+            "panes": [None, "pane", {"pane_id": "a", "agent": "claude"}],
+        }}}
+        agents, probe, _calls, _log = self.poll({("api", "snapshot"): (True, json.dumps(body))})
+        self.assertTrue(probe["herdr_ready"])
+        self.assertEqual(["a"], [agent["pane_id"] for agent in agents])
+
     def test_version_parsing(self):
         self.assertEqual((0, 9, 3), herdr._parse_herdr_version("herdr 0.9.3\n"))
         self.assertEqual((0, 8, 4), herdr._parse_herdr_version("herdr 0.8.4-dev"))
