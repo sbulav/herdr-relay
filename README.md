@@ -150,7 +150,7 @@ to a pane that already exists rather than creating one: the relay opens the
 project directory with `herdr tab create --cwd <path> --no-focus`, then runs
 `herdr agent start <name> --kind <harness> --pane <pane_id>`. A launch that
 fails after the tab exists closes it again, so a retry does not accumulate empty
-tabs. Requires Herdr 0.8 or newer.
+tabs. Requires Herdr 0.9 or newer.
 
 A launch is correlated by exact identity, never by guessing: the `agent start`
 reply names the pane it claimed, and recovery — before launch, after a relay
