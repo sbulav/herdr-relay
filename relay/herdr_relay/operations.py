@@ -398,7 +398,7 @@ def _probe_existing(operation, host, cancel_event=None, timeout=None):
     """Ask Herdr's name registry for this operation's exact agent.
 
     `agent get <name>` resolves the deterministic start name directly, so the
-    probe does not depend on `pane list` carrying the name — the deployed
+    probe does not depend on the polled pane rows carrying the name — the deployed
     Herdr's pane snapshot omits it, which is what turned two healthy ready-host
     launches into 180-second false READY_TIMEOUTs (herdr-mobile#92).
     """

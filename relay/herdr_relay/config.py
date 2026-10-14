@@ -67,7 +67,7 @@ POLL_INTERVAL_MAX = float(os.environ.get("HERDR_POLL_INTERVAL_MAX", "10"))
 POLL_BACKOFF_FACTOR = float(os.environ.get("HERDR_POLL_BACKOFF_FACTOR", "1.5"))
 
 # SSH connection multiplexing (#19). Polling opens two SSH connections per
-# remote host per cycle — a `true` reachability probe and `herdr pane list` —
+# remote host per cycle — a `true` reachability probe and `herdr api snapshot` —
 # and each one pays a TCP handshake, a key exchange and an authentication.
 # A shared master connection pays that once per ControlPersist window instead.
 #
