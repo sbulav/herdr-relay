@@ -43,15 +43,15 @@ class KeepaliveTests(unittest.TestCase):
 
 
 class HerdrFloorTests(unittest.TestCase):
-    def test_manifests_require_herdr_0_8(self):
-        # Launches use herdr 0.8's tab-then-attach contract (#49); 0.7 cannot run them.
+    def test_manifests_require_herdr_0_9(self):
+        # Polling reads one `herdr api snapshot` per host (#84); 0.8 has no such command.
         for manifest in ("herdr-plugin.toml", "relay/herdr-plugin.toml"):
             with self.subTest(manifest=manifest):
                 lines = (REPO / manifest).read_text().splitlines()
-                self.assertIn('min_herdr_version = "0.8.0"', lines)
+                self.assertIn('min_herdr_version = "0.9.0"', lines)
 
     def test_readme_names_the_floor(self):
-        self.assertIn("- herdr 0.8+", (REPO / "README.md").read_text())
+        self.assertIn("- herdr 0.9+", (REPO / "README.md").read_text())
 
 
 if __name__ == "__main__":

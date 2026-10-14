@@ -17,6 +17,20 @@ own server restarted once it comes back; until then it reads
 `herdr_unavailable`. The general upgrade and rollback procedure is in
 [`deployment.md`](deployment.md#upgrading-and-rolling-back).
 
+## Polling uses `api snapshot` (herdr 0.9.0+)
+
+Since #84 the relay reads each host with one `herdr api snapshot` per poll
+instead of `pane list`, `workspace list`, and a `tab list` per workspace. The
+snapshot's `panes` rows carry the same fields as `pane list` rows, and its
+`workspaces` and `tabs` rows carry the labels, all read at one instant. The
+command does not exist before 0.9.0, so 0.9.0 is now the floor in both plugin
+manifests and the README. A host still on 0.8 reads `herdr_unavailable`; after
+a failed snapshot the relay asks `herdr --version` and, if it is older than
+0.9.0, logs the version once per host until the host recovers. A success
+response without a `result.snapshot` object is treated as Herdr unavailable,
+not as a host with no agents. Sources: `relay/herdr_relay/herdr.py`,
+`tests/test_herdr_snapshot.py`.
+
 ## Required upgrade step
 
 The local `herdr --version` and `herdr status --json` both reported 0.8.0;

@@ -322,6 +322,12 @@ Restart the herdr server after upgrading the binary (this ends the processes in
 its panes), and check that `HERDR_BIN`, the module's `herdrBin`, or a host's
 `herdr.binary` does not still name the old store path.
 
+The relay needs herdr 0.9.0 or later on every polled host: it reads each host
+with one `herdr api snapshot`, which 0.8 does not have. A host whose herdr is
+older reads `herdr_unavailable`, and the relay logs the version it found once
+(``host <id>: herdr 0.8.4 has no `api snapshot` ``). Rolling a host's herdr back
+below 0.9 has the same effect.
+
 ## SSH access to remotes and hosts
 
 Polling `HERDR_REMOTES` or SSH targets declared by `HERDR_HOSTS_FILE` shells out

@@ -7,6 +7,7 @@ a single argument — is stated once.
 import asyncio
 import json
 import os
+import re
 import shlex
 import signal
 import subprocess
@@ -254,8 +255,11 @@ def get_agents_from_host(remote=None, host_id=None, host=None, cancel_event=None
     if command_timeout <= 0:
         return [], {"ssh_reachable": True, "herdr_ready": False, "active_agent_count": None}
 
+    # One `api snapshot` (herdr 0.9.0+) answers what used to take `pane list`,
+    # `workspace list` and a `tab list` per workspace: panes, and the labels of
+    # the workspaces and tabs they sit in, read at the same instant.
     ready, raw = run_herdr_checked(
-        "pane", "list",
+        "api", "snapshot",
         remote=remote,
         host_id=host_id,
         command=hosts.herdr_command(host),
@@ -269,31 +273,26 @@ def get_agents_from_host(remote=None, host_id=None, host=None, cancel_event=None
         "active_agent_count": None,
     }
     if not ready:
+        _report_herdr_too_old(
+            remote=remote, host_id=host_id, host=host,
+            timeout=remaining(), cancel_event=cancel_event,
+        )
         return [], probe
+    _herdr_too_old_logged.pop(host_id, None)
     try:
         data = json.loads(raw)
-        pane_list = data.get("result", {}).get("panes", [])
+        result = data.get("result") if isinstance(data, dict) else None
+        snapshot = result.get("snapshot") if isinstance(result, dict) else None
+        if not isinstance(snapshot, dict):
+            return [], probe
+        pane_list = snapshot.get("panes", [])
         if not isinstance(pane_list, list):
             return [], probe
-        # Pane rows carry stable workspace/tab IDs, while their display names
-        # are owned by the corresponding list endpoints. A failed optional
-        # lookup must not make an otherwise valid pane snapshot disappear.
-        # Avoid the extra calls when there are no agent panes; this also keeps
-        # an empty/legacy Herdr response cheap.
-        has_agent_panes = any(isinstance(p, dict) and p.get("agent") for p in pane_list)
-        workspace_names = _workspace_names(
-            remote=remote, host_id=host_id, host=host,
-            timeout=max(remaining(), 0.01), deadline=deadline, cancel_event=cancel_event,
-        ) if has_agent_panes and remaining() > 0 else {}
-        workspace_ids = {
-            protocol.public_identifier(p.get("workspace_id")) for p in pane_list
-            if isinstance(p, dict) and protocol.public_identifier(p.get("workspace_id"))
-        }
-        tab_names = _tab_names(
-            remote=remote, host_id=host_id, host=host,
-            workspace_ids=workspace_ids, timeout=max(remaining(), 0.01),
-            deadline=deadline, cancel_event=cancel_event,
-        ) if has_agent_panes and remaining() > 0 else {}
+        # Pane rows carry stable workspace/tab IDs; their display names live in
+        # the snapshot's own workspace and tab rows. A missing or malformed
+        # label row must not make an otherwise valid pane disappear.
+        workspace_names = _snapshot_names(snapshot.get("workspaces"), "workspace_id")
+        tab_names = _snapshot_names(snapshot.get("tabs"), "tab_id")
         agents = []
         for p in pane_list:
             if not p.get("agent"):
@@ -359,51 +358,63 @@ def get_agents_from_host(remote=None, host_id=None, host=None, cancel_event=None
     return agents, probe
 
 
-def _list_names(
-    kind, *, remote, host_id, host, timeout, cancel_event, workspace_ids=None,
-    deadline=None,
-):
-    """Read Herdr's public ID/label catalog, returning only valid entries."""
-    if deadline is None:
-        deadline = time.monotonic() + max(float(timeout), 0.0)
-    if timeout <= 0 or deadline <= time.monotonic():
-        return {}
+def _snapshot_names(rows, key):
+    """Map a snapshot's workspace or tab rows to their labels, keeping only valid entries."""
     names = {}
-    key = "workspace_id" if kind == "workspace" else "tab_id"
-    scopes = [None] if kind == "workspace" else sorted(workspace_ids or ())
-    for workspace_id in scopes:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            break
-        args = (kind, "list")
-        if kind == "tab" and workspace_id:
-            args += ("--workspace", workspace_id)
-        _success, raw = run_herdr_checked(
-            *args, remote=remote, host_id=host_id,
-            command=hosts.herdr_command(host), timeout=remaining,
-            cancel_event=cancel_event,
-        )
-        data = _parse_response(raw)
-        result = data.get("result") if isinstance(data, dict) else None
-        rows = result.get("workspaces" if kind == "workspace" else "tabs") if isinstance(result, dict) else None
-        if not isinstance(rows, list):
+    if not isinstance(rows, list):
+        return names
+    for row in rows:
+        if not isinstance(row, dict):
             continue
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            identifier = protocol.public_identifier(row.get(key))
-            label = _display_name(row.get("label"))
-            if isinstance(identifier, str) and identifier and label:
-                names[identifier] = label
+        identifier = protocol.public_identifier(row.get(key))
+        label = _display_name(row.get("label"))
+        if isinstance(identifier, str) and identifier and label:
+            names[identifier] = label
     return names
 
 
-def _workspace_names(**kwargs):
-    return _list_names("workspace", **kwargs)
+# The oldest herdr with `api snapshot`. A host below it cannot be polled at all.
+MIN_HERDR_VERSION = (0, 9, 0)
+# host id -> the too-old version already logged, so a host that stays behind
+# logs once rather than every poll. Cleared by the host's next good snapshot.
+_herdr_too_old_logged = {}
 
 
-def _tab_names(**kwargs):
-    return _list_names("tab", **kwargs)
+def _parse_herdr_version(raw):
+    """`herdr 0.8.4` (or a bare `0.8.4`, or `0.8.4-dev`) as a tuple of ints, or None."""
+    for word in (raw or "").split():
+        match = re.match(r"v?(\d+)\.(\d+)\.(\d+)", word)
+        if match:
+            return tuple(int(part) for part in match.groups())
+    return None
+
+
+def _report_herdr_too_old(*, remote, host_id, host, timeout, cancel_event):
+    """Log, once, that a failed snapshot is a herdr older than the relay supports.
+
+    The host is reported herdr-unavailable either way; this only gives the
+    operator the reason. A herdr new enough but not running stays silent here.
+    """
+    if timeout <= 0:
+        return
+    ok, raw = run_herdr_checked(
+        "--version", remote=remote, host_id=host_id,
+        command=hosts.herdr_command(host), timeout=min(timeout, 5),
+        cancel_event=cancel_event,
+    )
+    version = _parse_herdr_version(raw) if ok else None
+    if version is None or version >= MIN_HERDR_VERSION:
+        return
+    found = ".".join(str(part) for part in version)
+    if _herdr_too_old_logged.get(host_id) == found:
+        return
+    _herdr_too_old_logged[host_id] = found
+    floor = ".".join(str(part) for part in MIN_HERDR_VERSION)
+    print(
+        f"host {host_id}: herdr {found} has no `api snapshot`; "
+        f"the relay needs herdr {floor} or later",
+        flush=True,
+    )
 
 
 def _activity_title(value):

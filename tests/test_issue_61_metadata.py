@@ -24,23 +24,17 @@ class Issue61MetadataTests(unittest.TestCase):
 
     def test_poll_preserves_workspace_tab_labels_and_bounds_working_title(self):
         long_title = "  Run   focused tests " + ("x" * 200)
-        responses = iter((
-            (True, json.dumps({"result": {"panes": [
-                {
-                    "pane_id": "pane-7", "agent": "claude",
-                    "agent_status": "working", "cwd": "/srv/relay",
-                    "workspace_id": "ws-1", "tab_id": "ws-1:t1",
-                    "title": long_title,
-                },
-            ]}})),
-            (True, json.dumps({"result": {"workspaces": [
-                {"workspace_id": "ws-1", "label": "Relay"},
-            ]}})),
-            (True, json.dumps({"result": {"tabs": [
-                {"tab_id": "ws-1:t1", "label": "API"},
-            ]}})),
-        ))
-        with patch.object(herdr_relay.herdr, "run_herdr_checked", side_effect=lambda *a, **k: next(responses)):
+        snapshot = json.dumps({"result": {"type": "session_snapshot", "snapshot": {
+            "panes": [{
+                "pane_id": "pane-7", "agent": "claude",
+                "agent_status": "working", "cwd": "/srv/relay",
+                "workspace_id": "ws-1", "tab_id": "ws-1:t1",
+                "title": long_title,
+            }],
+            "workspaces": [{"workspace_id": "ws-1", "label": "Relay"}],
+            "tabs": [{"tab_id": "ws-1:t1", "label": "API", "workspace_id": "ws-1"}],
+        }}})
+        with patch.object(herdr_relay.herdr, "run_herdr_checked", return_value=(True, snapshot)):
             agents, _probe = herdr_relay.herdr.get_agents_from_host()
 
         self.assertEqual(agents[0]["workspace_id"], "ws-1")
@@ -50,10 +44,10 @@ class Issue61MetadataTests(unittest.TestCase):
         self.assertEqual(agents[0]["activity_title"], ("Run focused tests " + "x" * 200)[:160])
 
     def test_missing_ids_names_and_nonworking_title_are_omitted(self):
-        pane_list = json.dumps({"result": {"panes": [
+        pane_list = json.dumps({"result": {"type": "session_snapshot", "snapshot": {"panes": [
             {"pane_id": "blocked", "agent": "claude", "agent_status": "blocked", "title": "do not emit"},
             {"pane_id": "idle", "agent": "claude", "agent_status": "idle", "workspace_id": "", "tab_id": None},
-        ]}})
+        ]}}})
         with patch.object(herdr_relay.herdr, "run_herdr_checked", return_value=(True, pane_list)):
             agents, _probe = herdr_relay.herdr.get_agents_from_host()
 
@@ -98,28 +92,50 @@ class Issue61MetadataTests(unittest.TestCase):
         self.assertNotIn("activity_title", blocked)
         self.assertEqual(pane["activity_title"], "Run tests")
 
-    def test_list_names_uses_one_deadline_across_workspace_scopes(self):
+    def test_a_poll_asks_each_host_once_for_a_snapshot(self):
         calls = []
-        clock = iter((0.0, 0.0, 0.7, 0.7, 0.9, 1.1))
+        snapshot = json.dumps({"result": {"type": "session_snapshot", "snapshot": {
+            "panes": [
+                {"pane_id": "a", "agent": "claude", "workspace_id": "ws-a", "tab_id": "ws-a:t1"},
+                {"pane_id": "b", "agent": "codex", "workspace_id": "ws-b", "tab_id": "ws-b:t1"},
+            ],
+            "workspaces": [
+                {"workspace_id": "ws-a", "label": "A"},
+                {"workspace_id": "ws-b", "label": "B"},
+            ],
+            "tabs": [
+                {"tab_id": "ws-a:t1", "label": "one"},
+                {"tab_id": "ws-b:t1", "label": "two"},
+            ],
+        }}})
 
         def run(*args, **kwargs):
-            calls.append((args, kwargs["timeout"]))
-            return True, json.dumps({"result": {"tabs": []}})
+            calls.append(args)
+            return True, snapshot
 
-        with (
-            patch.object(herdr_relay.herdr.time, "monotonic", side_effect=lambda: next(clock)),
-            patch.object(herdr_relay.herdr, "run_herdr_checked", side_effect=run),
-        ):
-            names = herdr_relay.herdr._list_names(
-                "tab", remote=None, host_id="local", host={}, timeout=1.0,
-                workspace_ids={"ws-a", "ws-b"}, cancel_event=None,
-            )
+        with patch.object(herdr_relay.herdr, "run_herdr_checked", side_effect=run):
+            agents, probe = herdr_relay.herdr.get_agents_from_host()
 
-        self.assertEqual({}, names)
-        self.assertEqual(2, len(calls))
-        self.assertEqual(("tab", "list", "--workspace", "ws-a"), calls[0][0])
-        self.assertEqual(("tab", "list", "--workspace", "ws-b"), calls[1][0])
-        self.assertLessEqual(sum(timeout for _args, timeout in calls), 1.0)
+        self.assertEqual([("api", "snapshot")], calls)
+        self.assertTrue(probe["herdr_ready"])
+        self.assertEqual(
+            [("A", "one"), ("B", "two")],
+            [(a["workspace_name"], a["tab_name"]) for a in agents],
+        )
+
+    def test_malformed_label_rows_leave_the_panes_in_place(self):
+        snapshot = json.dumps({"result": {"type": "session_snapshot", "snapshot": {
+            "panes": [{"pane_id": "a", "agent": "claude", "workspace_id": "ws-a", "tab_id": "ws-a:t1"}],
+            "workspaces": "not a list",
+            "tabs": [None, {"tab_id": "ws-a:t1"}, {"label": "orphan"}],
+        }}})
+        with patch.object(herdr_relay.herdr, "run_herdr_checked", return_value=(True, snapshot)):
+            agents, probe = herdr_relay.herdr.get_agents_from_host()
+
+        self.assertTrue(probe["herdr_ready"])
+        self.assertEqual("ws-a", agents[0]["workspace_id"])
+        self.assertNotIn("workspace_name", agents[0])
+        self.assertNotIn("tab_name", agents[0])
 
     def test_pushed_labels_are_retained_only_for_the_same_identity(self):
         key = ("buildbox", "pane-7")

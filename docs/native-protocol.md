@@ -211,9 +211,9 @@ when Herdr supplied it.
 | `project` | string | Required | Basename of `cwd` in a poll, or the event's `project`; may be empty. |
 | `host` | string | Required | Configured host ID or `"local"`; retained for display compatibility. |
 | `workspace_id` | string | When Herdr reports it | Workspace identifier reported by `herdr`; omitted when unavailable. |
-| `workspace_name` | string | When Herdr reports it | Workspace label from `herdr workspace list`; never inferred from cwd or host. |
+| `workspace_name` | string | When Herdr reports it | Workspace label from the `herdr api snapshot` workspace rows; never inferred from cwd or host. |
 | `tab_id` | string | When Herdr reports it | Tab identifier reported by `herdr`; omitted when unavailable. |
-| `tab_name` | string | When Herdr reports it | Tab label from `herdr tab list`; never inferred from pane order. |
+| `tab_name` | string | When Herdr reports it | Tab label from the `herdr api snapshot` tab rows; never inferred from pane order. |
 | `activity_title` | string | Working agents when Herdr reports it | Current Herdr activity title, whitespace-normalized and bounded to 160 characters. It is omitted for blocked, done, idle, unknown, empty, or unavailable titles. |
 | `attention_state` | string | Optional | Additive explicit attention state: `"working"`, `"waiting"`, `"done"`, or `"idle"`. `"waiting"` means the agent is waiting on the user. Unknown statuses are omitted rather than guessed. |
 | `updated_at` | integer | Optional | Additive epoch milliseconds when this pane's status or output revision last changed. |

@@ -752,7 +752,7 @@ class StartOperationTests(unittest.TestCase):
         with patch.object(
             herdr_relay.herdr,
             "run_herdr_checked",
-            return_value=(True, json.dumps({"result": {"panes": [pane]}})),
+            return_value=(True, json.dumps({"result": {"type": "session_snapshot", "snapshot": {"panes": [pane]}}})),
         ):
             agents, probe = herdr_relay.herdr.get_agents_from_host(host=self.host)
 

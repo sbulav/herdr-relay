@@ -94,11 +94,15 @@ class HostStatusTests(unittest.TestCase):
     @patch.object(herdr_relay.herdr, "run_ssh_checked", return_value=True)
     @patch.object(herdr_relay.herdr, "run_herdr_checked")
     def test_host_status_reflects_ssh_and_herdr_readiness(self, run_herdr_checked, run_ssh_checked):
-        empty_result = json.dumps({"result": {"panes": []}})
-        run_herdr_checked.side_effect = [
-            (False, ""),
-            (True, empty_result),
-        ]
+        empty_result = json.dumps({"result": {"type": "session_snapshot", "snapshot": {"panes": []}}})
+
+        def run(*args, host_id=None, **kwargs):
+            if host_id == "workstation-a":
+                # A failed snapshot is followed by a `--version` probe; neither answers.
+                return False, ""
+            return True, empty_result
+
+        run_herdr_checked.side_effect = run
 
         agents, hosts = asyncio.run(herdr_relay.herdr.get_all_agents())
 
@@ -533,10 +537,10 @@ class PaneMetadataTests(unittest.TestCase):
         self.assertEqual([1, 2], [frame["revision"] for frame in blocked])
 
     def test_missing_or_bool_revision_is_omitted(self):
-        pane_list = json.dumps({"result": {"panes": [
+        pane_list = json.dumps({"result": {"type": "session_snapshot", "snapshot": {"panes": [
             {"pane_id": "missing", "agent": "claude"},
             {"pane_id": "boolean", "agent": "claude", "revision": True},
-        ]}})
+        ]}}})
         with patch.object(herdr_relay.herdr, "run_herdr_checked", return_value=(True, pane_list)):
             agents, _online = herdr_relay.herdr.get_agents_from_host()
 
@@ -1382,7 +1386,7 @@ class StructuredOutputTests(unittest.TestCase):
                 first.write(transcript("first conversation"))
             with open(second_path, "w") as second:
                 second.write(transcript("second conversation"))
-            pane_list = json.dumps({"result": {"panes": [
+            pane_list = json.dumps({"result": {"type": "session_snapshot", "snapshot": {"panes": [
                 {
                     "pane_id": "first", "agent": "claude", "cwd": "/work/repo",
                     "agent_session": {"kind": "path", "value": first_path},
@@ -1391,7 +1395,7 @@ class StructuredOutputTests(unittest.TestCase):
                     "pane_id": "second", "agent": "claude", "cwd": "/work/repo",
                     "agent_session": {"kind": "path", "value": second_path},
                 },
-            ]}})
+            ]}}})
             with (
                 patch.object(herdr_relay.config, "CLAUDE_PROJECTS", directory),
                 patch.dict(herdr_relay.state.pane_session_refs, {}, clear=True),
@@ -1511,7 +1515,7 @@ class StructuredOutputTests(unittest.TestCase):
     def test_pane_with_only_an_agent_session_is_not_an_agent(self):
         # Herdr 0.9.3 drops `agent` once the agent leaves the pane but keeps its
         # session ref for resume, so `agent_session` alone names a shell.
-        pane_list = json.dumps({"result": {"panes": [
+        pane_list = json.dumps({"result": {"type": "session_snapshot", "snapshot": {"panes": [
             {
                 "pane_id": "w1:p1", "cwd": "/work/repo", "agent_status": "idle",
                 "agent_session": {
@@ -1520,7 +1524,7 @@ class StructuredOutputTests(unittest.TestCase):
                 },
             },
             {"pane_id": "w1:p2", "agent": "claude", "cwd": "/work/repo"},
-        ]}})
+        ]}}})
         with (
             patch.dict(herdr_relay.state.pane_session_refs, {}, clear=True),
             patch.object(herdr_relay.herdr, "run_herdr_checked", return_value=(True, pane_list)),
@@ -1532,7 +1536,7 @@ class StructuredOutputTests(unittest.TestCase):
         self.assertNotIn(("local", "w1:p1"), refs)
 
     def test_malformed_agent_session_refs_are_ignored(self):
-        pane_list = json.dumps({"result": {"panes": [
+        pane_list = json.dumps({"result": {"type": "session_snapshot", "snapshot": {"panes": [
             {
                 "pane_id": "bad-kind", "agent": "claude", "cwd": "/work/repo",
                 "agent_session": {"kind": "session", "value": "session-1"},
@@ -1553,7 +1557,7 @@ class StructuredOutputTests(unittest.TestCase):
                 "pane_id": "null", "agent": "claude", "cwd": "/work/repo",
                 "agent_session": None,
             },
-        ]}})
+        ]}}})
         with (
             patch.dict(herdr_relay.state.pane_session_refs, {}, clear=True),
             patch.dict(
@@ -1604,9 +1608,9 @@ class StructuredOutputTests(unittest.TestCase):
 
     def test_refresh_drops_a_previous_session_ref_when_pane_omits_it(self):
         pane_id = "pane-id"
-        pane_list = json.dumps({"result": {"panes": [{
+        pane_list = json.dumps({"result": {"type": "session_snapshot", "snapshot": {"panes": [{
             "pane_id": pane_id, "agent": "claude", "cwd": "/work/repo",
-        }]}})
+        }]}}})
         with (
             patch.dict(
                 herdr_relay.state.pane_session_refs,
