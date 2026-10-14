@@ -1,0 +1,6 @@
+{
+  "code": "AGENT_BLOCKED",
+  "message": "The agent is waiting on a dialog; answer it first",
+  "request_id": "req-prompt-1",
+  "type": "command_error"
+}

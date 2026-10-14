@@ -2470,6 +2470,50 @@ class SendPromptTests(unittest.TestCase):
         self.assertEqual("prompt-fail", frames[0]["request_id"])
         checked.assert_called_once()
 
+    def test_each_herdr_refusal_has_its_own_code(self):
+        cases = (
+            ("agent_blocked", "AGENT_BLOCKED", "The agent is waiting on a dialog; answer it first"),
+            ("agent_not_found", "UNKNOWN_PANE", "Unknown pane"),
+            ("invalid_target", "HERDR_FAILED", "Herdr did not submit the prompt"),
+        )
+        for herdr_code, code, message in cases:
+            with self.subTest(herdr_code=herdr_code):
+                output = json.dumps({
+                    "error": {"code": herdr_code, "message": "from herdr"},
+                    "id": "cli:agent:prompt",
+                })
+                frames, checked = self.drive([{
+                    "type": "send_prompt", "request_id": f"prompt-{herdr_code}",
+                    "pane_id": "pane-1", "text": "run tests",
+                }], checked_return=(False, output))
+
+                self.assertEqual([{
+                    "type": "command_error", "request_id": f"prompt-{herdr_code}",
+                    "code": code, "message": message,
+                }], frames)
+                checked.assert_called_once()
+
+    def test_an_ssh_notice_ahead_of_herdr_answer_keeps_its_code(self):
+        # Over ssh, herdr's error line shares stderr with ssh's own notices.
+        output = "\n".join([
+            "Warning: Permanently added 'buildbox' (ED25519) to the list of known hosts.",
+            json.dumps({"error": {"code": "agent_blocked", "message": "from herdr"}, "id": "cli:agent:prompt"}),
+        ])
+        frames, _checked = self.drive([{
+            "type": "send_prompt", "request_id": "prompt-noisy",
+            "pane_id": "pane-1", "text": "run tests",
+        }], checked_return=(False, output))
+        self.assertEqual("AGENT_BLOCKED", frames[0]["code"])
+
+    def test_a_failure_without_a_herdr_answer_is_herdr_failed(self):
+        for output in ("", "ssh: connect to host buildbox: Connection refused", "[1]", '{"error": "x"}'):
+            with self.subTest(output=output):
+                frames, _checked = self.drive([{
+                    "type": "send_prompt", "request_id": "prompt-raw",
+                    "pane_id": "pane-1", "text": "run tests",
+                }], checked_return=(False, output))
+                self.assertEqual("HERDR_FAILED", frames[0]["code"])
+
     def test_empty_text_is_refused(self):
         frames, checked = self.drive([{
             "type": "send_prompt", "request_id": "prompt-empty",

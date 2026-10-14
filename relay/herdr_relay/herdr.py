@@ -439,8 +439,15 @@ def _parse_response(raw):
 
 
 def response_error_code(raw):
-    """The `error.code` of a failed CLI response, or None."""
+    """The `error.code` of a failed CLI response, or None.
+
+    Herdr prints a failure as one JSON line on stderr, and over ssh that
+    stream is shared: a host-key warning or similar notice can land ahead of
+    it. So when the whole output is not a response, its last line is tried.
+    """
     data = _parse_response(raw)
+    if data is None and isinstance(raw, str) and "\n" in raw.strip():
+        data = _parse_response(raw.strip().rsplit("\n", 1)[-1])
     if data is None:
         return None
     error = data.get("error")

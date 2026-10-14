@@ -162,6 +162,22 @@ async def process_request(connection, request):
     return Response(200, "OK", headers, b"ok\n")
 
 
+def _prompt_refusal(request_id, herdr_code):
+    """The `command_error` for an `agent prompt` Herdr refused.
+
+    Herdr refuses a blocked or missing agent before it types anything, so
+    those two are safe for a client to restore the draft from; anything
+    else is a plain Herdr failure.
+    """
+    if herdr_code == "agent_blocked":
+        return protocol.command_error(
+            request_id, "AGENT_BLOCKED", "The agent is waiting on a dialog; answer it first"
+        )
+    if herdr_code == "agent_not_found":
+        return protocol.command_error(request_id, "UNKNOWN_PANE", "Unknown pane")
+    return protocol.command_error(request_id, "HERDR_FAILED", "Herdr did not submit the prompt")
+
+
 async def handle_client(ws):
     remote_addr = getattr(ws, "remote_address", None)
     ip = remote_addr[0] if remote_addr else "unknown"
@@ -646,7 +662,7 @@ async def handle_client(ws):
                                 remote = state.get(state.pane_remote_map, pane_key)
                                 log.info("Prompt from %s (%s): pane=%s text=%r", ip, device, pane_id, text)
                                 audit("send_prompt", ip, device, pane_id, f"text={text!r}")
-                                success, _output = await asyncio.to_thread(
+                                success, output = await asyncio.to_thread(
                                     herdr.run_herdr_checked,
                                     "agent", "prompt", pane_id, text,
                                     remote=remote,
@@ -658,9 +674,7 @@ async def handle_client(ws):
                                         request_id, {"pane_id": pane_id, "host_id": pane_key[0]}
                                     )
                                 else:
-                                    response = protocol.command_error(
-                                        request_id, "HERDR_FAILED", "Herdr did not submit the prompt"
-                                    )
+                                    response = _prompt_refusal(request_id, herdr.response_error_code(output))
                 _remember_response(request_results, request_id, response, msg)
                 await ws.send(json.dumps(response))
             elif msg_type == "create_tab":

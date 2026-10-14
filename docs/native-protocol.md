@@ -1044,6 +1044,15 @@ per connection, like the other typed commands. Reusing a request ID with
 different command fields, including a different host/pane target, returns
 `REQUEST_ID_REUSED` and never reaches Herdr.
 
+When Herdr refuses the prompt, the relay names why:
+
+- `AGENT_BLOCKED` — the agent is waiting on a dialog. Herdr refuses before
+  typing anything, so the text was not delivered; answer the dialog
+  (`respond_dialog`) and send the prompt again under a new request ID.
+- `UNKNOWN_PANE` — Herdr found no agent in that pane, typically because it
+  exited after the latest poll.
+- `HERDR_FAILED` — anything else, including an unreachable host.
+
 The limit is larger than `send_text`'s 1,000 because a prompt is one argument to
 `herdr agent prompt`, not a paste. It is bounded by SSH: a remote host receives
 the whole command as one shell string, which Linux caps at 131,072 bytes, and a
@@ -1441,7 +1450,8 @@ These are all code and message pairs produced through `command_error`.
 | `INVALID_NAME` | `Folder name is reserved on some platforms` | A create name violates the portable platform rules. Other invalid-name messages describe the same code more specifically. |
 | `INVALID_LABEL` | `Project label must be 1-128 characters` | A project save or rename label is empty or too long. |
 | `UNKNOWN_HOST` | `Unknown host` | A project operation, `send_prompt`, `create_tab`, or acknowledged `send_keys` or `send_text` names a host absent from the configured host file. |
-| `UNKNOWN_PANE` | `Unknown pane` | A `send_prompt`, or an acknowledged `send_keys` or `send_text`, names a pane absent from the latest poll. |
+| `UNKNOWN_PANE` | `Unknown pane` | A `send_prompt`, or an acknowledged `send_keys` or `send_text`, names a pane absent from the latest poll; or Herdr answered a `send_prompt` with `agent_not_found`. |
+| `AGENT_BLOCKED` | `The agent is waiting on a dialog; answer it first` | Herdr refused a `send_prompt` with `agent_blocked`: the agent is blocked on a dialog and nothing was typed. |
 | `AMBIGUOUS_PANE` | `host_id is required for this pane` | A typed pane command omitted `host_id` while multiple current hosts expose that pane ID. |
 | `REQUEST_ID_REUSED` | `request_id was already used for another command` | A connection reuses a completed request ID with different command fields. |
 | `DIALOG_NOT_ACTIVE` | `Dialog is no longer active` | A `respond_dialog` command names a pane with no current blocked dialog. |
@@ -1476,7 +1486,7 @@ These are all code and message pairs produced through `command_error`.
 | `UNKNOWN_HOST` | `Power host has no SSH target` | A host configured for shutdown has no SSH target. `load_hosts` rejects that combination at startup, so this is a last-resort guard rather than a reachable configuration. |
 | `SHUTDOWN_FAILED` | `Host shutdown command failed` | The fixed SSH shutdown process raises or exits unsuccessfully. |
 | `RATE_LIMITED` | `Too many requests, slow down` | The connection exceeded its [rate limit](#rate-limiting) on a typed command. The command did not run. |
-| `HERDR_FAILED` | `Herdr did not submit the prompt` | The Herdr `agent prompt` operation failed for `send_prompt`. |
+| `HERDR_FAILED` | `Herdr did not submit the prompt` | The Herdr `agent prompt` operation failed for `send_prompt` for a reason other than `agent_blocked` or `agent_not_found`. |
 | `HERDR_FAILED` | `Herdr did not deliver the keys` | A Herdr call for an acknowledged `send_keys` failed; delivery stopped there. |
 | `HERDR_FAILED` | `Herdr did not deliver the text` | The Herdr `pane send-text` call for an acknowledged `send_text` failed. |
 | `HERDR_FAILED` | `Herdr did not submit the response` | A Herdr call delivering a `respond_dialog` answer failed; delivery stopped there and the dialog stays answerable. |
