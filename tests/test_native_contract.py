@@ -502,6 +502,12 @@ class NativeContractTests(unittest.TestCase):
             ),
         )
 
+    def test_send_prompt_blocked(self):
+        self.assert_contract(
+            "command_error_send_prompt_blocked",
+            herdr_relay.server._prompt_refusal("req-prompt-1", "agent_blocked"),
+        )
+
     def _acknowledged_keys(self, checked_return):
         """One `send_keys` with a `request_id`, through the real dispatch loop (#70)."""
         class Socket:
