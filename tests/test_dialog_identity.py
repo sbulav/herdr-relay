@@ -99,7 +99,7 @@ def codex_screen(*, activity="• Running touch screen-a", cursor=1, banner=True
 def isolated_state():
     stack = contextlib.ExitStack()
     for name in (
-        "last_statuses", "pane_activity", "pane_revisions", "pane_attention_states",
+        "last_statuses", "pane_activity", "pane_revisions", "pane_attention_states", "pane_completions",
         "pane_dialogs", "pane_dialog_revisions", "pane_response_options", "subscriptions",
         "pane_hosts", "pane_remote_map",
     ):

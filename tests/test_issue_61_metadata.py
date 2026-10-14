@@ -14,7 +14,7 @@ class Issue61MetadataTests(unittest.TestCase):
         for name in (
             "pane_workspace_map", "pane_tab_map", "pane_activity_titles",
             "pane_statuses",
-            "pane_attention_states", "pane_activity", "pane_revisions",
+            "pane_attention_states", "pane_completions", "pane_activity", "pane_revisions",
             "last_statuses", "pane_dialogs", "pane_dialog_revisions",
         ):
             getattr(herdr_relay.state, name).clear()

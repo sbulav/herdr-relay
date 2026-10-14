@@ -17,6 +17,24 @@
       "updated_at": 1700000000000,
       "workspace_id": "workspace-2",
       "workspace_name": "Relay"
+    },
+    {
+      "agent": "claude",
+      "attention_state": "done",
+      "completion_seq": 12,
+      "cwd": "/srv/herdr-remote",
+      "host": "buildbox",
+      "host_id": "buildbox",
+      "label": "docs pass",
+      "output_revision": 3,
+      "pane_id": "pane-8",
+      "project": "herdr-remote",
+      "status": "idle",
+      "tab_id": "tab-5",
+      "tab_name": "Docs",
+      "updated_at": 1700000000000,
+      "workspace_id": "workspace-2",
+      "workspace_name": "Relay"
     }
   ],
   "catalog_status": {
@@ -29,7 +47,7 @@
   "catalogs": [],
   "hosts": [
     {
-      "active_agent_count": 1,
+      "active_agent_count": 2,
       "capabilities": {
         "shutdown": false,
         "wake": false

@@ -198,7 +198,8 @@ event update by the presence of `hosts`.
 
 A complete poll agent contains all of these fields. A partial event agent
 contains the identity fields it knows and carries the same additive metadata
-when Herdr supplied it.
+when Herdr supplied it. That metadata, `completion_seq` and `attention_state`
+included, is the last polled value, not something the event reported.
 
 | Agent field | Type | Presence | Meaning |
 | --- | --- | --- | --- |
@@ -215,9 +216,10 @@ when Herdr supplied it.
 | `tab_id` | string | When Herdr reports it | Tab identifier reported by `herdr`; omitted when unavailable. |
 | `tab_name` | string | When Herdr reports it | Tab label from the `herdr api snapshot` tab rows; never inferred from pane order. |
 | `activity_title` | string | Working agents when Herdr reports it | Current Herdr activity title, whitespace-normalized and bounded to 160 characters. It is omitted for blocked, done, idle, unknown, empty, or unavailable titles. |
-| `attention_state` | string | Optional | Additive explicit attention state: `"working"`, `"waiting"`, `"done"`, or `"idle"`. `"waiting"` means the agent is waiting on the user. Unknown statuses are omitted rather than guessed. |
+| `attention_state` | string | Optional | Additive explicit attention state: `"working"`, `"waiting"`, `"done"`, or `"idle"`. `"waiting"` means the agent is waiting on the user. An `idle` agent is `"done"` while herdr reports a `completion_seq` for it and `"idle"` while it reports none; nothing is inferred from earlier polls. Unknown statuses are omitted rather than guessed. |
 | `updated_at` | integer | Optional | Additive epoch milliseconds when this pane's status or output revision last changed. |
 | `output_revision` | integer | Optional | Additive monotonic per-pane output revision reported by `herdr`; omitted when unavailable or invalid. |
+| `completion_seq` | integer | Optional | Additive non-negative counter herdr sets while an agent is idle after finishing work: the pane's state-change sequence at that idle transition. Omitted while the agent works, is blocked, or sits in an idle that completed nothing. A new value means a new finished turn; it is not a running total and restarts from zero when herdr restarts, so compare it for change, not for order. A partial event agent carries the last polled value. |
 
 The relay's own SSH routing never appears here. A pane is addressed by `host` and
 `pane_id`; the SSH target behind a host is server-side state, resolved from the
@@ -253,6 +255,21 @@ host configuration file and withheld by `public_agents()`.
       "tab_id": "tab-4",
       "tab_name": "API",
       "activity_title": "Run focused tests"
+    },
+    {
+      "pane_id": "pane-8",
+      "agent": "claude",
+      "label": "docs pass",
+      "status": "idle",
+      "attention_state": "done",
+      "completion_seq": 12,
+      "cwd": "/srv/herdr-remote",
+      "project": "herdr-remote",
+      "host": "buildbox",
+      "workspace_id": "workspace-2",
+      "workspace_name": "Relay",
+      "tab_id": "tab-5",
+      "tab_name": "Docs"
     }
   ],
   "hosts": [{
@@ -262,7 +279,7 @@ host configuration file and withheld by `public_agents()`.
     "status": "ready",
     "ssh_reachable": true,
     "herdr_ready": true,
-    "active_agent_count": 1,
+    "active_agent_count": 2,
     "capabilities": {"wake": false, "shutdown": false},
     "harnesses": []
   }],
@@ -540,9 +557,10 @@ subscription updates contain `output_blocks` without `content`.
 | `output_has_more` | boolean | Optional | Whether older blocks can be requested with `before`. |
 | `output_next_cursor` | string | Optional | ID of the oldest block in this page; send it as `before` to fetch older blocks. |
 | `output_truncated` | boolean | Optional | The transcript source exceeded the configured history byte window. |
-| `attention_state` | string | Optional | Additive explicit attention state: `"working"`, `"waiting"`, `"done"`, or `"idle"`. `"waiting"` means the agent is waiting on the user. Unknown statuses are omitted rather than guessed. |
+| `attention_state` | string | Optional | Additive explicit attention state: `"working"`, `"waiting"`, `"done"`, or `"idle"`. `"waiting"` means the agent is waiting on the user. An `idle` agent is `"done"` while herdr reports a `completion_seq` for it and `"idle"` while it reports none; nothing is inferred from earlier polls. Unknown statuses are omitted rather than guessed. |
 | `updated_at` | integer | Optional | Additive epoch milliseconds when this pane's status or output revision last changed. |
 | `output_revision` | integer | Optional | Additive monotonic per-pane output revision reported by `herdr`; omitted when unavailable or invalid. |
+| `completion_seq` | integer | Optional | Additive non-negative counter herdr sets while an agent is idle after finishing work: the pane's state-change sequence at that idle transition. Omitted while the agent works, is blocked, or sits in an idle that completed nothing. A new value means a new finished turn; it is not a running total and restarts from zero when herdr restarts, so compare it for change, not for order. A partial event agent carries the last polled value. |
 | `workspace_id` | string | Optional | Workspace identifier reported by Herdr for this pane. |
 | `workspace_name` | string | Optional | Workspace label reported by Herdr. |
 | `tab_id` | string | Optional | Tab identifier reported by Herdr for this pane. |
@@ -1133,7 +1151,9 @@ row and with `raw_input_allowed` `false`.
 ### `agent_event`
 
 Enqueues an agent status event. The event worker may fan out `blocked` and
-partial `agents` frames. No acknowledgement is sent.
+partial `agents` frames. No acknowledgement is sent. The event carries no
+completion counter: the partial `agents` frame takes `completion_seq` and
+`attention_state` from the last poll.
 
 | Name | Type | Presence | Meaning |
 | --- | --- | --- | --- |

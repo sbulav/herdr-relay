@@ -293,6 +293,7 @@ def get_agents_from_host(remote=None, host_id=None, host=None, cancel_event=None
         # label row must not make an otherwise valid pane disappear.
         workspace_names = _snapshot_names(snapshot.get("workspaces"), "workspace_id")
         tab_names = _snapshot_names(snapshot.get("tabs"), "tab_id")
+        completions = _snapshot_completions(snapshot.get("agents"))
         agents = []
         for p in pane_list:
             # One malformed row must not cost the host, or — raised out of
@@ -352,12 +353,33 @@ def get_agents_from_host(remote=None, host_id=None, host=None, cancel_event=None
             revision = p.get("revision")
             if isinstance(revision, int) and not isinstance(revision, bool):
                 agent["output_revision"] = revision
+            completion = completions.get(p["pane_id"])
+            if completion is not None:
+                agent["completion_seq"] = completion
             agents.append(agent)
     except (json.JSONDecodeError, KeyError, TypeError):
         return [], probe
     probe["herdr_ready"] = True
     probe["active_agent_count"] = len(agents)
     return agents, probe
+
+
+def _snapshot_completions(rows):
+    """Map a snapshot's agent rows to their `completion_seq`, keeping only real counters.
+
+    The counter lives on the agent rows, not the pane rows. Herdr omits it (or
+    sends null) while an agent works or sits in an idle that completed nothing.
+    """
+    completions = {}
+    if not isinstance(rows, list):
+        return completions
+    for row in rows:
+        if not isinstance(row, dict) or not isinstance(row.get("pane_id"), str):
+            continue
+        completion = protocol.completion_counter(row.get("completion_seq"))
+        if completion is not None:
+            completions[row["pane_id"]] = completion
+    return completions
 
 
 def _snapshot_names(rows, key):

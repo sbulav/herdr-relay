@@ -230,9 +230,11 @@ async def _poll_once():
         if title and status == "working":
             state.pane_activity_titles[key] = title
         # Snapshot broadcast precedes the `state.last_statuses` update below, so this
-        # still reads the prior poll's status for idle-after-work detection.
+        # still reads the prior poll's status for the activity timestamp.
         previous_status = state.get(state.last_statuses, key)
-        attention = protocol.attention_state(status, previous_status, state.get(state.pane_attention_states, key))
+        completion = protocol.completion_counter(a.get("completion_seq"))
+        state.pane_completions[key] = completion
+        attention = protocol.attention_state(status, completion)
         if attention is None:
             state.pop(state.pane_attention_states, key)
         else:
@@ -347,6 +349,7 @@ async def _poll_once():
             state.pop(state.pane_activity, key)
             state.pop(state.pane_revisions, key)
             state.pop(state.pane_attention_states, key)
+            state.pop(state.pane_completions, key)
             state.pop(state.pane_host_map, key)
             state.pop(state.pane_project_map, key)
             state.pop(state.pane_workspace_map, key)

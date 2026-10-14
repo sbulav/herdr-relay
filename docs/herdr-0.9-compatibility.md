@@ -31,6 +31,22 @@ response without a `result.snapshot` object is treated as Herdr unavailable,
 not as a host with no agents. Sources: `relay/herdr_relay/herdr.py`,
 `tests/test_herdr_snapshot.py`.
 
+## "Done" comes from `completion_seq`
+
+Since #85 the relay takes "done" from herdr instead of inferring it. Each
+snapshot `agents[]` row carries `completion_seq` while that agent is idle after
+finishing work. The value is the pane's `state_change_seq` at that idle
+transition. It is absent or null while the agent is working, and in an idle
+that completed nothing. An idle agent with a counter is `done`, and without one
+it is `idle`. Nothing is read from the previous poll, so a turn that starts and
+finishes between two polls still shows as done.
+
+The counter is passed to clients as `completion_seq`. It lives in herdr's memory
+and restarts from zero when herdr restarts. Sources:
+`relay/herdr_relay/protocol.py` (`attention_state`),
+`relay/herdr_relay/herdr.py` (`_snapshot_completions`),
+`tests/test_structured_output.py`.
+
 ## Required upgrade step
 
 The local `herdr --version` and `herdr status --json` both reported 0.8.0;
