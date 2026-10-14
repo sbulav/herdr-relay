@@ -294,6 +294,7 @@ def get_agents_from_host(remote=None, host_id=None, host=None, cancel_event=None
         workspace_names = _snapshot_names(snapshot.get("workspaces"), "workspace_id")
         tab_names = _snapshot_names(snapshot.get("tabs"), "tab_id")
         completions = _snapshot_completions(snapshot.get("agents"))
+        reports_completion = _reports_completion(snapshot.get("version"), completions)
         agents = []
         for p in pane_list:
             # One malformed row must not cost the host, or — raised out of
@@ -356,6 +357,7 @@ def get_agents_from_host(remote=None, host_id=None, host=None, cancel_event=None
             completion = completions.get(p["pane_id"])
             if completion is not None:
                 agent["completion_seq"] = completion
+            agent["reports_completion"] = reports_completion
             agents.append(agent)
     except (json.JSONDecodeError, KeyError, TypeError):
         return [], probe
@@ -382,6 +384,19 @@ def _snapshot_completions(rows):
     return completions
 
 
+def _reports_completion(version, completions):
+    """Whether this herdr states completed turns with `completion_seq`.
+
+    Herdr 0.9.0 and 0.9.1 have no such field, so an idle without one there says
+    nothing; on 0.9.2+ it means the idle completed nothing. A counter in any row
+    settles it whatever the version string says.
+    """
+    if completions:
+        return True
+    parsed = _parse_herdr_version(version) if isinstance(version, str) else None
+    return parsed is not None and parsed >= COMPLETION_SEQ_HERDR_VERSION
+
+
 def _snapshot_names(rows, key):
     """Map a snapshot's workspace or tab rows to their labels, keeping only valid entries."""
     names = {}
@@ -399,6 +414,9 @@ def _snapshot_names(rows, key):
 
 # The oldest herdr with `api snapshot`. A host below it cannot be polled at all.
 MIN_HERDR_VERSION = (0, 9, 0)
+# The first herdr whose agent rows carry `completion_seq`. Older hosts are still
+# polled; their "done" is inferred from the previous poll instead.
+COMPLETION_SEQ_HERDR_VERSION = (0, 9, 2)
 # host id -> the too-old version already logged, so a host that stays behind
 # logs once rather than every poll. Cleared by the host's next good snapshot.
 _herdr_too_old_logged = {}

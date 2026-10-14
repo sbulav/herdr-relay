@@ -230,11 +230,17 @@ async def _poll_once():
         if title and status == "working":
             state.pane_activity_titles[key] = title
         # Snapshot broadcast precedes the `state.last_statuses` update below, so this
-        # still reads the prior poll's status for the activity timestamp.
+        # still reads the prior poll's status for the activity timestamp and for
+        # "done" on a herdr too old to report `completion_seq`.
         previous_status = state.get(state.last_statuses, key)
         completion = protocol.completion_counter(a.get("completion_seq"))
         state.pane_completions[key] = completion
-        attention = protocol.attention_state(status, completion)
+        attention = protocol.attention_state(
+            status, completion,
+            reports_completion=a.get("reports_completion", True),
+            previous_status=previous_status,
+            previous_state=state.get(state.pane_attention_states, key),
+        )
         if attention is None:
             state.pop(state.pane_attention_states, key)
         else:

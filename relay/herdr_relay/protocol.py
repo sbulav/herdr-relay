@@ -110,7 +110,10 @@ def completion_counter(value):
     return None
 
 
-def attention_state(status, completion_seq=None):
+def attention_state(
+    status, completion_seq=None, *, reports_completion=True,
+    previous_status=None, previous_state=None,
+):
     """Map herdr's agent_status to the client's attention vocabulary.
 
     Returns None for anything outside that vocabulary, including "unknown": the
@@ -129,7 +132,14 @@ def attention_state(status, completion_seq=None):
         # idle that completed nothing. Nothing is inferred from the previous
         # poll, so a turn that started and finished between two polls is still
         # "done", and a client that connects later sees the same thing.
-        return "done" if completion_counter(completion_seq) is not None else "idle"
+        if reports_completion:
+            return "done" if completion_counter(completion_seq) is not None else "idle"
+        # Herdr before 0.9.2 has no counter. There an agent that was working
+        # or blocked at the last poll finished a turn, and the state stays
+        # "done" for as long as the pane stays idle.
+        if previous_status in ("working", "blocked") or previous_state == "done":
+            return "done"
+        return "idle"
     return None
 
 

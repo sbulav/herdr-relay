@@ -107,6 +107,28 @@ class HerdrSnapshotTests(unittest.TestCase):
             {"w1:p1": 19, "w1:p2": None, "w1:p3": None, "w1:p4": None},
         )
 
+    def test_a_herdr_before_0_9_2_reports_no_completions(self):
+        def snapshot(version, agents=()):
+            return {"result": {"type": "session_snapshot", "snapshot": {
+                "version": version,
+                "panes": [{"pane_id": "w1:p1", "agent": "claude", "agent_status": "idle"}],
+                "agents": list(agents),
+            }}}
+
+        for version, agents, expected in (
+            ("0.9.0", (), False),
+            ("0.9.1", (), False),
+            ("0.9.2", (), True),
+            ("0.9.3", (), True),
+            (None, (), False),
+            # A counter on any row settles it, whatever the version says.
+            ("0.9.1", ({"pane_id": "w1:p1", "completion_seq": 3},), True),
+        ):
+            with self.subTest(version=version, agents=agents):
+                body = json.dumps(snapshot(version, agents))
+                found, _probe, _calls, _log = self.poll({("api", "snapshot"): (True, body)})
+                self.assertEqual([agent["reports_completion"] for agent in found], [expected])
+
     def test_version_parsing(self):
         self.assertEqual((0, 9, 3), herdr._parse_herdr_version("herdr 0.9.3\n"))
         self.assertEqual((0, 8, 4), herdr._parse_herdr_version("herdr 0.8.4-dev"))

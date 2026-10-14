@@ -462,6 +462,26 @@ class PaneMetadataTests(unittest.TestCase):
                 self.assertEqual(agents[1]["attention_state"], "idle")
                 self.assertNotIn("completion_seq", agents[1])
 
+    def test_a_herdr_without_counters_infers_done_from_the_last_poll(self):
+        # Herdr 0.9.0 and 0.9.1 send no completion_seq at all.
+        def old(status):
+            return dict(self.agent(status=status), reports_completion=False)
+
+        agents = self.poll_attention([
+            [old("working")], [old("idle")], [old("idle")], [old("blocked")], [old("idle")],
+        ])
+
+        self.assertEqual(
+            [agent["attention_state"] for agent in agents],
+            ["working", "done", "done", "waiting", "done"],
+        )
+        self.assertNotIn("reports_completion", agents[0])
+
+    def test_an_old_herdr_idle_from_the_start_is_idle(self):
+        self.assertEqual(
+            herdr_relay.protocol.attention_state("idle", reports_completion=False), "idle"
+        )
+
     def test_completion_seq_is_public_only_as_a_counter(self):
         for value in (None, -1, True, "4", 1.5):
             with self.subTest(completion_seq=value):
