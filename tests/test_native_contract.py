@@ -51,6 +51,23 @@ class NativeContractTests(unittest.TestCase):
             "tab_name": "API",
             "activity_title": "Run focused tests",
             "output_revision": 7,
+        }, {
+            # Finished: herdr's completion counter is what makes it "done".
+            "pane_id": "pane-8",
+            "host_id": "buildbox",
+            "agent": "claude",
+            "label": "docs pass",
+            "status": "idle",
+            "cwd": "/srv/herdr-remote",
+            "project": "herdr-remote",
+            "host": "buildbox",
+            "remote": "deploy@buildbox",
+            "workspace_id": "workspace-2",
+            "workspace_name": "Relay",
+            "tab_id": "tab-5",
+            "tab_name": "Docs",
+            "output_revision": 3,
+            "completion_seq": 12,
         }]
         hosts = [{
             "host_id": "buildbox",
@@ -59,7 +76,7 @@ class NativeContractTests(unittest.TestCase):
             "online": True,
             "ssh_reachable": True,
             "herdr_ready": True,
-            "active_agent_count": 1,
+            "active_agent_count": 2,
             "capabilities": {"wake": False, "shutdown": False},
             "harnesses": [],
         }]
@@ -75,6 +92,7 @@ class NativeContractTests(unittest.TestCase):
             patch.dict(herdr_relay.state.pane_activity, {}, clear=True),
             patch.dict(herdr_relay.state.pane_revisions, {}, clear=True),
             patch.dict(herdr_relay.state.pane_attention_states, {}, clear=True),
+            patch.dict(herdr_relay.state.pane_completions, {}, clear=True),
             patch.object(herdr_relay.protocol, "now_ms", return_value=1700000000000),
             patch.dict(herdr_relay.state.pane_remote_map, {}, clear=True),
             patch.dict(herdr_relay.state.session_target_map, {}, clear=True),
@@ -399,6 +417,7 @@ class NativeContractTests(unittest.TestCase):
             patch.dict(herdr_relay.state.pane_activity, {}, clear=True),
             patch.dict(herdr_relay.state.pane_revisions, {}, clear=True),
             patch.dict(herdr_relay.state.pane_attention_states, {}, clear=True),
+            patch.dict(herdr_relay.state.pane_completions, {}, clear=True),
             patch.object(herdr_relay.protocol, "now_ms", return_value=1700000000000),
             patch.dict(herdr_relay.state.pane_response_options, {}, clear=True),
             patch.dict(herdr_relay.state.pane_dialogs, {}, clear=True),
@@ -423,7 +442,8 @@ class NativeContractTests(unittest.TestCase):
             "pane_id": "pane-7",
             "agent": "claude",
             "label": "api tests",
-            "status": "working",
+            # The turn has finished: the frame carries herdr's completion counter.
+            "status": "idle",
             "cwd": "/srv/herdr-remote",
             "project": "herdr-remote",
             "host": "buildbox",
@@ -433,7 +453,8 @@ class NativeContractTests(unittest.TestCase):
             "tab_id": "tab-4",
             "tab_name": "API",
             "activity_title": "Run focused tests",
-            "output_revision": 7,
+            "output_revision": 8,
+            "completion_seq": 9,
         }]
         blocks = [
             {"id": "b0", "kind": "status", "label": "You", "text": "Run tests",
@@ -464,6 +485,7 @@ class NativeContractTests(unittest.TestCase):
             patch.dict(herdr_relay.state.pane_activity, {}, clear=True),
             patch.dict(herdr_relay.state.pane_revisions, {}, clear=True),
             patch.dict(herdr_relay.state.pane_attention_states, {}, clear=True),
+            patch.dict(herdr_relay.state.pane_completions, {}, clear=True),
             patch.object(herdr_relay.protocol, "now_ms", return_value=1700000000000),
         ):
             asyncio.run(herdr_relay._poll_once())

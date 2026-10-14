@@ -12,7 +12,7 @@ DISPLAY_NAME_MAX_CHARS = 160
 PUBLIC_AGENT_FIELDS = frozenset({
     "pane_id", "host_id", "host", "agent", "label", "status", "cwd", "project",
     "workspace_id", "workspace_name", "tab_id", "tab_name", "activity_title",
-    "attention_state", "updated_at", "output_revision",
+    "attention_state", "updated_at", "output_revision", "completion_seq",
 })
 
 
@@ -87,6 +87,8 @@ def public_agents(agents):
                     public.pop(field, None)
                 else:
                     public[field] = value
+        if "completion_seq" in public and completion_counter(public["completion_seq"]) is None:
+            public.pop("completion_seq")
         host_id = public.get("host_id") or public.get("host", "local")
         public["host_id"] = host_id
         result.append(public)
@@ -101,7 +103,17 @@ def now_ms():
     return int(time.time() * 1000)
 
 
-def attention_state(status, previous_status, previous_state=None):
+def completion_counter(value):
+    """Herdr's `completion_seq` when it is one, else None (null, absent, or malformed)."""
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    return None
+
+
+def attention_state(
+    status, completion_seq=None, *, reports_completion=True,
+    previous_status=None, previous_state=None,
+):
     """Map herdr's agent_status to the client's attention vocabulary.
 
     Returns None for anything outside that vocabulary, including "unknown": the
@@ -115,10 +127,16 @@ def attention_state(status, previous_status, previous_state=None):
     if status == "done":
         return "done"
     if status == "idle":
-        # An agent that just stopped working finished a turn nobody has looked
-        # at yet. The state stays "done" for as long as the pane stays idle,
-        # rather than lasting a single poll: a client that connects a cycle
-        # later must see the same thing as one that was already listening.
+        # Herdr states the finished turn itself: `completion_seq` is set for as
+        # long as the pane stays idle after completing work, and null in an
+        # idle that completed nothing. Nothing is inferred from the previous
+        # poll, so a turn that started and finished between two polls is still
+        # "done", and a client that connects later sees the same thing.
+        if reports_completion:
+            return "done" if completion_counter(completion_seq) is not None else "idle"
+        # Herdr before 0.9.2 has no counter. There an agent that was working
+        # or blocked at the last poll finished a turn, and the state stays
+        # "done" for as long as the pane stays idle.
         if previous_status in ("working", "blocked") or previous_state == "done":
             return "done"
         return "idle"
@@ -137,6 +155,9 @@ def add_pane_metadata(entry, pane_id, host_id=None, status=None):
     revision = state.get(state.pane_revisions, key)
     if isinstance(revision, int) and not isinstance(revision, bool):
         entry["output_revision"] = revision
+    completion = completion_counter(state.get(state.pane_completions, key))
+    if completion is not None:
+        entry["completion_seq"] = completion
 
     workspace = state.get(state.pane_workspace_map, key)
     if isinstance(workspace, tuple) and len(workspace) == 2:

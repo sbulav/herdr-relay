@@ -1,6 +1,6 @@
 {
-  "activity_title": "Run focused tests",
-  "attention_state": "working",
+  "attention_state": "done",
+  "completion_seq": 9,
   "host_id": "buildbox",
   "output_blocks": [
     {
@@ -44,7 +44,7 @@
       "turn_id": "turn-1"
     }
   ],
-  "output_revision": 7,
+  "output_revision": 8,
   "pane_id": "pane-7",
   "tab_id": "tab-4",
   "tab_name": "API",

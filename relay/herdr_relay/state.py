@@ -14,6 +14,7 @@ last_statuses = {}
 pane_activity = {}      # (host_id, pane_id) -> epoch milliseconds of the last change
 pane_revisions = {}     # (host_id, pane_id) -> output revision, or None when unavailable
 pane_attention_states = {}  # (host_id, pane_id) -> last emitted attention state
+pane_completions = {}   # (host_id, pane_id) -> herdr completion_seq, or None when herdr reports none
 event_queue = asyncio.Queue()
 # Set by the asyncio server before any durable-operation worker can emit. A
 # worker thread must schedule queue writes onto the loop; asyncio queues are

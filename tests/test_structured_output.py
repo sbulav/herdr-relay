@@ -385,29 +385,29 @@ class PaneMetadataTests(unittest.TestCase):
     def test_attention_state_mapping(self):
         cases = (
             ("idle", None, "idle"),
+            ("idle", 0, "done"),
+            ("idle", 19, "done"),
             ("working", None, "working"),
+            ("working", 19, "working"),
             ("blocked", None, "waiting"),
+            ("blocked", 19, "waiting"),
             ("done", None, "done"),
             ("unknown", None, None),
+            ("unknown", 19, None),
         )
 
-        for status, previous_status, expected in cases:
-            with self.subTest(status=status):
+        for status, completion_seq, expected in cases:
+            with self.subTest(status=status, completion_seq=completion_seq):
                 self.assertEqual(
-                    herdr_relay.protocol.attention_state(status, previous_status), expected
+                    herdr_relay.protocol.attention_state(status, completion_seq), expected
                 )
 
-        self.assertEqual(herdr_relay.protocol.attention_state("idle", "working"), "done")
-        self.assertEqual(herdr_relay.protocol.attention_state("idle", "idle"), "idle")
-        self.assertEqual(herdr_relay.protocol.attention_state("idle", "idle", "done"), "done")
+        # Not a counter: a malformed value reads as "nothing completed".
+        for malformed in (-1, True, "19", 1.5):
+            with self.subTest(completion_seq=malformed):
+                self.assertEqual(herdr_relay.protocol.attention_state("idle", malformed), "idle")
 
-    def test_done_survives_while_the_pane_stays_idle(self):
-        snapshots = [
-            [self.agent(status="working")],
-            [self.agent(status="idle")],
-            [self.agent(status="idle")],
-            [self.agent(status="working")],
-        ]
+    def poll_attention(self, snapshots):
         sent = []
 
         async def get_all_agents():
@@ -416,20 +416,110 @@ class PaneMetadataTests(unittest.TestCase):
         async def broadcast(frame):
             sent.append(frame)
 
+        count = len(snapshots)
         with self.poll_state(), patch.object(
             herdr_relay.herdr, "get_all_agents", side_effect=get_all_agents
         ), patch.object(herdr_relay.transport, "broadcast", side_effect=broadcast), patch.object(
             herdr_relay.protocol, "now_ms", return_value=1000
         ):
-            for _ in range(4):
+            for _ in range(count):
                 asyncio.run(herdr_relay._poll_once())
+        return [frame["agents"][0] for frame in sent if frame.get("type") == "agents"]
+
+    def test_done_survives_while_the_pane_stays_idle(self):
+        agents = self.poll_attention([
+            [self.agent(status="working")],
+            [self.agent(status="idle", completion_seq=4)],
+            [self.agent(status="idle", completion_seq=4)],
+            [self.agent(status="working")],
+        ])
 
         # The second idle poll must not fall back to "idle": a client that
         # connects then would be told the finished turn never happened.
         self.assertEqual(
-            [frame["agents"][0]["attention_state"] for frame in sent],
+            [agent["attention_state"] for agent in agents],
             ["working", "done", "done", "working"],
         )
+
+    def test_a_turn_between_two_polls_is_done(self):
+        # The relay never saw the agent working; herdr's counter says it finished.
+        agents = self.poll_attention([
+            [self.agent(status="idle", completion_seq=4)],
+            [self.agent(status="idle", completion_seq=9)],
+        ])
+
+        self.assertEqual([agent["attention_state"] for agent in agents], ["done", "done"])
+        self.assertEqual([agent["completion_seq"] for agent in agents], [4, 9])
+
+    def test_an_idle_that_completed_nothing_is_idle_after_any_status(self):
+        for previous in ("working", "blocked", "idle"):
+            with self.subTest(previous=previous):
+                agents = self.poll_attention([
+                    [self.agent(status=previous)],
+                    [self.agent(status="idle")],
+                ])
+
+                self.assertEqual(agents[1]["attention_state"], "idle")
+                self.assertNotIn("completion_seq", agents[1])
+
+    def test_a_herdr_without_counters_infers_done_from_the_last_poll(self):
+        # Herdr 0.9.0 and 0.9.1 send no completion_seq at all.
+        def old(status):
+            return dict(self.agent(status=status), reports_completion=False)
+
+        agents = self.poll_attention([
+            [old("working")], [old("idle")], [old("idle")], [old("blocked")], [old("idle")],
+        ])
+
+        self.assertEqual(
+            [agent["attention_state"] for agent in agents],
+            ["working", "done", "done", "waiting", "done"],
+        )
+        self.assertNotIn("reports_completion", agents[0])
+
+    def test_an_old_herdr_idle_from_the_start_is_idle(self):
+        self.assertEqual(
+            herdr_relay.protocol.attention_state("idle", reports_completion=False), "idle"
+        )
+
+    def test_completion_seq_is_public_only_as_a_counter(self):
+        for value in (None, -1, True, "4", 1.5):
+            with self.subTest(completion_seq=value):
+                [public] = herdr_relay.protocol.public_agents(
+                    [{"pane_id": "pane-1", "host_id": "local", "completion_seq": value}]
+                )
+                self.assertNotIn("completion_seq", public)
+        [public] = herdr_relay.protocol.public_agents(
+            [{"pane_id": "pane-1", "host_id": "local", "completion_seq": 0}]
+        )
+        self.assertEqual(public["completion_seq"], 0)
+
+    def test_a_pushed_delta_carries_the_last_polled_counter(self):
+        sent = []
+
+        async def get_all_agents():
+            return [self.agent(status="idle", completion_seq=4)], []
+
+        async def broadcast(frame):
+            sent.append(frame)
+
+        with self.poll_state(), patch.object(
+            herdr_relay.herdr, "get_all_agents", side_effect=get_all_agents
+        ), patch.object(herdr_relay.transport, "broadcast", side_effect=broadcast), patch.object(
+            herdr_relay.protocol, "now_ms", return_value=1000
+        ), patch.object(herdr_relay.state, "known_pane_keys", set()), patch.dict(
+            herdr_relay.state.pane_hosts, {}, clear=True
+        ):
+            asyncio.run(herdr_relay._poll_once())
+            sent.clear()
+            asyncio.run(herdr_relay.transport._handle_pushed_event({
+                "type": "agent_event", "pane_id": "pane-1", "status": "idle",
+                "host": "local", "agent": "claude",
+            }))
+
+        [delta] = [frame for frame in sent if frame.get("type") == "agents"]
+        self.assertEqual(delta["agents"][0]["completion_seq"], 4)
+        self.assertEqual(delta["agents"][0]["attention_state"], "done")
 
     def test_unknown_status_omits_attention_state(self):
         for status in ("unknown", "unexpected"):
@@ -569,12 +659,15 @@ class PaneMetadataTests(unittest.TestCase):
             self.assertEqual(herdr_relay.state.pane_attention_states, {})
 
     @staticmethod
-    def agent(status="working", revision=0):
-        return {
+    def agent(status="working", revision=0, completion_seq=None):
+        agent = {
             "pane_id": "pane-1", "agent": "claude", "label": "", "project": "repo",
             "status": status, "cwd": "/work/repo", "host": "local", "remote": None,
             "output_revision": revision,
         }
+        if completion_seq is not None:
+            agent["completion_seq"] = completion_seq
+        return agent
 
     @staticmethod
     def poll_state():
@@ -583,6 +676,7 @@ class PaneMetadataTests(unittest.TestCase):
         stack.enter_context(patch.dict(herdr_relay.state.pane_activity, {}, clear=True))
         stack.enter_context(patch.dict(herdr_relay.state.pane_revisions, {}, clear=True))
         stack.enter_context(patch.dict(herdr_relay.state.pane_attention_states, {}, clear=True))
+        stack.enter_context(patch.dict(herdr_relay.state.pane_completions, {}, clear=True))
         stack.enter_context(patch.dict(herdr_relay.state.pane_dialogs, {}, clear=True))
         stack.enter_context(patch.dict(herdr_relay.state.pane_dialog_revisions, {}, clear=True))
         stack.enter_context(patch.dict(herdr_relay.state.subscriptions, {}, clear=True))

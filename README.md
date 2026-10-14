@@ -24,8 +24,9 @@ protocol.
 - **One-tap approvals** — answer a blocked agent's prompt from your phone
 - **Terminal interaction** — read pane output, send keys, send text, interrupt
 - **Attention metadata** — the relay decides `waiting`/`working`/`done`/`idle`
-  and stamps `updated_at` and `output_revision`, so clients don't infer it from
-  status strings
+  (done from herdr's own `completion_seq`) and stamps `updated_at`,
+  `output_revision` and `completion_seq`, so clients don't infer it from status
+  strings
 - **Multi-host** — polls local herdr plus any SSH targets in `HERDR_REMOTES`
 - **Push and poll** — authenticated HTTP events beat the poll interval
 - **Host readiness** — separates SSH reachability, Herdr readiness, and active-agent count

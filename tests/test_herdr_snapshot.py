@@ -81,6 +81,54 @@ class HerdrSnapshotTests(unittest.TestCase):
         self.assertTrue(probe["herdr_ready"])
         self.assertEqual(["a"], [agent["pane_id"] for agent in agents])
 
+    def test_completion_seq_comes_from_the_agent_rows(self):
+        # Shape observed on herdr 0.9.3: the counter sits on `agents[]`, not on
+        # the pane rows, and is absent while working.
+        body = {"result": {"type": "session_snapshot", "snapshot": {
+            "panes": [
+                {"pane_id": "w1:p1", "agent": "claude", "agent_status": "idle"},
+                {"pane_id": "w1:p2", "agent": "claude", "agent_status": "working"},
+                {"pane_id": "w1:p3", "agent": "claude", "agent_status": "idle"},
+                {"pane_id": "w1:p4", "agent": "claude", "agent_status": "idle"},
+            ],
+            "agents": [
+                {"pane_id": "w1:p1", "completion_seq": 19, "state_change_seq": 19},
+                {"pane_id": "w1:p2", "state_change_seq": 26},
+                {"pane_id": "w1:p3", "completion_seq": None},
+                {"pane_id": "w1:p4", "completion_seq": -3},
+                "not a row",
+                {"completion_seq": 7},
+            ],
+        }}}
+        agents, probe, _calls, _log = self.poll({("api", "snapshot"): (True, json.dumps(body))})
+        self.assertTrue(probe["herdr_ready"])
+        self.assertEqual(
+            {agent["pane_id"]: agent.get("completion_seq") for agent in agents},
+            {"w1:p1": 19, "w1:p2": None, "w1:p3": None, "w1:p4": None},
+        )
+
+    def test_a_herdr_before_0_9_2_reports_no_completions(self):
+        def snapshot(version, agents=()):
+            return {"result": {"type": "session_snapshot", "snapshot": {
+                "version": version,
+                "panes": [{"pane_id": "w1:p1", "agent": "claude", "agent_status": "idle"}],
+                "agents": list(agents),
+            }}}
+
+        for version, agents, expected in (
+            ("0.9.0", (), False),
+            ("0.9.1", (), False),
+            ("0.9.2", (), True),
+            ("0.9.3", (), True),
+            (None, (), False),
+            # A counter on any row settles it, whatever the version says.
+            ("0.9.1", ({"pane_id": "w1:p1", "completion_seq": 3},), True),
+        ):
+            with self.subTest(version=version, agents=agents):
+                body = json.dumps(snapshot(version, agents))
+                found, _probe, _calls, _log = self.poll({("api", "snapshot"): (True, body)})
+                self.assertEqual([agent["reports_completion"] for agent in found], [expected])
+
     def test_version_parsing(self):
         self.assertEqual((0, 9, 3), herdr._parse_herdr_version("herdr 0.9.3\n"))
         self.assertEqual((0, 8, 4), herdr._parse_herdr_version("herdr 0.8.4-dev"))
