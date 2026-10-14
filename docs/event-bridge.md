@@ -194,8 +194,9 @@ The hub retains 512 events (`MAX_EVENTS` in
 A subscriber that falls behind gets an `events_lost` error ("resubscribe and
 resync with session.snapshot"), and its stream ends
 (`subscription_events_after` in api/subscriptions.rs; CHANGELOG 0.9.2). Herdr
-also drops a subscriber that does not read within 5 s
-(`STREAM_WRITE_TIMEOUT`).
+also drops a subscriber whose writes stall for 5 s — it stopped reading
+and the send buffer filled (`STREAM_WRITE_TIMEOUT`, a socket send timeout).
+A quiet stream with no events is never dropped.
 
 On `events_lost`, EOF, a bridge exit, or ssh's own `ServerAlive` timeout, the
 relay does the same thing:
