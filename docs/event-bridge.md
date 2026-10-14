@@ -226,8 +226,8 @@ Once the bridge ships, the relay retires the plugin path:
 `operation_event` through it. Removing `agent_event` is a native-protocol
 change and needs its own note in `docs/native-protocol.md`. Hosts that still
 have the plugin installed will hit a route that answers 404. That costs
-nothing but a log line, and the README tells operators to run
-`herdr plugin uninstall herdr-remote.relay`.
+nothing but a log line. The README's install section is replaced by one line
+telling operators to run `herdr plugin uninstall herdr-remote.relay`.
 
 ## Not verified
 
