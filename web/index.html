@@ -538,6 +538,7 @@ function handleMessage(msg) {
     }
     agents = msg.agents; render();
     if (activePane) renderQuickActions(agents.find(samePane));
+    openPendingPane();
   } else if (msg.type === 'projects') {
     if (Array.isArray(msg.projects)) projects = msg.projects;
     if (Array.isArray(msg.roots)) projectRoots = msg.roots;
@@ -1491,6 +1492,57 @@ function runCommand(cmd) {
   ws.send(JSON.stringify(panePayload({type:'send_text', text: cmd})));
   ws.send(JSON.stringify(panePayload({type:'send_keys', keys:['Enter']})));
   setTimeout(refreshPane, 500);
+}
+
+// --- Push links ---
+// A blocked push names its pane: the relay sends `/?pane=<id>&host_id=<id>`, and a
+// tap either opens that URL (no window open) or posts {type: 'navigate', url} to the
+// open window (sw.js). Only an agents snapshot says which panes exist, so the link
+// waits for the next one. A snapshot is the whole herd: a link it does not list is
+// spent, because a link kept for later would pull the reader out of whatever they
+// opened next. The ids are only matched against the snapshot, never shown.
+let pendingPaneLink = paneLink(location.href);
+let herdSnapshotSeen = false;
+
+function paneLink(url) {
+  let params;
+  try { params = new URL(url, location.href).searchParams; } catch (e) { return null; }
+  const paneId = params.get('pane');
+  return paneId ? {pane_id: paneId, host_id: params.get('host_id') || 'local'} : null;
+}
+
+function openPendingPane() {
+  herdSnapshotSeen = true;
+  const link = pendingPaneLink;
+  if (!link) return;
+  pendingPaneLink = null;
+  dropPaneLink();
+  const agent = agents.find(a => paneKey(a) === paneKey(link));
+  if (!agent) return;
+  if (activePane) closeTerminal();
+  openTerminal(agent.pane_id, agent.host_id || agent.host || 'local');
+}
+
+// A reload, or a link shared from the address bar, must not reopen the pane.
+function dropPaneLink() {
+  const url = new URL(location.href);
+  if (!url.searchParams.has('pane') && !url.searchParams.has('host_id')) return;
+  url.searchParams.delete('pane');
+  url.searchParams.delete('host_id');
+  history.replaceState(history.state, '', url.pathname + url.search + url.hash);
+}
+
+function followPaneLink(url) {
+  const link = paneLink(url);
+  if (!link) return;
+  pendingPaneLink = link;
+  if (herdSnapshotSeen) openPendingPane();
+}
+
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.addEventListener('message', event => {
+    if (event.data && event.data.type === 'navigate') followPaneLink(event.data.url);
+  });
 }
 
 // --- Web Push ---
