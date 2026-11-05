@@ -54,9 +54,9 @@ PrivateDevices=yes
 PrivateTmp=yes
 ProtectClock=yes
 ProtectControlGroups=yes
-# Blocks the local host's ~/.claude/projects and OpenCode database. Point
-# HERDR_CLAUDE_PROJECTS / HERDR_OPENCODE_DB at readable copies, or relax this
-# deliberately.
+# Blocks the local host's ~/.claude/projects, ~/.codex/sessions and OpenCode
+# database. Point HERDR_CLAUDE_PROJECTS / HERDR_CODEX_SESSIONS / HERDR_OPENCODE_DB
+# at readable copies, or relax this deliberately.
 ProtectHome=yes
 ProtectHostname=yes
 ProtectKernelLogs=yes

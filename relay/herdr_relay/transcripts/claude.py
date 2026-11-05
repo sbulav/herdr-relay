@@ -361,15 +361,19 @@ def transcript_to_blocks(jsonl_text, limit=config.TRANSCRIPT_BLOCK_LIMIT):
     return blocks[-limit:]
 
 
-def cached_transcript_to_blocks(path, jsonl_text, limit=config.TRANSCRIPT_BLOCK_LIMIT):
-    """Parse a transcript once per path/content fingerprint, with bounded eviction."""
-    key = (path or "", len(jsonl_text), hash(jsonl_text), int(limit))
+def cached_transcript_to_blocks(path, jsonl_text, limit=config.TRANSCRIPT_BLOCK_LIMIT, parse=None):
+    """Parse a transcript once per path/content fingerprint, with bounded eviction.
+
+    `parse` is the JSONL reader for another harness's store (Codex); Claude's by default.
+    """
+    parse = parse or transcript_to_blocks
+    key = (parse, path or "", len(jsonl_text), hash(jsonl_text), int(limit))
     with _PARSE_CACHE_LOCK:
         cached = _PARSE_CACHE.get(key)
         if cached is not None:
             _PARSE_CACHE.move_to_end(key)
             return cached
-    parsed = transcript_to_blocks(jsonl_text, limit=limit)
+    parsed = parse(jsonl_text, limit=limit)
     with _PARSE_CACHE_LOCK:
         _PARSE_CACHE[key] = parsed
         _PARSE_CACHE.move_to_end(key)

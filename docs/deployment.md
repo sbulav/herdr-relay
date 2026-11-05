@@ -170,6 +170,7 @@ Everything the relay reads. Only the first is mandatory.
 | `HERDR_SSH_CONTROL_PERSIST` | `60` | `ControlPersist` seconds — how long an idle master connection lingers. Keep it above `HERDR_POLL_INTERVAL_MAX` |
 | `HERDR_CLAUDE_PROJECTS` | `~/.claude/projects` | Root of the Claude Code session store. Explicit session paths are accepted only below this root |
 | `HERDR_OPENCODE_DB` | `~/.local/share/opencode/opencode.db` | OpenCode session store |
+| `HERDR_CODEX_SESSIONS` | empty | Root of the Codex rollout store, on the local host and on every remote. Empty means each host's own `$CODEX_HOME/sessions`, else `~/.codex/sessions`. Rollouts are accepted only below this root |
 | `HERDR_TRANSCRIPT_HISTORY_MAX_BYTES` | `8388608` | Maximum transcript bytes read for an explicit structured history page |
 | `HERDR_TRANSCRIPT_HISTORY_BLOCK_LIMIT` | `2000` | Maximum parsed blocks retained for explicit history paging |
 | `HERDR_TRANSCRIPT_PAGE_MAX_BYTES` | `65536` | Default UTF-8 JSON byte budget for one structured history page |
@@ -349,16 +350,17 @@ capability, and run fixed commands.
 ## Hardened units and local transcripts
 
 `ProtectHome` and `DynamicUser` both cut the relay off from a human user's
-`~/.claude/projects` and OpenCode database, so the local host's transcript blocks
-come back empty even though pane state still works. Either point
-`HERDR_CLAUDE_PROJECTS` and `HERDR_OPENCODE_DB` at readable copies, or relax
-`ProtectHome` deliberately — `systemd.services.herdr-relay.serviceConfig
+`~/.claude/projects`, `~/.codex/sessions` and OpenCode database, so the local
+host's transcript blocks come back empty even though pane state still works.
+Either point `HERDR_CLAUDE_PROJECTS`, `HERDR_CODEX_SESSIONS` and
+`HERDR_OPENCODE_DB` at readable copies, or relax `ProtectHome` deliberately — `systemd.services.herdr-relay.serviceConfig
 .ProtectHome = lib.mkForce "read-only"` — and grant access on purpose. Remotes
 are unaffected: those transcripts are read over SSH as the remote user.
 
 Herdr session references are treated as untrusted correlation hints. Claude IDs
-must be UUIDs, references are bound to the pane's harness, and explicit local or
-remote paths must resolve below `HERDR_CLAUDE_PROJECTS`. A missing exact session
+and Codex IDs must be UUIDs, references are bound to the pane's harness, explicit
+local or remote paths must resolve below `HERDR_CLAUDE_PROJECTS`, and a Codex
+rollout must be a regular file, not a link, below the Codex sessions root. A missing exact session
 returns no structured blocks; it is never replaced with the newest transcript
 from the same working directory.
 
