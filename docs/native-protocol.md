@@ -498,7 +498,11 @@ A numbered menu is offered whole, as the last complete `1`..`N` run of two or
 more rows on screen:
 
 - A row is a number followed by `.` or `)`, optionally after a cursor marker
-  (`❯`, `>`, `›`, `»`, `▶`). A `N)` row is offered as `N. label`.
+  (`❯`, `>`, `›`, `»`, `▶`, `●`). A `N)` row is offered as `N. label`.
+- A row drawn inside a box (`│` on its left, and on its right when it fits) is
+  read without its borders, so a boxed menu offers what the same menu offers
+  unboxed. A line with a `│` between its borders is a table row, not a box
+  row, and is read as it stands.
 - A line indented deeper than the row's number continues its label: a wrapped
   option, or a question's description under its answer, joins the label with
   one space.
@@ -521,8 +525,10 @@ and none of that makes a new dialog. Identity is the host, the pane, the
   drawn inside the menu — one with an option line directly above it — does
   not end the block. Lines below the last option (footer hints) are not part
   of it.
-- Within the block, indentation, cursor markers (`❯`, `›`, `>`), blank lines,
-  UI chrome, and `Tip:` lines are ignored.
+- Lines are read without their box borders, as menu rows are, so the edge
+  of a box around the question ends the block.
+- Within the block, indentation, cursor markers (`❯`, `›`, `>`, and `●` before
+  a number), blank lines, UI chrome, and `Tip:` lines are ignored.
 - A prompt with no line offering a choice — a pushed event, a bare question, or
   a one-letter `y`/`n` choice set, which never anchors a block — is identified
   by all of its text.
