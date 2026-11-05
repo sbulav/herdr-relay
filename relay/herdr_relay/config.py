@@ -130,7 +130,7 @@ PROJECTS_DB = os.environ.get(
 WAKE_BIN = os.environ.get("HERDR_WAKE_BIN", "wakeonlan")
 # Native structured stores used by supported coding agents.
 CLAUDE_PROJECTS = os.environ.get("HERDR_CLAUDE_PROJECTS", "~/.claude/projects")
-OPENCODE_DB = os.environ.get("HERDR_OPENCODE_DB", "~/.local/share/opencode/opencode-stable.db")
+OPENCODE_DB = os.environ.get("HERDR_OPENCODE_DB", "~/.local/share/opencode/opencode.db")
 TRANSCRIPT_MAX_BYTES = 262144  # tail window read per poll — bounds ssh transfer
 TRANSCRIPT_BLOCK_LIMIT = 200   # most recent blocks kept per session
 def _positive_int_env(name, default):

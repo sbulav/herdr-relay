@@ -5,6 +5,7 @@ import os
 import shlex
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -3586,6 +3587,170 @@ class EventPushRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(events, [])
         self.assertIn(b"publicKey", response.body)
+
+
+
+class OpenCodeStoreTests(unittest.TestCase):
+    """The reader against both of OpenCode's storage layouts (#95)."""
+
+    V1_SCHEMA = """
+        CREATE TABLE session (id TEXT, directory TEXT, parent_id TEXT, time_updated INTEGER);
+        CREATE TABLE message (id TEXT, session_id TEXT, data TEXT, time_created INTEGER);
+        CREATE TABLE part (id TEXT, message_id TEXT, data TEXT, time_created INTEGER);
+    """
+    # The columns the reader touches, as OpenCode 2.2.5 declares them.
+    V2_SCHEMA = """
+        CREATE TABLE session_v2 (id TEXT PRIMARY KEY, parent_id TEXT, directory TEXT NOT NULL,
+            time_updated INTEGER NOT NULL);
+        CREATE TABLE session_message (id TEXT PRIMARY KEY, session_id TEXT NOT NULL,
+            type TEXT NOT NULL, seq INTEGER NOT NULL, time_created INTEGER NOT NULL,
+            time_updated INTEGER NOT NULL, data TEXT NOT NULL);
+    """
+    PART_SCHEMA = """
+        CREATE TABLE session_part (message_id TEXT NOT NULL, session_id TEXT NOT NULL,
+            ordinal INTEGER NOT NULL, type TEXT NOT NULL, call_id TEXT,
+            time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL,
+            PRIMARY KEY (message_id, ordinal));
+    """
+
+    EPOCH_MS = 1_760_000_000_000  # OpenCode stores epoch milliseconds
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.db_path = os.path.join(directory.name, "opencode.db")
+
+    def build(self, script, sessions=(), messages=(), parts=()):
+        db = sqlite3.connect(self.db_path)
+        try:
+            db.executescript(script)
+            db.executemany("INSERT INTO session_v2 VALUES (?, ?, ?, ?)", sessions)
+            db.executemany("INSERT INTO session_message VALUES (?, ?, ?, ?, ?, ?, ?)", [
+                (mid, sid, kind, seq, self.EPOCH_MS + seq, self.EPOCH_MS + seq, json.dumps(data))
+                for mid, sid, kind, seq, data in messages
+            ])
+            if parts:
+                db.executemany("INSERT INTO session_part VALUES (?, ?, ?, ?, ?, ?, ?, ?)", [
+                    (mid, sid, ordinal, data["type"], data.get("id"), 1, 1, json.dumps(data))
+                    for mid, sid, ordinal, data in parts
+                ])
+            db.commit()
+        finally:
+            db.close()
+
+    def v2_session(self, part_rows=False):
+        """A 2.x store: an older top-level session, a subagent, and the live one."""
+        tool = {
+            "type": "tool", "id": "call_1", "name": "shell",
+            "state": {"status": "completed", "input": {"command": "git status"},
+                      "content": [{"type": "text", "text": "x" * 10000}]},
+        }
+        content = [{"type": "reasoning", "text": "Look first\nthen act"},
+                   {"type": "text", "text": "Checking."}, tool]
+        self.build(
+            self.V2_SCHEMA + (self.PART_SCHEMA if part_rows else ""),
+            sessions=[("ses_old", None, "/repo", 1), ("ses_sub", "ses_live", "/repo", 9),
+                      ("ses_live", None, "/repo", 5)],
+            messages=[
+                ("msg_u", "ses_live", "user", 1, {"text": "fix it", "files": []}),
+                ("msg_a", "ses_live", "assistant", 2,
+                 {"content": [] if part_rows else content, "agent": "build"}),
+                ("msg_s", "ses_live", "synthetic", 3, {"text": "<shell>noise</shell>"}),
+                ("msg_x", "ses_sub", "user", 1, {"text": "subagent"}),
+            ],
+            parts=[("msg_a", "ses_live", ordinal, part) for ordinal, part in enumerate(content)]
+            if part_rows else (),
+        )
+
+    def blocks(self, cwd="/repo", session_id=None):
+        with patch.object(herdr_relay.config, "OPENCODE_DB", self.db_path):
+            document = herdr_relay.transcripts.opencode.read_opencode(cwd, session_id=session_id)
+        return document, herdr_relay.transcripts.opencode.opencode_to_blocks(document)
+
+    def test_v2_inline_content(self):
+        self.v2_session()
+        document, blocks = self.blocks()
+        self.assertEqual(document["session_id"], "ses_live")
+        self.assertEqual(
+            [(block["id"], block["kind"], block.get("text") or block.get("markdown")) for block in blocks],
+            [("o:msg_u:0", "status", "fix it"),
+             ("o:msg_a:0", "status", "Look first"),
+             ("o:msg_a:1", "assistant_text", "Checking."),
+             ("o:call_1", "tool", "git status")],
+        )
+        self.assertEqual(blocks[3]["label"], "shell")
+        self.assertEqual(blocks[0]["timestamp"], self.EPOCH_MS + 1)
+        # The tool's output stays on the host it was read on.
+        self.assertNotIn("xxxx", json.dumps(document))
+
+    def test_v2_part_rows_read_like_inline_content(self):
+        self.v2_session()
+        _document, inline = self.blocks()
+        os.remove(self.db_path)
+        self.v2_session(part_rows=True)
+        _document, rows = self.blocks()
+        self.assertEqual(rows, inline)
+
+    def test_v2_lookup_by_session_id(self):
+        self.v2_session()
+        document, blocks = self.blocks(cwd=None, session_id="ses_sub")
+        self.assertEqual(document["session_id"], "ses_sub")
+        self.assertEqual(blocks[0]["text"], "subagent")
+
+    def test_v2_tables_win_over_the_1x_ones_an_upgrade_leaves(self):
+        self.v2_session()
+        db = sqlite3.connect(self.db_path)
+        try:
+            db.executescript(self.V1_SCHEMA)
+            db.execute("INSERT INTO session VALUES ('ses_pre', '/repo', NULL, 99)")
+            db.commit()
+        finally:
+            db.close()
+        document, _blocks = self.blocks()
+        self.assertEqual(document["session_id"], "ses_live")
+
+    def test_v1_store_is_still_read(self):
+        db = sqlite3.connect(self.db_path)
+        try:
+            db.executescript(self.V1_SCHEMA)
+            db.execute("INSERT INTO session VALUES ('ses_1', '/repo', NULL, 1)")
+            db.execute("INSERT INTO message VALUES ('m1', 'ses_1', '{\"role\": \"user\"}', 1)")
+            db.execute("INSERT INTO part VALUES ('p1', 'm1', '{\"type\": \"text\", \"text\": \"hi\"}', 1)")
+            db.commit()
+        finally:
+            db.close()
+        _document, blocks = self.blocks()
+        self.assertEqual([(block["id"], block["text"]) for block in blocks], [("o:p1", "hi")])
+
+    def test_store_without_sessions_reads_as_nothing(self):
+        sqlite3.connect(self.db_path).close()
+        document, blocks = self.blocks()
+        self.assertIsNone(document)
+        self.assertEqual(blocks, [])
+
+    def test_remote_hosts_run_the_same_reader(self):
+        """The SSH script is the local reader's own source, run by a bare python3."""
+        self.v2_session(part_rows=True)
+        local, _blocks = self.blocks()
+        captured = {}
+        # The patch replaces subprocess.run everywhere, so keep the real one.
+        run = subprocess.run
+
+        def ssh(argv, **_kwargs):
+            # argv[-1] is the remote shell command; run it as the far side would.
+            captured["command"] = argv[-1]
+            command = argv[-1].replace(
+                shlex.quote(herdr_relay.config.OPENCODE_DB), shlex.quote(self.db_path)
+            )
+            return run(
+                ["sh", "-c", command.replace("python3", shlex.quote(sys.executable) + " -I", 1)],
+                capture_output=True, text=True, timeout=15,
+            )
+
+        with patch.object(herdr_relay.transcripts.opencode.subprocess, "run", side_effect=ssh):
+            remote = herdr_relay.transcripts.opencode.read_opencode("/repo", remote="buildbox")
+        self.assertTrue(captured["command"].startswith("python3 -c "))
+        self.assertEqual(remote, json.loads(json.dumps(local)))
 
 
 if __name__ == "__main__":
