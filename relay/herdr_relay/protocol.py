@@ -1,4 +1,5 @@
 """The frames themselves: what the relay puts on the wire, and what it withholds."""
+import re
 import time
 
 from . import config, state
@@ -26,12 +27,39 @@ def public_text(value, maximum=DISPLAY_NAME_MAX_CHARS):
     return text or None
 
 
-def public_identifier(value):
-    """Sanitize a public ID without truncating its identity."""
-    if not isinstance(value, str):
+# What herdr itself produces as a pane, workspace or tab id: `w1-p2`, and the
+# `%22` a tmux-style pane carries. Matched whole with fullmatch, never `$`,
+# which would accept a trailing newline.
+HERDR_ID_RE = re.compile(r"[A-Za-z0-9:_.%-]{1,128}")
+# Each refused value is logged once. The set is cleared when full, so a host
+# that keeps sending new junk costs bounded memory and an occasional repeat.
+REFUSED_ID_MEMORY = 512
+_refused_ids = set()
+
+
+def herdr_id(value, field="id"):
+    """`value` when herdr could have produced it as an id, else None.
+
+    An id is checked, never rewritten: one stripped of a bad character would
+    be a different id, and could name another pane. Absent and empty values
+    are None without comment; anything else refused is logged once.
+    """
+    if value is None or value == "":
         return None
-    value = "".join(char for char in value if char.isprintable())
-    return value or None
+    if isinstance(value, str) and HERDR_ID_RE.fullmatch(value):
+        return value
+    refused = (field, repr(value)[:160])
+    if refused not in _refused_ids:
+        if len(_refused_ids) >= REFUSED_ID_MEMORY:
+            _refused_ids.clear()
+        _refused_ids.add(refused)
+        config.log.warning("Refused a malformed herdr %s: %s", field, refused[1])
+    return None
+
+
+def public_identifier(value, field="id"):
+    """A herdr id fit for the wire, or None (see herdr_id)."""
+    return herdr_id(value, field)
 
 
 def server_info():
@@ -82,9 +110,11 @@ def public_agents(agents):
                     public[field] = value
         for field in ("workspace_id", "tab_id"):
             if field in public:
-                value = public_identifier(public[field])
+                value = public_identifier(public[field], field)
                 if value is None:
+                    # A label never outlives the id it names.
                     public.pop(field, None)
+                    public.pop(field.removesuffix("_id") + "_name", None)
                 else:
                     public[field] = value
         if "completion_seq" in public and completion_counter(public["completion_seq"]) is None:
@@ -162,19 +192,19 @@ def add_pane_metadata(entry, pane_id, host_id=None, status=None):
     workspace = state.get(state.pane_workspace_map, key)
     if isinstance(workspace, tuple) and len(workspace) == 2:
         workspace_id, workspace_name = workspace
-        workspace_id = public_identifier(workspace_id)
+        workspace_id = public_identifier(workspace_id, "workspace_id")
         if workspace_id:
             entry["workspace_id"] = workspace_id
-        if isinstance(workspace_name, str) and workspace_name:
-            entry["workspace_name"] = workspace_name
+            if isinstance(workspace_name, str) and workspace_name:
+                entry["workspace_name"] = workspace_name
     tab = state.get(state.pane_tab_map, key)
     if isinstance(tab, tuple) and len(tab) == 2:
         tab_id, tab_name = tab
-        tab_id = public_identifier(tab_id)
+        tab_id = public_identifier(tab_id, "tab_id")
         if tab_id:
             entry["tab_id"] = tab_id
-        if isinstance(tab_name, str) and tab_name:
-            entry["tab_name"] = tab_name
+            if isinstance(tab_name, str) and tab_name:
+                entry["tab_name"] = tab_name
 
     effective_status = status if isinstance(status, str) else entry.get("status")
     if not isinstance(effective_status, str):

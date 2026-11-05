@@ -221,6 +221,13 @@ included, is the last polled value, not something the event reported.
 | `output_revision` | integer | Optional | Additive monotonic per-pane output revision reported by `herdr`; omitted when unavailable or invalid. |
 | `completion_seq` | integer | Optional | Additive non-negative counter herdr sets while an agent is idle after finishing work: the pane's state-change sequence at that idle transition. Omitted while the agent works, is blocked, or sits in an idle that completed nothing. A new value means a new finished turn; it is not a running total and restarts from zero when herdr restarts, so compare it for change, not for order. A partial event agent carries the last polled value. |
 
+Herdr's ids reach the relay from every polled host and from pushed events, so
+`pane_id`, `workspace_id` and `tab_id` are checked before the relay keeps them:
+each is 1 to 128 characters from `A-Z`, `a-z`, `0-9` and `: _ . % -`, the set
+herdr's own ids use. An id outside it is refused, never repaired. A pane row
+whose `pane_id` is refused is dropped. A refused `workspace_id` or `tab_id` is
+omitted, along with the name that goes with it, and the pane stays listed.
+
 The relay's own SSH routing never appears here. A pane is addressed by `host` and
 `pane_id`; the SSH target behind a host is server-side state, resolved from the
 host configuration file and withheld by `public_agents()`.
@@ -753,7 +760,7 @@ host and Herdr failures are `command_error` (see [`create_tab`](#create_tab)).
 | `response not in allowlist` | Normalized `respond.text` is not globally safe or detected for that pane. |
 | `keys contain disallowed values` | At least one `send_keys.keys` value fails the key allowlist. |
 | `text empty or too long` | `send_text.text` is empty or longer than 1,000 characters. |
-| `workspace_id required` | `create_tab.workspace_id` is absent or empty. |
+| `workspace_id required` | `create_tab.workspace_id` is absent, empty, or not a Herdr id (see [`agents`](#agents)). |
 | `rate limited, slow down` | The connection exceeded its [rate limit](#rate-limiting) on a pane command. The command did not run. |
 
 ```json
@@ -1165,23 +1172,24 @@ completion counter: the partial `agents` frame takes `completion_seq` and
 | Name | Type | Presence | Meaning |
 | --- | --- | --- | --- |
 | `type` | string | Required | Always `"agent_event"`. |
-| `pane_id` | string | Optional | Pane identifier. A non-empty value is required for either broadcast. |
+| `pane_id` | string | Optional | Pane identifier. A non-empty value is required for either broadcast; an event whose `pane_id` is not a Herdr id is dropped. |
 | `status` | string | Optional | Agent status; defaults to an empty string. `"blocked"` triggers a `blocked` frame. |
 | `host` | string | Optional | Host label; defaults to `"local"`. |
 | `prompt` | string | Optional | Fallback blocked prompt when the pane cannot be read locally or through a known remote; defaults to `"Agent is blocked"`. |
 | `agent` | string | Optional | Agent name in emitted frames; defaults to an empty string. |
 | `project` | string | Optional | Project name in emitted frames; defaults to an empty string. |
 | `cwd` | string | Optional | Working directory in the partial `agents` frame; defaults to an empty string. |
-| `workspace_id` | string | Optional | Herdr workspace identifier; emitted unchanged (apart from control-character removal) when supplied and valid. |
-| `workspace_name` | string | Optional | Herdr workspace label; whitespace-normalized and bounded to 160 characters, then omitted when empty or invalid. |
-| `tab_id` | string | Optional | Herdr tab identifier; emitted unchanged (apart from control-character removal) when supplied and valid. |
-| `tab_name` | string | Optional | Herdr tab label; whitespace-normalized and bounded to 160 characters, then omitted when empty or invalid. |
+| `workspace_id` | string | Optional | Herdr workspace identifier; emitted unchanged when it is a Herdr id, and dropped otherwise. |
+| `workspace_name` | string | Optional | Herdr workspace label; whitespace-normalized and bounded to 160 characters, then omitted when empty, invalid, or when `workspace_id` is dropped. |
+| `tab_id` | string | Optional | Herdr tab identifier; emitted unchanged when it is a Herdr id, and dropped otherwise. |
+| `tab_name` | string | Optional | Herdr tab label; whitespace-normalized and bounded to 160 characters, then omitted when empty, invalid, or when `tab_id` is dropped. |
 | `activity_title` | string | Optional | Current Herdr activity title; whitespace-normalized and bounded to 160 characters, and emitted only when `status` is `working`. |
 
-Identity and display metadata is sanitized by the relay: control characters are
-removed from identifiers, while display labels and titles are whitespace-
-normalized and bounded to 160 characters before they reach any frame. Missing
-metadata is omitted. A title is working-only and is omitted for blocked, done,
+Identity and display metadata is checked by the relay before it reaches any
+frame. An identifier is never rewritten: one herdr could not have produced is
+dropped, together with the label that names it. Display labels and titles are
+whitespace-normalized and bounded to 160 characters. Missing metadata is
+omitted. A title is working-only and is omitted for blocked, done,
 idle, unknown, or empty statuses.
 
 For a blocked event, the relay reads current pane content instead of `prompt`
@@ -1390,7 +1398,7 @@ runs `herdr tab create` over that host's SSH target with its Herdr command.
 | Name | Type | Presence | Meaning |
 | --- | --- | --- | --- |
 | `type` | string | Required | Always `"create_tab"`. |
-| `workspace_id` | string | Required | Non-empty workspace identifier passed to `herdr tab create --workspace`. |
+| `workspace_id` | string | Required | Herdr workspace identifier passed to `herdr tab create --workspace`, as an `agents` entry carries it. |
 | `host_id` | string | Optional | Configured host that owns the workspace. Absent means the relay's own Herdr, the meaning this frame had before `host_id` existed. |
 | `request_id` | string | Optional | Correlates the answer. Echoed on `tab_created` and carried on `command_error`. |
 
@@ -1403,8 +1411,8 @@ The answer is exactly one frame:
 - `command_error` `UNKNOWN_HOST` when `host_id` names no configured host,
   `INVALID_REQUEST` for a malformed `request_id` (with a `null` `request_id`
   in the reply), or `RATE_LIMITED`. None of these reaches Herdr.
-- [`error`](#error) `workspace_id required` when `workspace_id` is absent or
-  empty.
+- [`error`](#error) `workspace_id required` when `workspace_id` is absent,
+  empty, or not a Herdr id. Herdr is not called.
 
 Every answer except `HERDR_FAILED` is cached per connection like any typed
 answer: repeating a `request_id` replays it — a `tab_created` without making a

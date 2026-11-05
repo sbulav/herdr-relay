@@ -30,9 +30,12 @@ def _valid_observation(value):
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
-def _metadata_value(value, *, identifier=False):
-    """Normalize one optional Herdr identity/display value for wire use."""
-    return protocol.public_identifier(value) if identifier else protocol.public_text(value)
+def _metadata_value(value, *, identifier=None):
+    """Normalize one optional Herdr identity/display value for wire use.
+
+    `identifier` names the id field the value is, for the refusal log.
+    """
+    return protocol.public_identifier(value, identifier) if identifier else protocol.public_text(value)
 
 
 def ensure(
@@ -51,11 +54,14 @@ def ensure(
     # that fallback into a claimed capability.
     normalized_choices = list(choices or [])
     observation = _valid_observation(observation)
+    workspace_id = _metadata_value(workspace_id, identifier="workspace_id")
+    tab_id = _metadata_value(tab_id, identifier="tab_id")
+    # A label names its id, so one whose id was refused goes with it.
     metadata = {
-        "workspace_id": _metadata_value(workspace_id, identifier=True),
-        "workspace_name": _metadata_value(workspace_name),
-        "tab_id": _metadata_value(tab_id, identifier=True),
-        "tab_name": _metadata_value(tab_name),
+        "workspace_id": workspace_id,
+        "workspace_name": _metadata_value(workspace_name) if workspace_id else None,
+        "tab_id": tab_id,
+        "tab_name": _metadata_value(tab_name) if tab_id else None,
     }
     prompt_key = _prompt_key(
         prompt or "", normalized_choices, agent=agent, project=project, host=host
@@ -151,10 +157,14 @@ def frame(dialog, *, reduced=False):
             "project": dialog["project"],
             "host": dialog["host"],
         })
-    for field in ("workspace_id", "workspace_name", "tab_id", "tab_name"):
-        value = _metadata_value(dialog.get(field), identifier=field.endswith("_id"))
-        if value:
-            result[field] = value
+    for prefix in ("workspace", "tab"):
+        identifier = _metadata_value(dialog.get(f"{prefix}_id"), identifier=f"{prefix}_id")
+        if not identifier:
+            continue
+        result[f"{prefix}_id"] = identifier
+        label = _metadata_value(dialog.get(f"{prefix}_name"))
+        if label:
+            result[f"{prefix}_name"] = label
     # Activity titles are meaningful only while the agent is working. Blocked
     # dialogs are waiting-state frames, so deliberately omit this field.
     return result
