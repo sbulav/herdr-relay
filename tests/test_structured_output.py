@@ -1156,7 +1156,9 @@ class StructuredOutputTests(unittest.TestCase):
             )
             if status == "blocked":
                 self.assertEqual(frames[1]["prompt"], prompt)
-                self.assertEqual(frames[1]["options"], herdr_relay.panes.OPENCODE_OPTIONS)
+                # The title without its button row: only the labels whose
+                # keys are the same in OpenCode 1.x and 2.x are offered.
+                self.assertEqual(frames[1]["options"], herdr_relay.panes.OPENCODE_SAFE_OPTIONS)
 
     def test_read_pane_keeps_remote_dialog_identity(self):
         class Socket:
@@ -1987,11 +1989,77 @@ class DetectOptionsTests(unittest.TestCase):
             "  Allow once   Allow always   Reject\n"
             "  ↔ select   enter confirm   esc dismiss\n"
         )
-        self.assertEqual(herdr_relay.panes.detect_options(text), herdr_relay.panes.OPENCODE_OPTIONS)
+        self.assertEqual(
+            herdr_relay.panes.detect_options(text),
+            ["Allow once", "Allow always", "Reject"],
+        )
 
-    def test_opencode_allow_once_phrase(self):
+    def test_opencode_2_row_with_save_patterns(self):
+        text = (
+            "△ Permission required\n"
+            "  $ git push origin main\n"
+            "  Allow once   Always allow   Reject\n"
+            "  ⇆ select   enter confirm\n"
+        )
+        self.assertEqual(
+            herdr_relay.panes.detect_options(text),
+            ["Allow once", "Always allow", "Reject"],
+        )
+
+    def test_opencode_2_row_without_save_patterns_offers_no_always(self):
+        """2.x leaves Always allow out when the request has nothing to save.
+
+        Offering it anyway would send Right, Enter -- and Right from Allow
+        once lands on Reject.
+        """
+        text = (
+            "△ Permission required\n"
+            "  ← Access external directory /etc\n"
+            "  Allow once   Reject\n"
+        )
+        self.assertEqual(herdr_relay.panes.detect_options(text), ["Allow once", "Reject"])
+
+    def test_opencode_body_text_is_not_a_button_row(self):
+        """Only a line that starts with Allow once and ends with Reject counts."""
+        text = (
+            "△ Permission required\n"
+            "  $ grep -n 'Reject' src/permission.tsx\n"
+            "  This will always allow `grep *` until OpenCode is restarted.\n"
+            "  Allow once   Always allow   Reject\n"
+        )
+        self.assertEqual(
+            herdr_relay.panes.detect_options(text),
+            ["Allow once", "Always allow", "Reject"],
+        )
+
+    def test_opencode_title_without_row_offers_the_safe_subset(self):
+        """Labels on separate lines are not a row; the title still names the dialog."""
         text = "Allow once\nAllow always\nReject\nPermission required"
-        self.assertEqual(herdr_relay.panes.detect_options(text), herdr_relay.panes.OPENCODE_OPTIONS)
+        self.assertEqual(
+            herdr_relay.panes.detect_options(text),
+            herdr_relay.panes.OPENCODE_SAFE_OPTIONS,
+        )
+
+    def test_opencode_reject_reason_step(self):
+        text = (
+            "△ Permission required\n"
+            "  Allow once   Always allow   Reject\n"
+            "△ Reject permission\n"
+            "  Tell OpenCode what to do differently\n"
+            "  enter confirm   esc cancel\n"
+        )
+        self.assertEqual(
+            herdr_relay.panes.detect_options(text),
+            herdr_relay.panes.OPENCODE_REJECT_OPTIONS,
+        )
+
+    def test_opencode_button_row_below_an_old_reject_step_wins(self):
+        text = (
+            "  Tell OpenCode what to do differently\n"
+            "△ Permission required\n"
+            "  Allow once   Reject\n"
+        )
+        self.assertEqual(herdr_relay.panes.detect_options(text), ["Allow once", "Reject"])
 
     def test_yn_style(self):
         self.assertEqual(herdr_relay.panes.detect_options("Continue? [y/n]"), ["y", "n"])
@@ -2011,7 +2079,18 @@ class DetectOptionsTests(unittest.TestCase):
             herdr_relay.panes.respond_action("Allow always"),
             ("keys", ["Right", "Enter", "Enter"]),
         )
+        # 2.x has no confirm step after Always allow
+        self.assertEqual(
+            herdr_relay.panes.respond_action("Always allow"),
+            ("keys", ["Right", "Enter"]),
+        )
         self.assertEqual(herdr_relay.panes.respond_action("Reject"), ("keys", ["Escape"]))
+        self.assertEqual(
+            herdr_relay.panes.respond_action("Confirm rejection"), ("keys", ["Enter"])
+        )
+        self.assertEqual(
+            herdr_relay.panes.respond_action("Cancel rejection"), ("keys", ["Escape"])
+        )
         self.assertEqual(herdr_relay.panes.respond_action("1. Yes"), ("text", "1"))
         self.assertEqual(herdr_relay.panes.respond_action("y"), ("text", "y"))
         # Free-text deny must not be remapped to Escape keys
