@@ -157,9 +157,15 @@ class Issue61MetadataTests(unittest.TestCase):
             workspace_name=value, tab_id=value, tab_name=value,
         )
         frame = herdr_relay.dialogs.frame(dialog)
-        # An id is never repaired (#98): one that is not herdr's shape is left out.
-        for field in ("workspace_id", "tab_id"):
+        # An id is never repaired (#98): one that is not herdr's shape is left
+        # out, and the label naming it with it.
+        for field in ("workspace_id", "workspace_name", "tab_id", "tab_name"):
             self.assertNotIn(field, frame)
+        dialog = herdr_relay.dialogs.ensure(
+            "pane-8", "Approve?", ["Yes"], workspace_id="ws-1",
+            workspace_name=value, tab_id="tab-1", tab_name=value,
+        )
+        frame = herdr_relay.dialogs.frame(dialog)
         for field in ("workspace_name", "tab_name"):
             self.assertNotIn("\x00", frame[field])
             self.assertNotIn("\n", frame[field])

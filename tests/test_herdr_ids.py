@@ -154,6 +154,24 @@ class PushedEventTests(unittest.TestCase):
         self.assertEqual("ws-a", agent["workspace_id"])
         self.assertNotIn("tab_id", agent)
 
+    def test_a_pushed_id_that_is_not_a_string_is_refused_aloud(self):
+        for value in (7, ["t1"], {"id": "t1"}):
+            with self.subTest(value=value), self.assertLogs(herdr_relay.config.log) as logs:
+                protocol._refused_ids.clear()
+                herdr_relay.transport._merge_pushed_identity(
+                    state.pane_tab_map, self.key, value, "Tab", "tab_id",
+                )
+            self.assertNotIn(self.key, state.pane_tab_map)
+            self.assertIn("tab_id", logs.output[0])
+
+    def test_a_pushed_label_never_outlives_a_refused_id(self):
+        state.pane_workspace_map[self.key] = ("ws\n-1", "Relay")
+        entry = {}
+        with self.assertLogs(herdr_relay.config.log):
+            protocol.add_pane_metadata(entry, "w1-p2", "local")
+        self.assertNotIn("workspace_id", entry)
+        self.assertNotIn("workspace_name", entry)
+
     def test_a_tmux_pane_id_is_still_a_pane_id(self):
         self.assertEqual("%22", protocol.herdr_id("%22"))
 

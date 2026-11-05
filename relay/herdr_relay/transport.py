@@ -17,8 +17,6 @@ from .config import log
 
 def _merge_pushed_identity(mapping, key, identifier, label, field):
     """Merge one pushed ID/label pair without borrowing labels across IDs."""
-    if not isinstance(identifier, str) or not identifier:
-        return
     identifier = protocol.public_identifier(identifier, field)
     if not identifier:
         return

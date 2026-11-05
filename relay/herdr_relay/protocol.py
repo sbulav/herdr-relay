@@ -193,16 +193,16 @@ def add_pane_metadata(entry, pane_id, host_id=None, status=None):
         workspace_id = public_identifier(workspace_id, "workspace_id")
         if workspace_id:
             entry["workspace_id"] = workspace_id
-        if isinstance(workspace_name, str) and workspace_name:
-            entry["workspace_name"] = workspace_name
+            if isinstance(workspace_name, str) and workspace_name:
+                entry["workspace_name"] = workspace_name
     tab = state.get(state.pane_tab_map, key)
     if isinstance(tab, tuple) and len(tab) == 2:
         tab_id, tab_name = tab
         tab_id = public_identifier(tab_id, "tab_id")
         if tab_id:
             entry["tab_id"] = tab_id
-        if isinstance(tab_name, str) and tab_name:
-            entry["tab_name"] = tab_name
+            if isinstance(tab_name, str) and tab_name:
+                entry["tab_name"] = tab_name
 
     effective_status = status if isinstance(status, str) else entry.get("status")
     if not isinstance(effective_status, str):

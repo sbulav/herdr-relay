@@ -1180,15 +1180,16 @@ completion counter: the partial `agents` frame takes `completion_seq` and
 | `project` | string | Optional | Project name in emitted frames; defaults to an empty string. |
 | `cwd` | string | Optional | Working directory in the partial `agents` frame; defaults to an empty string. |
 | `workspace_id` | string | Optional | Herdr workspace identifier; emitted unchanged when it is a Herdr id, and dropped otherwise. |
-| `workspace_name` | string | Optional | Herdr workspace label; whitespace-normalized and bounded to 160 characters, then omitted when empty or invalid. |
+| `workspace_name` | string | Optional | Herdr workspace label; whitespace-normalized and bounded to 160 characters, then omitted when empty, invalid, or when `workspace_id` is dropped. |
 | `tab_id` | string | Optional | Herdr tab identifier; emitted unchanged when it is a Herdr id, and dropped otherwise. |
-| `tab_name` | string | Optional | Herdr tab label; whitespace-normalized and bounded to 160 characters, then omitted when empty or invalid. |
+| `tab_name` | string | Optional | Herdr tab label; whitespace-normalized and bounded to 160 characters, then omitted when empty, invalid, or when `tab_id` is dropped. |
 | `activity_title` | string | Optional | Current Herdr activity title; whitespace-normalized and bounded to 160 characters, and emitted only when `status` is `working`. |
 
-Identity and display metadata is sanitized by the relay: control characters are
-removed from identifiers, while display labels and titles are whitespace-
-normalized and bounded to 160 characters before they reach any frame. Missing
-metadata is omitted. A title is working-only and is omitted for blocked, done,
+Identity and display metadata is checked by the relay before it reaches any
+frame. An identifier is never rewritten: one herdr could not have produced is
+dropped, together with the label that names it. Display labels and titles are
+whitespace-normalized and bounded to 160 characters. Missing metadata is
+omitted. A title is working-only and is omitted for blocked, done,
 idle, unknown, or empty statuses.
 
 For a blocked event, the relay reads current pane content instead of `prompt`
