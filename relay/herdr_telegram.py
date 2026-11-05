@@ -487,21 +487,12 @@ def _option_label(opt: str) -> str:
     return m.group(1) if m else opt
 
 
-OPENCODE_BUTTONS = [
-    ("Allow once", "Allow once"),
-    ("Allow always", "Allow always"),
-    ("Reject", "Reject"),
-]
-
-
 def make_keyboard(host_id: str, pane_id: str, options: list[str] | None) -> InlineKeyboardMarkup:
     joined = " ".join(options or []).lower()
     if options and "yes, single permission" in joined:
         buttons = TOOL_BUTTONS
     elif options and "approve all" in joined:
         buttons = SUBAGENT_BUTTONS
-    elif options and ("allow once" in joined or "allow always" in joined):
-        buttons = OPENCODE_BUTTONS
     else:
         buttons = [(_option_label(opt), opt) for opt in (options or ["1. Yes", "2. No"])]
 

@@ -9,8 +9,30 @@ import re
 # Kiro CLI free-text permission menus
 TOOL_OPTIONS = ["yes, single permission", "trust, always allow", "no (tab to edit)"]
 SUBAGENT_OPTIONS = ["approve all pending", "configure individually", "exit (cancel subagents)"]
-# OpenCode TUI: left/right + enter (default selection = Allow once)
-OPENCODE_OPTIONS = ["Allow once", "Allow always", "Reject"]
+# OpenCode's permission dialog draws its choices as one row of buttons, chosen
+# with left/right + enter from the first (Allow once). The row is read off the
+# screen rather than assumed, because the two majors differ:
+#   * 1.x: `Allow once  Allow always  Reject`, and Allow always opens a second
+#     Confirm/Cancel step;
+#   * 2.x: `Allow once  Always allow  Reject` with no second step, and Always
+#     allow only when the request carries save patterns -- otherwise the row is
+#     `Allow once  Reject`, and the keys for Always allow would land on Reject.
+# Labels are case-sensitive here: the 2.x body under a focused Always allow
+# reads "This will always allow ...", which must not count as a button.
+OPENCODE_LABELS = ("Allow once", "Allow always", "Always allow", "Reject")
+OPENCODE_ROW_RE = re.compile(r"(?<!\w)(" + "|".join(OPENCODE_LABELS) + r")(?!\w)")
+# Both majors draw this key hint on the button row, or on a line below it when
+# the terminal is narrow; the rejection-reason step draws it too. A row without
+# it is someone else's text that happens to read like one.
+OPENCODE_HINT = "enter confirm"
+# The two labels whose keys are the same in both majors: what is offered when
+# the dialog's title is on screen but its button row is not.
+OPENCODE_SAFE_OPTIONS = ["Allow once", "Reject"]
+# Rejecting a subagent's request opens a second step for a rejection reason
+# (1.x and 2.x alike): enter confirms with an empty reason, esc goes back. The
+# labels are the ones OpenCode itself gives the two buttons.
+OPENCODE_REJECT_STEP = "Tell OpenCode what to do differently"
+OPENCODE_REJECT_OPTIONS = ["Confirm rejection", "Cancel rejection"]
 # Claude Code numbered selection menus: "❯ 1. Yes" / "  2. No"
 CLAUDE_YES_NO = ["1. Yes", "2. No"]
 # The highlighted row carries a cursor marker: `❯` in Claude Code, `›` in Codex.
@@ -279,6 +301,37 @@ def _bullet_options(text):
     return labels if len(labels) >= 2 else None
 
 
+def _opencode_options(text):
+    """The choices of an OpenCode permission dialog on screen, or None.
+
+    Whichever of the button row and the rejection-reason step is drawn lowest
+    is the one the TUI is showing; an older one can still sit above it. Each
+    counts only with OpenCode's key hint at or below it. OpenCode draws nothing
+    numbered under its dialog, so a numbered row lower down means the screen
+    belongs to another agent's menu, whatever OpenCode text it shows above.
+    """
+    hint = False
+    for line in reversed(text.splitlines()):
+        if NUMBERED_OPTION_RE.match(line):
+            return None
+        hint = hint or OPENCODE_HINT in line
+        if not hint:
+            continue
+        if OPENCODE_REJECT_STEP in line:
+            return list(OPENCODE_REJECT_OPTIONS)
+        labels = OPENCODE_ROW_RE.findall(line)
+        if (
+            labels
+            and labels[0] == "Allow once"
+            and labels[-1] == "Reject"
+            and len(labels) == len(set(labels))
+        ):
+            return labels
+    if "permission required" in text.lower():
+        return list(OPENCODE_SAFE_OPTIONS)
+    return None
+
+
 def detect_options(text):
     """Return selectable response labels for a blocked-agent prompt, or None.
 
@@ -295,11 +348,9 @@ def detect_options(text):
     if "approve all pending" in lower or "pending from subagents" in lower:
         return SUBAGENT_OPTIONS
 
-    # OpenCode: "Permission required" with Allow once / Allow always / Reject
-    if "permission required" in lower or (
-        "allow once" in lower and "allow always" in lower and "reject" in lower
-    ):
-        return list(OPENCODE_OPTIONS)
+    opencode = _opencode_options(text)
+    if opencode:
+        return opencode
 
     # --- Numbered menus (Claude Code and similar) ---
     numbered = _numbered_options(text)
@@ -428,12 +479,21 @@ def respond_action(text):
 
     # OpenCode permission dialog (default selection = first = Allow once).
     # Only exact OpenCode labels map to keys — free-text "deny"/"always" stay text.
+    # Which of the two "always" spellings a client may send is decided by
+    # detect_options from the row on screen; each maps to its own major's keys.
     if lower == "allow once":
         return "keys", ["Enter"]
-    if lower in ("allow always", "always allow"):
-        # move right to "Allow always", enter, then confirm stage
+    if lower == "allow always":
+        # 1.x: move right to "Allow always", enter, then its Confirm step
         return "keys", ["Right", "Enter", "Enter"]
+    if lower == "always allow":
+        # 2.x: move right to "Always allow", enter; there is no second step
+        return "keys", ["Right", "Enter"]
     if lower == "reject":
+        return "keys", ["Escape"]
+    if lower == "confirm rejection":
+        return "keys", ["Enter"]
+    if lower == "cancel rejection":
         return "keys", ["Escape"]
 
     # y/n style
