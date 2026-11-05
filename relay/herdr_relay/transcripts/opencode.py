@@ -1,9 +1,10 @@
 """OpenCode's message parts, read out of its SQLite session store.
 
 Same idea as the Claude path next door: the parts are already structured, so no
-pane scraping. Remote hosts run a small stdin-free python3 one-liner over SSH
-because the database is on the far side.
+pane scraping. Remote hosts run the same reader as a stdin-free python3
+one-liner over SSH because the database is on the far side.
 """
+import inspect
 import json
 import os
 import shlex
@@ -13,41 +14,119 @@ import subprocess
 from .. import config
 from . import claude
 
-OPENCODE_PART_QUERY = """
-SELECT json_extract(m.data, '$.role'), m.id, m.time_created, p.id, p.data
-FROM message m
-JOIN part p ON p.message_id = m.id
-WHERE m.session_id = ?
-ORDER BY m.time_created DESC, p.time_created DESC, p.id DESC
-LIMIT ?
-"""
+
+def read_session(db, cwd, session_id, limit):
+    """The newest top-level OpenCode session in cwd (or session_id) and its last parts.
+
+    Rows are ``[role, message_id, time_created, part_id, part]``, oldest first.
+    OpenCode 2.x keeps sessions in ``session_v2`` and each message's parts in
+    its ``data`` (a user message has only ``text``; an assistant one a
+    ``content`` list), or from 2.2.2 in ``session_part`` rows, which win when a
+    message has any. An upgraded install keeps the 1.x ``session``/``message``/
+    ``part`` tables but never writes them again, so they are read only when the
+    2.x ones are missing.
+
+    The source of this function is also the script remote hosts run, so it
+    may use nothing but its arguments and the standard library.
+    """
+    import json
+
+    tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    v2 = "session_v2" in tables
+    session_table = "session_v2" if v2 else "session"
+    if session_id:
+        session = db.execute(
+            "SELECT id, time_updated FROM " + session_table + " WHERE id = ?", (session_id,)
+        ).fetchone()
+    else:
+        session = db.execute(
+            "SELECT id, time_updated FROM " + session_table + " "
+            "WHERE directory = ? AND parent_id IS NULL "
+            "ORDER BY time_updated DESC LIMIT 1", (cwd,)
+        ).fetchone()
+    if not session:
+        return None
+    session_id, updated = session
+
+    if not v2:
+        rows = [list(row) for row in db.execute(
+            "SELECT json_extract(m.data, '$.role'), m.id, m.time_created, p.id, p.data "
+            "FROM message m JOIN part p ON p.message_id = m.id "
+            "WHERE m.session_id = ? "
+            "ORDER BY m.time_created DESC, p.time_created DESC, p.id DESC LIMIT ?",
+            (session_id, limit),
+        )]
+        rows.reverse()
+        return {"session_id": session_id, "updated": updated, "rows": rows}
+
+    # Each message holds several parts, so the newest `limit` messages always
+    # cover the newest `limit` parts.
+    recent = (
+        "SELECT id FROM session_message WHERE session_id = ? AND type IN ('user', 'assistant') "
+        "ORDER BY seq DESC LIMIT ?"
+    )
+    messages = db.execute(
+        "SELECT id, type, time_created, data FROM session_message WHERE id IN (" + recent + ") "
+        "ORDER BY seq", (session_id, limit),
+    ).fetchall()
+    stored_parts = {}
+    if "session_part" in tables:
+        for message_id, data in db.execute(
+            "SELECT message_id, data FROM session_part "
+            "WHERE session_id = ? AND message_id IN (" + recent + ") "
+            "ORDER BY message_id, ordinal", (session_id, session_id, limit),
+        ):
+            stored_parts.setdefault(message_id, []).append(data)
+
+    def decode(value):
+        try:
+            value = json.loads(value) if isinstance(value, str) else value
+        except ValueError:
+            return None
+        return value if isinstance(value, dict) else None
+
+    rows = []
+    for message_id, role, created, raw in messages:
+        data = decode(raw) or {}
+        if role == "user":
+            parts = [{"type": "text", "text": data.get("text")}]
+        elif message_id in stored_parts:
+            parts = [decode(part) for part in stored_parts[message_id]]
+        else:
+            parts = data.get("content") if isinstance(data.get("content"), list) else []
+        for ordinal, part in enumerate(parts):
+            if not isinstance(part, dict):
+                continue
+            # A tool keeps its call id wherever its part is stored; everything
+            # else is addressed by its place in the message.
+            call_id = part.get("id") if part.get("type") == "tool" else None
+            part_id = call_id if isinstance(call_id, str) and call_id else message_id + ":" + str(ordinal)
+            state = part.get("state") if isinstance(part.get("state"), dict) else {}
+            # Only what the blocks show crosses SSH; a tool's output can be large.
+            rows.append([role, message_id, created, part_id, {
+                "type": part.get("type"), "text": part.get("text"),
+                "tool": part.get("name"), "state": {"input": state.get("input")},
+            }])
+    return {"session_id": session_id, "updated": updated, "rows": rows[-limit:]}
 
 
 def _read_opencode_local(db_path, cwd, session_id=None):
-    """Return the newest top-level OpenCode session and its recent parts."""
     db_uri = "file:" + os.path.expanduser(db_path) + "?mode=ro"
     db = sqlite3.connect(db_uri, uri=True, timeout=2)
     try:
-        if session_id:
-            session = db.execute(
-                "SELECT id, time_updated FROM session WHERE id = ?", (session_id,)
-            ).fetchone()
-        else:
-            session = db.execute(
-                "SELECT id, time_updated FROM session "
-                "WHERE directory = ? AND parent_id IS NULL "
-                "ORDER BY time_updated DESC LIMIT 1", (cwd,)
-            ).fetchone()
-        if not session:
-            return None
-        session_id, updated = session
-        rows = db.execute(
-            OPENCODE_PART_QUERY, (session_id, config.TRANSCRIPT_BLOCK_LIMIT * 4)
-        ).fetchall()
+        return read_session(db, cwd, session_id, config.TRANSCRIPT_BLOCK_LIMIT * 4)
     finally:
         db.close()
-    rows.reverse()
-    return {"session_id": session_id, "updated": updated, "rows": rows}
+
+
+REMOTE_SCRIPT = (
+    "import json, os, sqlite3, sys\n"
+    + inspect.getsource(read_session)
+    + "\ndb = sqlite3.connect('file:' + os.path.expanduser(sys.argv[1]) + '?mode=ro', uri=True, timeout=2)\n"
+    "document = read_session(db, sys.argv[2], sys.argv[4], int(sys.argv[3]))\n"
+    "if document:\n"
+    "    print(json.dumps(document))\n"
+)
 
 
 def read_opencode(cwd, remote=None, session_id=None):
@@ -59,22 +138,9 @@ def read_opencode(cwd, remote=None, session_id=None):
             return _read_opencode_local(config.OPENCODE_DB, cwd, session_id)
         except Exception:
             return None
-    script = """
-import json, os, sqlite3, sys
-db = sqlite3.connect("file:" + os.path.expanduser(sys.argv[1]) + "?mode=ro", uri=True, timeout=2)
-if sys.argv[5]:
-    session = db.execute("SELECT id, time_updated FROM session WHERE id = ?", (sys.argv[5],)).fetchone()
-else:
-    session = db.execute("SELECT id, time_updated FROM session WHERE directory = ? AND parent_id IS NULL ORDER BY time_updated DESC LIMIT 1", (sys.argv[2],)).fetchone()
-if session:
-    rows = db.execute(sys.argv[3], (session[0], int(sys.argv[4]))).fetchall()
-    rows.reverse()
-    print(json.dumps({"session_id": session[0], "updated": session[1], "rows": rows}))
-"""
     remote_cmd = " ".join([
-        "python3", "-c", shlex.quote(script), shlex.quote(config.OPENCODE_DB),
-        shlex.quote(cwd), shlex.quote(OPENCODE_PART_QUERY),
-        str(config.TRANSCRIPT_BLOCK_LIMIT * 4), shlex.quote(session_id or ""),
+        "python3", "-c", shlex.quote(REMOTE_SCRIPT), shlex.quote(config.OPENCODE_DB),
+        shlex.quote(cwd or ""), str(config.TRANSCRIPT_BLOCK_LIMIT * 4), shlex.quote(session_id or ""),
     ])
     try:
         result = subprocess.run(

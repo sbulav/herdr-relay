@@ -169,7 +169,7 @@ Everything the relay reads. Only the first is mandatory.
 | `HERDR_SSH_CONTROL_DIR` | `~/.local/state/herdr-relay/ssh` | Directory holding SSH multiplexing sockets (#19). Created `0700`. Keep it short: the socket path must fit `sockaddr_un` (104 bytes on macOS) or multiplexing is skipped |
 | `HERDR_SSH_CONTROL_PERSIST` | `60` | `ControlPersist` seconds — how long an idle master connection lingers. Keep it above `HERDR_POLL_INTERVAL_MAX` |
 | `HERDR_CLAUDE_PROJECTS` | `~/.claude/projects` | Root of the Claude Code session store. Explicit session paths are accepted only below this root |
-| `HERDR_OPENCODE_DB` | `~/.local/share/opencode/opencode-stable.db` | OpenCode session store |
+| `HERDR_OPENCODE_DB` | `~/.local/share/opencode/opencode.db` | OpenCode session store |
 | `HERDR_TRANSCRIPT_HISTORY_MAX_BYTES` | `8388608` | Maximum transcript bytes read for an explicit structured history page |
 | `HERDR_TRANSCRIPT_HISTORY_BLOCK_LIMIT` | `2000` | Maximum parsed blocks retained for explicit history paging |
 | `HERDR_TRANSCRIPT_PAGE_MAX_BYTES` | `65536` | Default UTF-8 JSON byte budget for one structured history page |
