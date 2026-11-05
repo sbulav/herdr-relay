@@ -1520,6 +1520,7 @@ function openPendingPane() {
   const agent = agents.find(a => paneKey(a) === paneKey(link));
   if (!agent) return;
   if (activePane) closeTerminal();
+  leaveOtherViews();
   openTerminal(agent.pane_id, agent.host_id || agent.host || 'local');
 }
 
@@ -1532,11 +1533,23 @@ function dropPaneLink() {
   history.replaceState(history.state, '', url.pathname + url.search + url.hash);
 }
 
+// Settings, the timeline and the composer give way to the pane, so Back from it
+// returns to the list.
+function leaveOtherViews() {
+  for (const id of ['settingsView', 'timelineView', 'newSessionView']) {
+    document.getElementById(id).style.display = 'none';
+  }
+  newSessionOpen = false;
+}
+
 function followPaneLink(url) {
   const link = paneLink(url);
   if (!link) return;
   pendingPaneLink = link;
-  if (herdSnapshotSeen) openPendingPane();
+  // The open page may hold a snapshot from before the pane blocked, or from
+  // before its socket dropped: a pane it lists opens now, any other waits for
+  // the next snapshot.
+  if (herdSnapshotSeen && agents.some(a => paneKey(a) === paneKey(link))) openPendingPane();
 }
 
 if ('serviceWorker' in navigator) {

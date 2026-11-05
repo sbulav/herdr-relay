@@ -40,7 +40,9 @@ stub('history', {
   replaceState(state, title, url) { this.replaced.push(url); location.href = new URL(url, location.href).href; },
 });
 stub('navigator', {serviceWorker: {addEventListener(type, fn) { if (type === 'message') listeners.push(fn); }}});
-let agents = [], activePane = null;
+const views = {};
+stub('document', {getElementById(id) { return views[id] || (views[id] = {style: {display: ''}}); }});
+let agents = [], activePane = null, newSessionOpen = false;
 const opened = [], closed = [];
 function openTerminal(paneId, hostId) { activePane = {pane_id: paneId, host_id: hostId}; opened.push([paneId, hostId]); }
 function closeTerminal() { closed.push(activePane.pane_id); activePane = null; }
@@ -51,7 +53,8 @@ function agent(paneId, hostId) { return {pane_id: paneId, host_id: hostId, host:
 %(pane_key)s
 %(section)s
 %(steps)s
-console.log(JSON.stringify({opened, closed, href: location.href, replaced: history.replaced}));
+const hidden = Object.keys(views).filter(id => views[id].style.display === 'none').sort();
+console.log(JSON.stringify({opened, closed, href: location.href, replaced: history.replaced, hidden, newSessionOpen}));
 """
 
 
@@ -123,6 +126,32 @@ class PushLinkTests(unittest.TestCase):
     def test_a_navigate_message_after_a_snapshot_opens_at_once(self):
         page = self.run_page("snapshot([agent('w1-p2', 'box')]); navigate('/?pane=w1-p2&host_id=box');")
         self.assertEqual(page["opened"], [["w1-p2", "box"]])
+
+    def test_a_navigate_message_for_a_pane_the_page_has_not_seen_waits_for_the_next_snapshot(self):
+        """The page's list can predate the block, as it does after its socket was suspended."""
+        page = self.run_page(
+            "snapshot([agent('w1-p1', 'box')]);"
+            "navigate('/?pane=w1-p2&host_id=box');"
+            "if (opened.length !== 0) throw new Error('opened before the pane was listed');"
+            "snapshot([agent('w1-p1', 'box'), agent('w1-p2', 'box')]);"
+        )
+        self.assertEqual(page["opened"], [["w1-p2", "box"]])
+
+    def test_the_pane_replaces_settings_the_timeline_and_the_composer(self):
+        page = self.run_page(
+            "newSessionOpen = true;"
+            "for (const id of ['settingsView', 'timelineView', 'newSessionView'])"
+            "  document.getElementById(id).style.display = 'block';"
+            "snapshot([agent('w1-p2', 'box')]);",
+            start="https://relay.test/?pane=w1-p2&host_id=box",
+        )
+        self.assertEqual(page["opened"], [["w1-p2", "box"]])
+        self.assertEqual(page["hidden"], ["newSessionView", "settingsView", "timelineView"])
+        self.assertFalse(page["newSessionOpen"])
+
+    def test_the_views_a_link_closes_exist_on_the_page(self):
+        for view in ("settingsView", "timelineView", "newSessionView"):
+            self.assertIn(f'id="{view}"', PAGE)
 
     def test_a_navigate_message_switches_from_another_open_session(self):
         page = self.run_page(
