@@ -84,7 +84,7 @@ SSH_CONTROL_DIR = os.environ.get(
 # a backed-off poll loop still finds the connection it opened last cycle.
 SSH_CONTROL_PERSIST = os.environ.get("HERDR_SSH_CONTROL_PERSIST", "60")
 
-RELAY_VERSION = "0.9.5"  # this relay's own version; shown to a client that must update
+RELAY_VERSION = "0.9.6"  # this relay's own version; shown to a client that must update
 # The oldest client protocol revision this relay will work with. Deliberately not
 # an app version: a client's protocol revision changes only when the wire changes,
 # so a routine release never has to touch it, and a breaking change bumps it in
@@ -131,6 +131,8 @@ WAKE_BIN = os.environ.get("HERDR_WAKE_BIN", "wakeonlan")
 # Native structured stores used by supported coding agents.
 CLAUDE_PROJECTS = os.environ.get("HERDR_CLAUDE_PROJECTS", "~/.claude/projects")
 OPENCODE_DB = os.environ.get("HERDR_OPENCODE_DB", "~/.local/share/opencode/opencode.db")
+# Empty means Codex's own default on each host: `$CODEX_HOME/sessions`, else ~/.codex/sessions.
+CODEX_SESSIONS = os.environ.get("HERDR_CODEX_SESSIONS", "")
 TRANSCRIPT_MAX_BYTES = 262144  # tail window read per poll — bounds ssh transfer
 TRANSCRIPT_BLOCK_LIMIT = 200   # most recent blocks kept per session
 def _positive_int_env(name, default):

@@ -1,6 +1,6 @@
 """Structured transcript blocks from the agents' own session stores.
 
 Import the leaf module you need — `transcripts.blocks.pane_blocks` is the entry
-point the relay uses; `claude` and `opencode` are the two backends behind it.
+point the relay uses; `claude`, `codex` and `opencode` are the backends behind it.
 """
-from . import blocks, claude, opencode, refs  # noqa: F401  (import for side-effect-free access)
+from . import blocks, claude, codex, opencode, refs  # noqa: F401  (import for side-effect-free access)

@@ -557,7 +557,7 @@ never derives a name from cwd, project, pane order, or SSH routing.
 
 Returns recent terminal text, structured transcript blocks, or both. A
 `read_pane` response always has `content` and includes `output_blocks` when the
-relay can correlate a Claude or OpenCode transcript. `subscribe_pane` and live
+relay can correlate a Claude, Codex or OpenCode transcript. `subscribe_pane` and live
 subscription updates contain `output_blocks` without `content`.
 
 | Name | Type | Presence | Meaning |
@@ -566,7 +566,7 @@ subscription updates contain `output_blocks` without `content`.
 | `pane_id` | string | Required | Pane whose content is represented within `host_id`. |
 | `host_id` | string | Required | Configured host identity used with `pane_id`. |
 | `content` | string | `read_pane` responses only | Output of `herdr pane read`. |
-| `output_blocks` | array of output block objects | Optional | At most the requested bounded page of structured Claude or OpenCode transcript blocks. |
+| `output_blocks` | array of output block objects | Optional | At most the requested bounded page of structured Claude, Codex or OpenCode transcript blocks. |
 | `output_total` | integer | Optional | Number of parsed blocks available to the current bounded history window. |
 | `output_has_more` | boolean | Optional | Whether older blocks can be requested with `before`. |
 | `output_next_cursor` | string | Optional | ID of the oldest block in this page; send it as `before` to fetch older blocks. |
@@ -618,8 +618,10 @@ Every output block has `id` and `kind`. Fields after those depend on `kind`.
 This frame is point-to-point. Live updates are sent only to WebSockets that
 subscribed to that `pane_id`, and only when the transcript signature changes.
 Internal Herdr session references are never exposed. The relay binds them to the
-pane harness, validates Claude UUIDs, constrains explicit transcript paths to the
-configured store root, and returns no blocks when an exact reference is missing.
+pane harness, validates Claude and Codex session UUIDs, constrains explicit
+transcript paths and Codex rollouts to the configured store root, and returns no
+blocks when an exact reference is missing. A Codex rollout is found from its
+session UUID alone, never from a pane's working directory.
 
 ### `command_ack`
 
@@ -1532,7 +1534,7 @@ These are all code and message pairs produced through `command_error`.
 This reference was derived from `relay/herdr_relay/`, especially
 `handle_client`, `_poll_once`, `event_push`, `broadcast`, `process_request`,
 `public_agents`, `get_agents_from_host`, `get_all_agents`, `pane_blocks`,
-`transcript_to_blocks`, `opencode_to_blocks`, `command_error`,
+`transcript_to_blocks`, `rollout_to_blocks`, `opencode_to_blocks`, `command_error`,
 `start_session`, `terminate_session`, `wake_host`, `shutdown_host`, and the
 project store/filesystem handlers. Re-read
 those functions when changing or re-verifying the native contract.

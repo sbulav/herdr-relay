@@ -29,6 +29,8 @@ def validated(agent, ref):
         ):
             return {"agent": agent, "kind": kind, "value": value}
         return None
+    if agent == "codex" and kind == "id" and CLAUDE_SESSION_ID_RE.fullmatch(value):
+        return {"agent": agent, "kind": kind, "value": value}
     if agent == "opencode" and kind == "id" and OPENCODE_SESSION_ID_RE.fullmatch(value):
         return {"agent": agent, "kind": kind, "value": value}
     return None

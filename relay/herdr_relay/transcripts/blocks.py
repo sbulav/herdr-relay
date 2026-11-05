@@ -8,7 +8,7 @@ import json
 import os
 
 from .. import config, state
-from . import claude, opencode, refs
+from . import claude, codex, opencode, refs
 
 def _transcript(pane_id, block_limit=config.TRANSCRIPT_BLOCK_LIMIT, max_bytes=None, host_id=None):
     """Resolve and parse one pane transcript, keeping the security checks in one place."""
@@ -25,7 +25,7 @@ def _transcript(pane_id, block_limit=config.TRANSCRIPT_BLOCK_LIMIT, max_bytes=No
     # A session ref correlates a pane directly; without one cwd remains the
     # fallback and ambiguous same-agent panes must not stream each other's output.
     if (
-        agent not in ("claude", "opencode")
+        agent not in ("claude", "codex", "opencode")
         or (ref_key in state.pane_session_refs and not usable_ref)
         or (ref_key not in state.pane_session_refs and (not cwd or ambiguous))
     ):
@@ -51,6 +51,17 @@ def _transcript(pane_id, block_limit=config.TRANSCRIPT_BLOCK_LIMIT, max_bytes=No
         if not body:
             return None, None, None
         blocks = claude.cached_transcript_to_blocks(path, body, limit=block_limit)
+        return blocks, hash((path, len(body), hash(body))), {"source": path, "truncated": len(body) >= int(max_bytes or config.TRANSCRIPT_MAX_BYTES)}
+    if agent == "codex":
+        # A rollout is named by its session alone; there is no cwd to fall back on.
+        if not usable_ref:
+            return None, None, None
+        path, body = codex.read_rollout(usable_ref["value"], remote, max_bytes=max_bytes)
+        if not body:
+            return None, None, None
+        blocks = claude.cached_transcript_to_blocks(
+            path, body, limit=block_limit, parse=codex.rollout_to_blocks
+        )
         return blocks, hash((path, len(body), hash(body))), {"source": path, "truncated": len(body) >= int(max_bytes or config.TRANSCRIPT_MAX_BYTES)}
     document = opencode.read_opencode(
         cwd, remote, session_id=usable_ref["value"] if usable_ref else None

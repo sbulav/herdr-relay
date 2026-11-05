@@ -280,11 +280,12 @@ in
         NoNewPrivileges = true;
         PrivateDevices = true;
         PrivateTmp = true;
-        # The relay reads a human's ~/.claude/projects and OpenCode database when
-        # it polls the local host. Under DynamicUser it cannot reach another
-        # user's home anyway, so this only makes that explicit — point
-        # HERDR_CLAUDE_PROJECTS / HERDR_OPENCODE_DB at readable copies, or
-        # lib.mkForce this to "read-only" and grant access deliberately.
+        # The relay reads a human's ~/.claude/projects, ~/.codex/sessions and
+        # OpenCode database when it polls the local host. Under DynamicUser it
+        # cannot reach another user's home anyway, so this only makes that
+        # explicit — point HERDR_CLAUDE_PROJECTS / HERDR_CODEX_SESSIONS /
+        # HERDR_OPENCODE_DB at readable copies, or lib.mkForce this to
+        # "read-only" and grant access deliberately.
         ProtectHome = true;
         ProtectClock = true;
         ProtectControlGroups = true;
