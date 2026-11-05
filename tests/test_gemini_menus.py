@@ -181,6 +181,15 @@ class BoxedTextIsNotAMenuTests(unittest.TestCase):
         )
         self.assertEqual(["1. Yes", "2. No, keep planning"], panes.detect_options(screen))
 
+    def test_a_boxed_numbered_list_with_no_cursor_offers_nothing(self):
+        screen = "╭──────────────╮\n│ 1. Read code │\n│ 2. Run tests │\n╰──────────────╯"
+        self.assertEqual([], panes.numbered_menu(screen))
+        self.assertIsNone(panes.detect_options(screen))
+
+    def test_the_cursor_may_sit_on_any_row_of_a_boxed_menu(self):
+        screen = "│   1. Allow once   │\n│ ● 2. Deny         │"
+        self.assertEqual([(1, "Allow once"), (2, "Deny")], panes.numbered_menu(screen))
+
     def test_opencodes_heavy_bar_is_not_a_box(self):
         line = "┃  1. Allow once"
         self.assertEqual(line, panes.unboxed(line))

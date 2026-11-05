@@ -501,8 +501,9 @@ more rows on screen:
   (`❯`, `>`, `›`, `»`, `▶`, `●`). A `N)` row is offered as `N. label`.
 - A row drawn inside a box (`│` on its left, and on its right when it fits) is
   read without its borders, so a boxed menu offers what the same menu offers
-  unboxed. A line with a `│` between its borders is a table row, not a box
-  row, and is read as it stands.
+  unboxed, once one of its rows carries a cursor marker; a boxed run with no
+  cursor is numbered text, not a menu. A line with a `│` between its borders
+  is a table row, not a box row, and is read as it stands.
 - A line indented deeper than the row's number continues its label: a wrapped
   option, or a question's description under its answer, joins the label with
   one space.

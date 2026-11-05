@@ -210,26 +210,33 @@ def numbered_menu(text):
     Any other non-blank line -- the footer, which sits left of the numbers,
     and is recognized however it is indented -- ends the run. The last run of
     two or more wins: a blocked pane draws its menu under whatever the agent
-    printed, and that may be a numbered list too.
+    printed, and that may be a numbered list too. A run drawn inside a box
+    counts only once one of its rows carries a cursor: a box of numbered prose
+    is transcript, and gemini-cli always marks the selected row of its menus.
     """
     best = []
     current = []
     number_col = None
-    for line in map(unboxed, text.splitlines()):
+    selectable = False
+    for raw in text.splitlines():
+        line = unboxed(raw)
         match = NUMBERED_OPTION_RE.match(line)
         if match and current and number_col is not None and len(match.group(1)) > number_col:
             match = None
         if match:
             number = int(match.group(2))
+            cursor = bool(match.group(1).strip())
             if number == 1:
                 current = [match.group(3)]
                 number_col = len(match.group(1))
+                selectable = line is raw or cursor
             elif current and number == len(current) + 1:
                 current.append(match.group(3))
+                selectable = selectable or cursor
             else:
                 current = []
                 number_col = None
-            if len(current) >= 2:
+            if len(current) >= 2 and selectable:
                 best = list(current)
             continue
         stripped = line.strip()
@@ -244,7 +251,7 @@ def numbered_menu(text):
         indent = len(line) - len(line.lstrip())
         if current and number_col is not None and indent > number_col:
             current[-1] = f"{current[-1]} {stripped}"
-            if len(current) >= 2:
+            if len(current) >= 2 and selectable:
                 best = list(current)
             continue
         current = []
