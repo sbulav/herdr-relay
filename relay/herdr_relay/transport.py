@@ -15,11 +15,11 @@ from . import catalogs, config, dialogs, herdr, hosts, operations, panes, projec
 from .config import log
 
 
-def _merge_pushed_identity(mapping, key, identifier, label):
+def _merge_pushed_identity(mapping, key, identifier, label, field):
     """Merge one pushed ID/label pair without borrowing labels across IDs."""
     if not isinstance(identifier, str) or not identifier:
         return
-    identifier = protocol.public_identifier(identifier)
+    identifier = protocol.public_identifier(identifier, field)
     if not identifier:
         return
     existing = state.get(mapping, key, ("", ""))
@@ -215,12 +215,12 @@ async def _poll_once():
         state.pane_project_map[key] = a.get("project", "")
         status = a["status"]
         state.pane_statuses[key] = status
-        workspace_id = protocol.public_identifier(a.get("workspace_id"))
+        workspace_id = protocol.public_identifier(a.get("workspace_id"), "workspace_id")
         workspace_name = protocol.public_text(a.get("workspace_name"))
         if workspace_id:
             existing = state.get(state.pane_workspace_map, key, ("", ""))
             state.pane_workspace_map[key] = (workspace_id, workspace_name or existing[1])
-        tab_id = protocol.public_identifier(a.get("tab_id"))
+        tab_id = protocol.public_identifier(a.get("tab_id"), "tab_id")
         tab_name = protocol.public_text(a.get("tab_name"))
         if tab_id:
             existing = state.get(state.pane_tab_map, key, ("", ""))
@@ -424,11 +424,11 @@ def _discover_pushed_pane(event, host_id, pane_id):
     state.pane_project_map[key] = event.get("project", "")
     _merge_pushed_identity(
         state.pane_workspace_map, key,
-        event.get("workspace_id"), event.get("workspace_name"),
+        event.get("workspace_id"), event.get("workspace_name"), "workspace_id",
     )
     _merge_pushed_identity(
         state.pane_tab_map, key,
-        event.get("tab_id"), event.get("tab_name"),
+        event.get("tab_id"), event.get("tab_name"), "tab_id",
     )
     title = protocol.public_text(event.get("activity_title"), protocol.ACTIVITY_TITLE_MAX_CHARS)
     if title and event.get("status") == "working":
@@ -441,6 +441,10 @@ def _discover_pushed_pane(event, host_id, pane_id):
 
 async def _handle_pushed_event(event):
     pane_id = event.get("pane_id", "")
+    # Pushed by a hook, not read from herdr: the same check a polled row gets.
+    # A bad workspace or tab id is dropped where it is merged, below.
+    if pane_id not in ("", None) and protocol.herdr_id(pane_id, "pane_id") is None:
+        return
     status = event.get("status", "")
     host = event.get("host_id")
     # Old local hooks had no host_id; retain only the unambiguous local
@@ -460,11 +464,11 @@ async def _handle_pushed_event(event):
         # Merge only present values so an old event cannot erase a known label.
         _merge_pushed_identity(
             state.pane_workspace_map, key,
-            event.get("workspace_id"), event.get("workspace_name"),
+            event.get("workspace_id"), event.get("workspace_name"), "workspace_id",
         )
         _merge_pushed_identity(
             state.pane_tab_map, key,
-            event.get("tab_id"), event.get("tab_name"),
+            event.get("tab_id"), event.get("tab_name"), "tab_id",
         )
         title = protocol.public_text(event.get("activity_title"), protocol.ACTIVITY_TITLE_MAX_CHARS)
         if status == "working" and title:
@@ -559,6 +563,8 @@ async def event_push():
     try:
         while True:
             event = await state.event_queue.get()
+            if not isinstance(event, dict):
+                continue
             # An event is the edge the backoff exists to be interrupted by: the
             # herdr hook reports a status change the next poll would otherwise
             # discover up to POLL_INTERVAL_MAX later.

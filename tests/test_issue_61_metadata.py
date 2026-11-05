@@ -142,10 +142,10 @@ class Issue61MetadataTests(unittest.TestCase):
         herdr_relay.state.pane_workspace_map[key] = ("ws-old", "Old")
         herdr_relay.state.pane_tab_map[key] = ("tab-old", "Old tab")
         herdr_relay.transport._merge_pushed_identity(
-            herdr_relay.state.pane_workspace_map, key, "ws-old", "",
+            herdr_relay.state.pane_workspace_map, key, "ws-old", "", "workspace_id",
         )
         herdr_relay.transport._merge_pushed_identity(
-            herdr_relay.state.pane_tab_map, key, "tab-new", "",
+            herdr_relay.state.pane_tab_map, key, "tab-new", "", "tab_id",
         )
         self.assertEqual(("ws-old", "Old"), herdr_relay.state.pane_workspace_map[key])
         self.assertEqual(("tab-new", ""), herdr_relay.state.pane_tab_map[key])
@@ -157,17 +157,17 @@ class Issue61MetadataTests(unittest.TestCase):
             workspace_name=value, tab_id=value, tab_name=value,
         )
         frame = herdr_relay.dialogs.frame(dialog)
+        # An id is never repaired (#98): one that is not herdr's shape is left out.
         for field in ("workspace_id", "tab_id"):
-            self.assertNotIn("\x00", frame[field])
-            self.assertNotIn("\n", frame[field])
-            self.assertGreater(len(frame[field]), 160)
+            self.assertNotIn(field, frame)
         for field in ("workspace_name", "tab_name"):
             self.assertNotIn("\x00", frame[field])
             self.assertNotIn("\n", frame[field])
             self.assertLessEqual(len(frame[field]), 160)
 
     def test_long_ids_match_across_pane_content_and_blocked_frames(self):
-        long_id = "workspace-" + ("x" * 300)
+        # The longest id herdr's shape allows (#98) outruns no display bound.
+        long_id = "workspace-" + ("x" * 118)
         key = ("local", "pane-7")
         herdr_relay.state.pane_workspace_map[key] = (long_id, "Relay")
         pane = {"type": "pane_content", "pane_id": "pane-7", "host_id": "local"}

@@ -30,9 +30,12 @@ def _valid_observation(value):
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
-def _metadata_value(value, *, identifier=False):
-    """Normalize one optional Herdr identity/display value for wire use."""
-    return protocol.public_identifier(value) if identifier else protocol.public_text(value)
+def _metadata_value(value, *, identifier=None):
+    """Normalize one optional Herdr identity/display value for wire use.
+
+    `identifier` names the id field the value is, for the refusal log.
+    """
+    return protocol.public_identifier(value, identifier) if identifier else protocol.public_text(value)
 
 
 def ensure(
@@ -52,9 +55,9 @@ def ensure(
     normalized_choices = list(choices or [])
     observation = _valid_observation(observation)
     metadata = {
-        "workspace_id": _metadata_value(workspace_id, identifier=True),
+        "workspace_id": _metadata_value(workspace_id, identifier="workspace_id"),
         "workspace_name": _metadata_value(workspace_name),
-        "tab_id": _metadata_value(tab_id, identifier=True),
+        "tab_id": _metadata_value(tab_id, identifier="tab_id"),
         "tab_name": _metadata_value(tab_name),
     }
     prompt_key = _prompt_key(
@@ -152,7 +155,7 @@ def frame(dialog, *, reduced=False):
             "host": dialog["host"],
         })
     for field in ("workspace_id", "workspace_name", "tab_id", "tab_name"):
-        value = _metadata_value(dialog.get(field), identifier=field.endswith("_id"))
+        value = _metadata_value(dialog.get(field), identifier=field if field.endswith("_id") else None)
         if value:
             result[field] = value
     # Activity titles are meaningful only while the agent is working. Blocked

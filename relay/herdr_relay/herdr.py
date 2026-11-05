@@ -301,6 +301,10 @@ def get_agents_from_host(remote=None, host_id=None, host=None, cancel_event=None
             # the gather — every other host's poll with it.
             if not isinstance(p, dict) or not p.get("agent"):
                 continue
+            # A row is addressed by its pane id; one herdr could not have
+            # produced names no pane, so the row goes, not just the field.
+            if protocol.herdr_id(p.get("pane_id"), "pane_id") is None:
+                continue
             # A pane can relaunch under another harness, or stop reporting a
             # session altogether. Do not let a previous poll's ref survive
             # either transition when this helper is called directly.
@@ -313,8 +317,8 @@ def get_agents_from_host(remote=None, host_id=None, host=None, cancel_event=None
                 # unambiguous cwd fallback is safe) and an invalid supplied
                 # ref (which must never silently select another transcript).
                 state.pane_session_refs[pane_key] = ref
-            workspace_id = protocol.public_identifier(p.get("workspace_id"))
-            tab_id = protocol.public_identifier(p.get("tab_id"))
+            workspace_id = protocol.public_identifier(p.get("workspace_id"), "workspace_id")
+            tab_id = protocol.public_identifier(p.get("tab_id"), "tab_id")
             agent = {
                 "pane_id": p["pane_id"],
                 "host_id": host_id,
@@ -376,7 +380,7 @@ def _snapshot_completions(rows):
     if not isinstance(rows, list):
         return completions
     for row in rows:
-        if not isinstance(row, dict) or not isinstance(row.get("pane_id"), str):
+        if not isinstance(row, dict) or protocol.herdr_id(row.get("pane_id"), "pane_id") is None:
             continue
         completion = protocol.completion_counter(row.get("completion_seq"))
         if completion is not None:
@@ -405,7 +409,7 @@ def _snapshot_names(rows, key):
     for row in rows:
         if not isinstance(row, dict):
             continue
-        identifier = protocol.public_identifier(row.get(key))
+        identifier = protocol.public_identifier(row.get(key), key)
         label = _display_name(row.get("label"))
         if isinstance(identifier, str) and identifier and label:
             names[identifier] = label
@@ -509,7 +513,7 @@ def agent_started_pane_id(raw):
         return None
     agent = result.get("agent")
     pane_id = agent.get("pane_id") if isinstance(agent, dict) else None
-    return pane_id if isinstance(pane_id, str) and pane_id else None
+    return protocol.herdr_id(pane_id, "pane_id")
 
 
 def tab_created_ids(raw):
@@ -527,12 +531,12 @@ def tab_created_ids(raw):
     if not isinstance(result, dict) or result.get("type") != "tab_created":
         return None, None
     pane = result.get("root_pane")
-    pane_id = pane.get("pane_id") if isinstance(pane, dict) else None
-    if not isinstance(pane_id, str) or not pane_id:
+    pane_id = protocol.herdr_id(pane.get("pane_id") if isinstance(pane, dict) else None, "pane_id")
+    if pane_id is None:
         return None, None
     tab = result.get("tab")
     tab_id = tab.get("tab_id") if isinstance(tab, dict) else None
-    return pane_id, tab_id if isinstance(tab_id, str) and tab_id else None
+    return pane_id, protocol.herdr_id(tab_id, "tab_id")
 
 
 def get_agent_by_name(name, host, cancel_event=None, timeout=None):
@@ -589,8 +593,8 @@ def get_agent_by_name(name, host, cancel_event=None, timeout=None):
         return [], probe
     result = data.get("result")
     agent = result.get("agent") if isinstance(result, dict) else None
-    pane_id = agent.get("pane_id") if isinstance(agent, dict) else None
-    if not isinstance(pane_id, str) or not pane_id:
+    pane_id = protocol.herdr_id(agent.get("pane_id") if isinstance(agent, dict) else None, "pane_id")
+    if pane_id is None:
         return [], probe
     probe["herdr_ready"] = True
     return [{"pane_id": pane_id, "agent_name": name}], probe

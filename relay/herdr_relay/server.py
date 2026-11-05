@@ -824,8 +824,10 @@ async def _create_tab(msg, ip, device):
         not isinstance(request_id, str) or not projects.REQUEST_ID_RE.fullmatch(request_id)
     ):
         return protocol.command_error(None, "INVALID_REQUEST", "request_id is required")
-    workspace_id = msg.get("workspace_id")
-    if not isinstance(workspace_id, str) or not workspace_id:
+    # Handed to herdr as an argument, echoed in the reply and logged, so it
+    # must be an id herdr could have produced, not merely present.
+    workspace_id = protocol.herdr_id(msg.get("workspace_id"), "workspace_id")
+    if workspace_id is None:
         return protocol.error("workspace_id required")
     host_id = msg.get("host_id")
     if host_id is None:
