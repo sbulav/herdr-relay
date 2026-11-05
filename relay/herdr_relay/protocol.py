@@ -112,7 +112,9 @@ def public_agents(agents):
             if field in public:
                 value = public_identifier(public[field], field)
                 if value is None:
+                    # A label never outlives the id it names.
                     public.pop(field, None)
+                    public.pop(field.removesuffix("_id") + "_name", None)
                 else:
                     public[field] = value
         if "completion_seq" in public and completion_counter(public["completion_seq"]) is None:

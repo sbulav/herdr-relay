@@ -104,6 +104,17 @@ class PollTests(unittest.TestCase):
                 for field in ("workspace_id", "workspace_name", "tab_id", "tab_name"):
                     self.assertNotIn(field, agents[0])
 
+    def test_the_wire_boundary_drops_a_label_with_its_refused_id(self):
+        agent = {
+            "pane_id": "w1-p2", "host": "local", "agent": "claude", "status": "idle",
+            "workspace_id": "ws-1\n", "workspace_name": "Relay",
+            "tab_id": "ws-1:t1", "tab_name": "Main",
+        }
+        public = protocol.public_agents([agent])[0]
+        self.assertNotIn("workspace_id", public)
+        self.assertNotIn("workspace_name", public)
+        self.assertEqual(("ws-1:t1", "Main"), (public["tab_id"], public["tab_name"]))
+
 
 class PushedEventTests(unittest.TestCase):
     def setUp(self):
