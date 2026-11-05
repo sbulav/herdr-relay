@@ -21,6 +21,10 @@ SUBAGENT_OPTIONS = ["approve all pending", "configure individually", "exit (canc
 # reads "This will always allow ...", which must not count as a button.
 OPENCODE_LABELS = ("Allow once", "Allow always", "Always allow", "Reject")
 OPENCODE_ROW_RE = re.compile(r"(?<!\w)(" + "|".join(OPENCODE_LABELS) + r")(?!\w)")
+# Both majors draw this key hint on the button row, or on a line below it when
+# the terminal is narrow; the rejection-reason step draws it too. A row without
+# it is someone else's text that happens to read like one.
+OPENCODE_HINT = "enter confirm"
 # The two labels whose keys are the same in both majors: what is offered when
 # the dialog's title is on screen but its button row is not.
 OPENCODE_SAFE_OPTIONS = ["Allow once", "Reject"]
@@ -301,10 +305,18 @@ def _opencode_options(text):
     """The choices of an OpenCode permission dialog on screen, or None.
 
     Whichever of the button row and the rejection-reason step is drawn lowest
-    is the one the TUI is showing; an older one can still sit above it.
+    is the one the TUI is showing; an older one can still sit above it. Each
+    counts only with OpenCode's key hint at or below it. OpenCode draws nothing
+    numbered under its dialog, so a numbered row lower down means the screen
+    belongs to another agent's menu, whatever OpenCode text it shows above.
     """
-    lines = text.splitlines()
-    for line in reversed(lines):
+    hint = False
+    for line in reversed(text.splitlines()):
+        if NUMBERED_OPTION_RE.match(line):
+            return None
+        hint = hint or OPENCODE_HINT in line
+        if not hint:
+            continue
         if OPENCODE_REJECT_STEP in line:
             return list(OPENCODE_REJECT_OPTIONS)
         labels = OPENCODE_ROW_RE.findall(line)

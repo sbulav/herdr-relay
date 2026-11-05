@@ -2015,7 +2015,7 @@ class DetectOptionsTests(unittest.TestCase):
         text = (
             "△ Permission required\n"
             "  ← Access external directory /etc\n"
-            "  Allow once   Reject\n"
+            "  Allow once   Reject                       enter confirm\n"
         )
         self.assertEqual(herdr_relay.panes.detect_options(text), ["Allow once", "Reject"])
 
@@ -2026,6 +2026,8 @@ class DetectOptionsTests(unittest.TestCase):
             "  $ grep -n 'Reject' src/permission.tsx\n"
             "  This will always allow `grep *` until OpenCode is restarted.\n"
             "  Allow once   Always allow   Reject\n"
+            "\n"
+            "  ⇆ select   enter confirm\n"
         )
         self.assertEqual(
             herdr_relay.panes.detect_options(text),
@@ -2046,6 +2048,7 @@ class DetectOptionsTests(unittest.TestCase):
             "  Allow once   Always allow   Reject\n"
             "△ Reject permission\n"
             "  Tell OpenCode what to do differently\n"
+            "  > \n"
             "  enter confirm   esc cancel\n"
         )
         self.assertEqual(
@@ -2056,10 +2059,33 @@ class DetectOptionsTests(unittest.TestCase):
     def test_opencode_button_row_below_an_old_reject_step_wins(self):
         text = (
             "  Tell OpenCode what to do differently\n"
+            "  enter confirm   esc cancel\n"
             "△ Permission required\n"
-            "  Allow once   Reject\n"
+            "  Allow once   Reject   ⇆ select   enter confirm\n"
         )
         self.assertEqual(herdr_relay.panes.detect_options(text), ["Allow once", "Reject"])
+
+    def test_opencode_text_in_another_agents_transcript_is_not_its_dialog(self):
+        """A row an agent merely printed must not take over its own menu (#94).
+
+        OpenCode labels map to keys: "Allow once" would press Enter on
+        whatever row of Claude's menu is selected.
+        """
+        text = (
+            "⏺ The dialog draws:\n"
+            "  △ Permission required\n"
+            "  Allow once   Always allow   Reject   ⇆ select   enter confirm\n"
+            " Do you want to proceed?\n"
+            " ❯ 1. Yes\n"
+            "   2. No\n"
+            "\n"
+            " Esc to cancel\n"
+        )
+        self.assertEqual(herdr_relay.panes.detect_options(text), ["1. Yes", "2. No"])
+
+    def test_opencode_row_without_its_key_hint_is_not_a_dialog(self):
+        text = "$ grep -rn options tui/\nAllow once   Always allow   Reject\n"
+        self.assertIsNone(herdr_relay.panes.detect_options(text))
 
     def test_yn_style(self):
         self.assertEqual(herdr_relay.panes.detect_options("Continue? [y/n]"), ["y", "n"])
