@@ -8,6 +8,7 @@ without any change to `herdr` itself.
 """
 import glob
 import json
+import math
 import os
 import re
 import shlex
@@ -34,6 +35,8 @@ def _timestamp(value):
     if isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
+        if not math.isfinite(value):
+            return None
         return int(value if value > 10_000_000_000 else value * 1000)
     if not isinstance(value, str) or not value.strip():
         return None

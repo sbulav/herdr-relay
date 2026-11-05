@@ -16,6 +16,7 @@ import json
 import os
 import re
 import shlex
+import stat
 import subprocess
 
 from .. import config
@@ -57,20 +58,25 @@ def _local_rollout(session_id):
     return max(found, key=os.path.getmtime) if found else None
 
 
-# An empty root means the remote user's own Codex default. The newest match is
-# taken, then held to the same rules as a local one: no link, and below the root.
+# An empty root means the remote user's own Codex default. Each match is held to
+# the same rules as a local one — a regular file, not a link, below the root —
+# and the newest that passes is read. A name with a newline in it is skipped:
+# the path is the first line of the reply.
 _REMOTE_SCRIPT = (
-    'id=$1; root=$2; '
+    'id=$1; root=$2; nl="\n"; '
     '[ -n "$root" ] || root="${CODEX_HOME:-$HOME/.codex}/sessions"; '
-    'case "$root" in "~/"*) root="$HOME/${root#~/}" ;; esac; '
+    'case "$root" in "~/"*) root="$HOME/${root#"~/"}" ;; esac; '
     'root=$(cd -P "$root" 2>/dev/null && pwd -P) || exit 0; '
-    'f=$(ls -t "$root"/*/*/*/rollout-*-"$id".jsonl "$root"/rollout-*-"$id".jsonl 2>/dev/null | head -1); '
+    'f=; '
+    'for g in "$root"/*/*/*/rollout-*-"$id".jsonl "$root"/rollout-*-"$id".jsonl; do '
+    'case "$g" in *"$nl"*) continue ;; esac; '
+    '[ -f "$g" ] && [ ! -L "$g" ] || continue; '
+    'dir=$(cd -P "$(dirname "$g")" 2>/dev/null && pwd -P) || continue; '
+    'case "$dir/" in "$root/"*) ;; *) continue ;; esac; '
+    'g="$dir/${g##*/}"; '
+    'if [ -z "$f" ] || [ "$g" -nt "$f" ]; then f=$g; fi; '
+    'done; '
     '[ -n "$f" ] || exit 0; '
-    '[ ! -L "$f" ] || exit 0; '
-    'dir=$(cd -P "$(dirname "$f")" 2>/dev/null && pwd -P) || exit 0; '
-    'case "$dir/" in "$root/"*) ;; *) exit 0 ;; esac; '
-    'f="$dir/$(basename "$f")"; '
-    '[ -f "$f" ] || exit 0; '
     'printf "%s\\n" "$f"; '
 )
 
@@ -101,7 +107,11 @@ def read_rollout(session_id, remote=None, max_bytes=None):
         path = _local_rollout(session_id)
         if path is None:
             return None, None
-        with open(path, "rb") as fh:
+        # A link swapped in after the checks above is not followed.
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(fd, "rb") as fh:
+            if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+                return None, None
             fh.seek(0, os.SEEK_END)
             size = fh.tell()
             fh.seek(max(0, size - byte_limit))

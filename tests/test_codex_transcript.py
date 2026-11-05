@@ -205,6 +205,15 @@ class ParseTests(unittest.TestCase):
         self.assertEqual(len({b["id"] for b in full}), 3)
         self.assertEqual([b["id"] for b in full[1:]], [b["id"] for b in tail])
 
+    def test_a_timestamp_that_is_not_a_finite_number_is_left_out(self):
+        blocks = self.parse(
+            message("user", "nan", timestamp=float("nan")),
+            message("user", "inf", timestamp=float("inf")),
+            message("user", "fine"),
+        )
+        self.assertEqual([b["text"] for b in blocks], ["nan", "inf", "fine"])
+        self.assertEqual(["timestamp" in b for b in blocks], [False, False, True])
+
     def test_the_newest_blocks_are_kept(self):
         rows = [message("user", f"m{n}", id=f"u{n}") for n in range(5)]
         self.assertEqual([b["text"] for b in codex.rollout_to_blocks(rollout(*rows), limit=2)], ["m3", "m4"])
@@ -271,6 +280,14 @@ class LocalStoreTests(unittest.TestCase):
         write(self.root, [message("user", "x")], session=OTHER)
         self.assertEqual(codex.read_rollout(SESSION), (None, None))
 
+    def test_a_link_swapped_in_after_the_checks_is_not_followed(self):
+        path = write(self.root, [message("user", "checked")])
+        outside = write(self.directory, [message("user", "outside")], dated=False)
+        os.remove(path)
+        os.symlink(outside, path)
+        with patch.object(codex, "_local_rollout", return_value=path):
+            self.assertEqual(codex.read_rollout(SESSION), (None, None))
+
     def test_the_default_root_follows_codex_home(self):
         with patch.object(herdr_relay.config, "CODEX_SESSIONS", ""), \
                 patch.dict(os.environ, {"CODEX_HOME": self.directory}):
@@ -331,6 +348,26 @@ class RemoteStoreTests(unittest.TestCase):
 
     def test_a_missing_session_reads_nothing_over_ssh(self):
         self.assertEqual(self.read(), (None, None))
+
+    def test_a_root_under_the_remote_home_is_expanded_there(self):
+        path = write(self.root, [message("user", "tilde")])
+        self.assertEqual(self.read(root="~/sessions")[0], os.path.realpath(path))
+
+    def test_a_name_with_a_newline_cannot_select_another_file(self):
+        directory = Path(self.root, "2026", "10", "23")
+        directory.mkdir(parents=True)
+        (directory / "rollout-x").write_text("not a rollout\n", encoding="utf-8")
+        (directory / f"rollout-x\nsuffix-{SESSION}.jsonl").write_text("{}\n", encoding="utf-8")
+        self.assertEqual(self.read(), (None, None))
+
+    def test_the_newest_passing_rollout_is_read_over_ssh(self):
+        old = write(self.root, [message("user", "old")], dated=False, stamp="2026-10-22T12-00-00")
+        new = write(self.root, [message("user", "new")])
+        os.utime(old, (1, 1))
+        self.assertEqual(self.read()[0], os.path.realpath(new))
+        outside = write(self.directory, [message("user", "outside")], dated=False, stamp="2026-10-24T12-00-00")
+        os.symlink(outside, os.path.join(self.root, os.path.basename(outside)))
+        self.assertEqual(self.read()[0], os.path.realpath(new))
 
 
 class PaneBlocksTests(unittest.TestCase):
