@@ -35,11 +35,19 @@ OPENCODE_REJECT_STEP = "Tell OpenCode what to do differently"
 OPENCODE_REJECT_OPTIONS = ["Confirm rejection", "Cancel rejection"]
 # Claude Code numbered selection menus: "❯ 1. Yes" / "  2. No"
 CLAUDE_YES_NO = ["1. Yes", "2. No"]
-# The highlighted row carries a cursor marker: `❯` in Claude Code, `›` in Codex.
+# The highlighted row carries a cursor marker: `❯` in Claude Code, `›` in Codex,
+# `●` in gemini-cli.
 # One row of a numbered menu: an optional cursor marker, then `N.` or `N)`.
 # Group 1 is everything before the number, whose width is the menu's number
 # column; a deeper-indented line that follows continues the row's label.
-NUMBERED_OPTION_RE = re.compile(r"^(\s*(?:[❯>›»▶]\s*)?)(\d{1,2})[.)]\s+(\S.*?)\s*$")
+NUMBERED_OPTION_RE = re.compile(r"^(\s*(?:[❯>›»▶●]\s*)?)(\d{1,2})[.)]\s+(\S.*?)\s*$")
+# gemini-cli often draws its menu inside a box, a border on each side of a row:
+#
+#   │ ● 1. Allow once                │
+#   │   2. Allow for this session    │
+#
+# A row with a border inside it is a table's, not a box's, and is left alone.
+BOX_ROW_RE = re.compile(r"^\s*│([^│]*?)(?:│\s*)?$")
 # A horizontal rule drawn inside a menu: box-drawing or ASCII dashes only.
 MENU_RULE_RE = re.compile(r"^[\u2500-\u257f\u2014\u2013\-=_]{3,}$")
 # The row Claude Code appends to every AskUserQuestion menu. Choosing it turns
@@ -181,6 +189,16 @@ def key_runs(keys):
     return runs
 
 
+def unboxed(line):
+    """`line` without the box borders around it, or unchanged when it has none.
+
+    The borders go before a row is read, so the number column, and with it the
+    test for a wrapped label, is the same inside a box as outside one.
+    """
+    match = BOX_ROW_RE.match(line)
+    return match.group(1) if match else line
+
+
 def numbered_menu(text):
     """The last complete `1.`..`N.` menu on screen, as (number, label) pairs.
 
@@ -192,26 +210,33 @@ def numbered_menu(text):
     Any other non-blank line -- the footer, which sits left of the numbers,
     and is recognized however it is indented -- ends the run. The last run of
     two or more wins: a blocked pane draws its menu under whatever the agent
-    printed, and that may be a numbered list too.
+    printed, and that may be a numbered list too. A run drawn inside a box
+    counts only once one of its rows carries a cursor: a box of numbered prose
+    is transcript, and gemini-cli always marks the selected row of its menus.
     """
     best = []
     current = []
     number_col = None
-    for line in text.splitlines():
+    selectable = False
+    for raw in text.splitlines():
+        line = unboxed(raw)
         match = NUMBERED_OPTION_RE.match(line)
         if match and current and number_col is not None and len(match.group(1)) > number_col:
             match = None
         if match:
             number = int(match.group(2))
+            cursor = bool(match.group(1).strip())
             if number == 1:
                 current = [match.group(3)]
                 number_col = len(match.group(1))
+                selectable = line is raw or cursor
             elif current and number == len(current) + 1:
                 current.append(match.group(3))
+                selectable = selectable or cursor
             else:
                 current = []
                 number_col = None
-            if len(current) >= 2:
+            if len(current) >= 2 and selectable:
                 best = list(current)
             continue
         stripped = line.strip()
@@ -226,7 +251,7 @@ def numbered_menu(text):
         indent = len(line) - len(line.lstrip())
         if current and number_col is not None and indent > number_col:
             current[-1] = f"{current[-1]} {stripped}"
-            if len(current) >= 2:
+            if len(current) >= 2 and selectable:
                 best = list(current)
             continue
         current = []
@@ -312,7 +337,7 @@ def _opencode_options(text):
     """
     hint = False
     for line in reversed(text.splitlines()):
-        if NUMBERED_OPTION_RE.match(line):
+        if NUMBERED_OPTION_RE.match(unboxed(line)):
             return None
         hint = hint or OPENCODE_HINT in line
         if not hint:
@@ -388,7 +413,9 @@ def detect_options(text):
 
 # How far above the last option a question block may reach, in lines.
 QUESTION_BLOCK_LINES = 16
-CURSOR_PREFIX_RE = re.compile(r"^[❯›>][ \t]*")
+# gemini-cli's `●` is a cursor only on a numbered row; elsewhere it is a
+# transcript bullet.
+CURSOR_PREFIX_RE = re.compile(r"^(?:[❯›>]|●(?=[ \t]*\d{1,2}[.)]))[ \t]*")
 # A box-drawing line (a rule, or a box's edge) ends the region a TUI draws its
 # question in: Claude Code rules its permission prompt off from the transcript.
 BOX_LINE_RE = re.compile(r"^[\u2500-\u257f]")
@@ -431,7 +458,8 @@ def question_block(text, choices):
     caller then has nothing narrower than the whole text.
     """
     labels = [choice.lower() for choice in choices or () if len(choice) >= 2]
-    lines = text.split("\n")
+    # Inside a box the edge above the question ends the block, as a rule does.
+    lines = [unboxed(line) for line in text.split("\n")]
     anchor = next((
         index for index in range(len(lines) - 1, -1, -1)
         if _offers(lines[index], labels)
